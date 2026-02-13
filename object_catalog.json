@@ -1,0 +1,50 @@
+[
+  {
+    "name": "small_cube",
+    "usd": "/path/to/objects/small_cube.usd",
+    "bbox": [0.04, 0.04, 0.04],
+    "mass": 0.15,
+    "scale": 1.0,
+    "category": 0
+  },
+  {
+    "name": "medium_cube",
+    "usd": "/path/to/objects/medium_cube.usd",
+    "bbox": [0.07, 0.07, 0.07],
+    "mass": 0.30,
+    "scale": 1.0,
+    "category": 0
+  },
+  {
+    "name": "cylinder_thin",
+    "usd": "/path/to/objects/cylinder_thin.usd",
+    "bbox": [0.03, 0.03, 0.10],
+    "mass": 0.20,
+    "scale": 1.0,
+    "category": 1
+  },
+  {
+    "name": "sphere_small",
+    "usd": "/path/to/objects/sphere_small.usd",
+    "bbox": [0.04, 0.04, 0.04],
+    "mass": 0.10,
+    "scale": 1.0,
+    "category": 2
+  },
+  {
+    "name": "box_flat",
+    "usd": "/path/to/objects/box_flat.usd",
+    "bbox": [0.10, 0.06, 0.03],
+    "mass": 0.25,
+    "scale": 1.0,
+    "category": 3
+  },
+  {
+    "name": "bottle_small",
+    "usd": "/path/to/objects/bottle_small.usd",
+    "bbox": [0.04, 0.04, 0.12],
+    "mass": 0.20,
+    "scale": 1.0,
+    "category": 4
+  }
+]

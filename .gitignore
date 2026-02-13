@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual env / tooling
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Training artifacts
+logs/
+outputs/
+demos/
+checkpoints/
+*.hdf5
+*.npz
+*.pt
+*.pth
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
