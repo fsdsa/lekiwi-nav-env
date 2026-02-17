@@ -128,6 +128,10 @@ from lekiwi_robot_cfg import (
 class TeleopInputBase:
     """텔레옵 입력 공통 인터페이스."""
 
+    def __init__(self):
+        # 다중 상속 경로에서도 공통 초기화 훅을 유지한다.
+        super().__init__()
+
     def get_latest(self) -> tuple[np.ndarray, np.ndarray, bool]:
         raise NotImplementedError
 
@@ -140,7 +144,8 @@ if ROS2_AVAILABLE:
         """ROS2에서 텔레옵 명령 수신."""
 
         def __init__(self, arm_topic: str, wheel_topic: str, M_inv: np.ndarray, wheel_radius: float):
-            super().__init__("teleop_recorder")
+            Node.__init__(self, "teleop_recorder")
+            TeleopInputBase.__init__(self)
 
             self._lock = threading.Lock()
             self._M_inv = M_inv
@@ -193,6 +198,7 @@ class TcpTeleopSubscriber(TeleopInputBase):
     """TCP JSON lines에서 텔레옵 명령 수신."""
 
     def __init__(self, host: str, port: int):
+        super().__init__()
         self._host = host
         self._port = port
         self._lock = threading.Lock()

@@ -237,6 +237,45 @@ def align_and_compare(
     sim_t: np.ndarray,
     sim_series: np.ndarray,
 ) -> dict:
+    real_t = np.asarray(real_t, dtype=np.float64).reshape(-1)
+    real_series = np.asarray(real_series, dtype=np.float64).reshape(-1)
+    sim_t = np.asarray(sim_t, dtype=np.float64).reshape(-1)
+    sim_series = np.asarray(sim_series, dtype=np.float64).reshape(-1)
+
+    if real_t.size != real_series.size:
+        raise ValueError(f"real_t/real_series size mismatch: {real_t.size} vs {real_series.size}")
+    if sim_t.size != sim_series.size:
+        raise ValueError(f"sim_t/sim_series size mismatch: {sim_t.size} vs {sim_series.size}")
+
+    if real_t.size < 2 or sim_t.size < 2:
+        raise ValueError("align_and_compare requires at least 2 samples for both real and sim series.")
+
+    if (
+        not np.all(np.isfinite(real_t))
+        or not np.all(np.isfinite(real_series))
+        or not np.all(np.isfinite(sim_t))
+        or not np.all(np.isfinite(sim_series))
+    ):
+        raise ValueError("align_and_compare received non-finite values.")
+
+    # np.interp는 x가 단조 증가해야 하므로 정렬 및 중복 타임스탬프 제거.
+    real_order = np.argsort(real_t)
+    real_t = real_t[real_order]
+    real_series = real_series[real_order]
+    sim_order = np.argsort(sim_t)
+    sim_t = sim_t[sim_order]
+    sim_series = sim_series[sim_order]
+
+    real_keep = np.concatenate(([True], np.diff(real_t) > 1e-9))
+    sim_keep = np.concatenate(([True], np.diff(sim_t) > 1e-9))
+    real_t = real_t[real_keep]
+    real_series = real_series[real_keep]
+    sim_t = sim_t[sim_keep]
+    sim_series = sim_series[sim_keep]
+
+    if real_t.size < 2 or sim_t.size < 2:
+        raise ValueError("align_and_compare needs at least 2 unique timestamps for both real and sim.")
+
     t_end = min(float(real_t[-1]), float(sim_t[-1]))
     n = max(5, min(len(real_t), len(sim_t)))
     t_common = np.linspace(0.0, max(t_end, 1e-6), n)
