@@ -17,6 +17,10 @@ Isaac Lab `DirectRLEnv` 기반 LeKiwi Fetch task 파이프라인.
 - **object_catalog.json 자동 생성**: `build_object_catalog.py`로 1030종 USD에서 bbox 추출 + 클러스터링 → 대표 선별
 - **VLA 입력은 변동 없음**: `image + instruction + robot_state(9D)` → `action(9D)`
   - obs[33:37]은 privileged info로 VLA에 전달하지 않음
+- **Physics multi-object instruction 개선**: SpawnManager 없이도 활성 물체 이름 기반으로
+  `find the <object> and bring it back` 문장을 episode별로 저장
+- **배포 변환 체인 유틸 추가**: `deploy_vla_action_bridge.py`
+  - VLA action(9D) → sim denorm → `sim_to_real` → arm limits 매핑을 1회 실행
 - **기존 33D 호환**: `--multi_object_json` 미지정 시 기존 33D proximity 모드 동작
 
 ## 2) 파일 구조
@@ -35,6 +39,7 @@ scripts/lekiwi_nav_env/
 ├── check_calibration_gate.py   # ★ 캘리브레이션 품질 게이트 (RMSE 임계값 pass/fail)
 ├── sim_real_calibration_test.py # ★ Isaac Sim Script Editor용 sim-real 이동/회전 정합 테스트
 ├── sim_real_command_transform.py # ★ sim<->real base command 변환 유틸 (배포 전/중 검증)
+├── deploy_vla_action_bridge.py  # ★ VLA action(9D) -> real base/arm 명령 변환 체인 유틸
 ├── build_arm_limits_real2sim.py
 ├── record_teleop.py
 ├── teleop_dual_logger.py
@@ -478,6 +483,8 @@ python collect_demos.py \
 참고:
 - physics grasp 모드에서는 SpawnManager(`--objects_index`)가 자동 비활성화됨
 - HDF5 attrs에 `object_bbox_xyz`, `object_category_id`, `active_object_type_idx` 저장됨
+- physics multi-object 모드에서는 episode별 `instruction`이 활성 물체 이름 기반으로 저장됨
+- `final_object_dist`를 기본 최종 거리 메트릭으로 저장 (`final_dist`는 하위호환 alias)
 - 저장되는 `action`은 sim action space 기준이므로, 실배포 시 base 명령은 `2-7`의 `sim -> real` 역변환을 적용
 
 ### Step 6. HDF5 → LeRobot v3 변환
@@ -502,6 +509,17 @@ python convert_hdf5_to_lerobot_v3.py \
 LeRobot v3 데이터셋으로 π0Fast 또는 GR00T 파인튜닝 (A100 서버).
 VLA 입력: `image + instruction + robot_state(9D)` → `action(9D)`.
 실배포 시 `action[0:3]`(base)는 `2-7`의 `sim -> real` 역변환 후 실로봇에 송신.
+
+배포 전 변환 체인 점검 예시:
+
+```bash
+python deploy_vla_action_bridge.py \
+  --action "0.2,0.0,-0.3,0,0,0,0,0,0" \
+  --dynamics_json calibration/tuned_dynamics.json \
+  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_action_to_limits \
+  --json
+```
 
 ## 5) 데이터 흐름 요약
 

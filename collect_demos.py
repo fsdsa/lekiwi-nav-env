@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-LeKiwi Navigation — RL Expert 데모 수집 (v6: SpawnManager + 메타데이터 + 품질 필터).
+LeKiwi Navigation — RL Expert 데모 수집 (v8: SpawnManager/Physics + 메타데이터 + 품질 필터).
 
 학습된 PPO 정책을 실행하여 성공 에피소드만 HDF5로 저장.
 base_rgb (1280x720) + wrist_rgb (640x480) 이미지를 함께 저장.
 SpawnManager로 object_pos_w 좌표에 실제 USD 물체를 스폰하여 카메라에 물체가 찍히게 한다.
 
-HDF5 구조 (v6):
+HDF5 구조 (v8):
     attrs:
       has_camera, has_subtask_annotation, has_spawn_metadata
       subtask_id_to_text_json (global fallback)
@@ -21,7 +21,7 @@ HDF5 구조 (v6):
           base_rgb       (T, 720, 1280, 3)  uint8  gzip-4
           wrist_rgb      (T, 480, 640, 3)   uint8  gzip-4
         attrs:
-          num_steps, final_dist, success
+          num_steps, final_object_dist, final_dist(legacy alias), success
           object_name, object_usd, object_scale
           instruction
           spawn_meta_json
@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from isaaclab.app import AppLauncher
 
 
-parser = argparse.ArgumentParser(description="LeKiwi Nav - RL Expert 데모 수집 (v6)")
+parser = argparse.ArgumentParser(description="LeKiwi Nav - RL Expert 데모 수집 (v8)")
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_demos", type=int, default=20)
 parser.add_argument(
@@ -157,6 +157,68 @@ SUBTASK_ID_TO_TEXT_STATIC = {
 }
 FULL_TASK_ID = 10
 FULL_TASK_TEXT_STATIC = "find the target and bring it back"
+
+
+def _sanitize_object_name(raw: object) -> str:
+    txt = str(raw or "").strip()
+    if not txt:
+        return "target object"
+    txt = txt.replace("_", " ").replace("-", " ")
+    txt = " ".join(txt.split())
+    return txt if txt else "target object"
+
+
+def _full_task_text_for_object(object_name: object) -> str:
+    name = _sanitize_object_name(object_name)
+    lowered = name.lower()
+    if lowered in {"target object", "object"}:
+        return FULL_TASK_TEXT_STATIC
+    return f"find the {name} and bring it back"
+
+
+def _get_multi_object_episode_meta(env: LeKiwiNavEnv, env_id: int) -> dict[str, object]:
+    meta = {
+        "object_name": "target object",
+        "object_usd": "",
+        "object_scale": 1.0,
+        "object_category_name": "",
+        "instruction": FULL_TASK_TEXT_STATIC,
+    }
+    if not hasattr(env, "active_object_idx"):
+        return meta
+    active_idx = int(env.active_object_idx[env_id].item())
+    catalog = list(getattr(env, "_object_catalog", []))
+    if active_idx < 0 or active_idx >= len(catalog):
+        meta["object_name"] = f"object {active_idx}"
+        meta["instruction"] = _full_task_text_for_object(meta["object_name"])
+        return meta
+
+    entry = catalog[active_idx]
+    if not isinstance(entry, dict):
+        meta["object_name"] = f"object {active_idx}"
+        meta["instruction"] = _full_task_text_for_object(meta["object_name"])
+        return meta
+
+    name_candidate = ""
+    for k in ("instruction_name", "display_name", "name", "category_name", "label"):
+        raw = str(entry.get(k, "")).strip()
+        if raw:
+            name_candidate = raw
+            break
+    if not name_candidate:
+        name_candidate = f"object {active_idx}"
+
+    meta["object_name"] = _sanitize_object_name(name_candidate)
+    meta["instruction"] = _full_task_text_for_object(meta["object_name"])
+    meta["object_usd"] = str(entry.get("usd", "") or "")
+    try:
+        meta["object_scale"] = float(entry.get("scale", 1.0))
+    except (TypeError, ValueError):
+        meta["object_scale"] = 1.0
+    category_name = str(entry.get("category_name", "") or "").strip()
+    if category_name:
+        meta["object_category_name"] = _sanitize_object_name(category_name)
+    return meta
 
 
 class LeKiwiNavEnvWithCam(LeKiwiNavEnv):
@@ -652,6 +714,7 @@ def main():
                 if success and saved < args.num_demos:
                     quality_ok = True
                     quality_reason = "ok"
+                    physics_obj_meta = None
 
                     if use_spawn and spawn_mgr is not None and args.annotate_subtasks:
                         quality_ok, quality_reason = spawn_mgr.check_quality(
@@ -681,7 +744,13 @@ def main():
                         subtask_ids_np = np.array(ep_subtask_ids[idx], dtype=np.int64)
                         grp.create_dataset("subtask_ids", data=subtask_ids_np)
 
-                        obj_name_for_transition = ep_object_name[idx] if use_spawn else ""
+                        if use_spawn:
+                            obj_name_for_transition = ep_object_name[idx]
+                        elif multi_object_mode:
+                            physics_obj_meta = _get_multi_object_episode_meta(env, idx)
+                            obj_name_for_transition = str(physics_obj_meta.get("object_name", ""))
+                        else:
+                            obj_name_for_transition = ""
                         transitions = build_subtask_transitions(
                             ep_subtask_ids[idx],
                             object_name=obj_name_for_transition,
@@ -712,6 +781,8 @@ def main():
                             )
 
                     grp.attrs["num_steps"] = len(ep_obs[idx])
+                    grp.attrs["final_object_dist"] = dist
+                    # Legacy alias for backward compatibility with old analysis scripts.
                     grp.attrs["final_dist"] = dist
                     grp.attrs["success"] = True
                     grp.attrs["has_images"] = bool(use_camera)
@@ -751,6 +822,23 @@ def main():
                         grp.attrs["subtask_id_to_text_json"] = json.dumps(subtask_map, ensure_ascii=False)
 
                         spawn_mgr.record_saved(idx)
+                    elif multi_object_mode:
+                        if physics_obj_meta is None:
+                            physics_obj_meta = _get_multi_object_episode_meta(env, idx)
+
+                        obj_name = str(physics_obj_meta.get("object_name", "target object"))
+                        instruction = str(physics_obj_meta.get("instruction", FULL_TASK_TEXT_STATIC))
+                        grp.attrs["object_name"] = obj_name
+                        grp.attrs["instruction"] = instruction
+                        grp.attrs["object_usd"] = str(physics_obj_meta.get("object_usd", ""))
+                        grp.attrs["object_scale"] = float(physics_obj_meta.get("object_scale", 1.0))
+                        cat_name = str(physics_obj_meta.get("object_category_name", "")).strip()
+                        if cat_name:
+                            grp.attrs["object_category_name"] = cat_name
+
+                        subtask_map = dict(SUBTASK_ID_TO_TEXT_STATIC)
+                        subtask_map[str(FULL_TASK_ID)] = instruction
+                        grp.attrs["subtask_id_to_text_json"] = json.dumps(subtask_map, ensure_ascii=False)
                     else:
                         grp.attrs["instruction"] = FULL_TASK_TEXT_STATIC
                         grp.attrs["subtask_id_to_text_json"] = json.dumps(
@@ -764,7 +852,14 @@ def main():
                     dists.append(dist)
 
                     img_info = f" | imgs={len(ep_base_img[idx])}" if use_camera else ""
-                    obj_info = f" | obj={ep_object_name[idx]}" if use_spawn else ""
+                    if use_spawn:
+                        obj_info = f" | obj={ep_object_name[idx]}"
+                    elif multi_object_mode:
+                        if physics_obj_meta is None:
+                            physics_obj_meta = _get_multi_object_episode_meta(env, idx)
+                        obj_info = f" | obj={physics_obj_meta.get('object_name', 'target object')}"
+                    else:
+                        obj_info = ""
                     print(
                         f"  Demo {saved:>3}/{args.num_demos} | "
                         f"steps={len(ep_obs[idx]):>4} | dist={dist:.3f}m | "
@@ -793,7 +888,7 @@ def main():
     print(f"  시도: {attempts} (성공률: {rate:.1f}%)")
     print(f"  품질 필터 skip: {skipped}")
     if dists:
-        print(f"  평균 최종 거리: {np.mean(dists):.3f}m")
+        print(f"  평균 최종 object 거리: {np.mean(dists):.3f}m")
     if use_camera:
         print(
             f"  카메라: base ({args.base_cam_width}x{args.base_cam_height})"
