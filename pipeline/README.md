@@ -1,11 +1,13 @@
-# LeKiwi Fetch-Navigation RL Pipeline (v7 — Physics Grasp)
+# LeKiwi Fetch-Navigation RL Pipeline (v8 — Fixed-Joint Carry + DR)
 
 Isaac Lab `DirectRLEnv` 기반 LeKiwi Fetch task 파이프라인.
 핵심: **Privileged RL Teacher (37D) → 물리 기반 다중 물체 Grasp → VLA Student 증류**.
 
-## 1) v6 → v7 변경점
+## 1) v7 → v8 변경점
 
-- **Grasp 판정**: proximity (거리+저속) → **physics-based (gripper 닫힘 + contact force + 적응적 거리)**
+- **Grasp carry 방식**: per-step 텔레포트 고정 → **fixed joint attach 기반 carry**(grasp 시 attach, reset 시 detach)
+- **Domain Randomization 추가**: reset 시점에 wheel/arm dynamics + object mass/friction을 랜덤화(튜닝값 중심 범위 샘플링)
+- **Grasp 판정**: physics-based (gripper 닫힘 + contact force + 적응적 거리) 유지
 - **Observation**: `33D` → **`37D`** (multi-object 모드)
   - `[33:36]` object_bbox_normalized (x, y, z)
   - `[36]` object_category_normalized
@@ -23,7 +25,7 @@ Isaac Lab `DirectRLEnv` 기반 LeKiwi Fetch task 파이프라인.
 scripts/lekiwi_nav_env/
 ├── __init__.py                  # Gymnasium 등록 (Isaac-LeKiwi-Fetch-Direct-v0)
 ├── lekiwi_robot_cfg.py          # ArticulationCfg, Kiwi IK (LEKIWI_USD_PATH 환경변수 지원)
-├── lekiwi_nav_env.py            # 37D obs, multi-object RigidBody, contact grasp, GRASP timeout
+├── lekiwi_nav_env.py            # 37D obs, fixed-joint grasp carry, reset-time DR, GRASP timeout
 ├── models.py                    # ★ 공유 RL 모델 (PolicyNet, ValueNet) — train/collect 공통
 ├── build_object_catalog.py      # USD bbox 추출 + 대표 물체 선별
 ├── calibrate_real_robot.py

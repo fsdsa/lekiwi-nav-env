@@ -37,7 +37,9 @@ import math
 import os
 from typing import Dict
 
+import omni.usd
 import torch
+from pxr import Gf, Sdf, UsdPhysics
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
@@ -146,6 +148,9 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
     grasp_contact_threshold: float = 0.5
     grasp_max_object_dist: float = 0.25
     grasp_attach_height: float = 0.15
+    grasp_attach_mode: str = "fixed_joint"  # fixed_joint | teleport
+    grasp_joint_break_force: float = 1.0e8
+    grasp_joint_break_torque: float = 1.0e8
     grasp_timeout_steps: int = 75  # GRASP phase 최대 지속 step (0 = 무제한)
     # Optional: representative multi-object catalog JSON for privileged teacher observations.
     # Format: [{"usd": "...", "bbox": [x, y, z], "mass": 0.2, "scale": 1.0, "category": 0}, ...]
@@ -180,6 +185,21 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
 
     # Termination
     max_dist_from_origin: float = 6.0
+
+    # Domain randomization (reset-time)
+    enable_domain_randomization: bool = True
+    dr_root_xy_noise_std: float = 0.12
+    dr_root_yaw_jitter_rad: float = 0.2
+    dr_wheel_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
+    dr_wheel_damping_scale_range: tuple[float, float] = (0.85, 1.15)
+    dr_wheel_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_wheel_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_wheel_viscous_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_arm_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
+    dr_arm_damping_scale_range: tuple[float, float] = (0.85, 1.15)
+    dr_object_mass_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_object_static_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
 
 
 class LeKiwiNavEnv(DirectRLEnv):
@@ -268,6 +288,25 @@ class LeKiwiNavEnv(DirectRLEnv):
         self._cached_metrics: Dict[str, torch.Tensor] | None = None
         self._phase_before_update = self.phase.clone()
         self._contact_shape_warned = False
+        self._grasp_attach_mode = str(getattr(self.cfg, "grasp_attach_mode", "fixed_joint")).strip().lower()
+        self._grasp_fixed_joints: dict[tuple[int, int], UsdPhysics.FixedJoint] = {}
+        self._grasp_fixed_joint_warned = False
+
+        self._dr_base_wheel_stiffness: torch.Tensor | None = None
+        self._dr_base_wheel_damping: torch.Tensor | None = None
+        self._dr_base_arm_stiffness: torch.Tensor | None = None
+        self._dr_base_arm_damping: torch.Tensor | None = None
+        self._dr_curr_wheel_stiffness: torch.Tensor | None = None
+        self._dr_curr_wheel_damping: torch.Tensor | None = None
+        self._dr_curr_arm_stiffness: torch.Tensor | None = None
+        self._dr_curr_arm_damping: torch.Tensor | None = None
+        self._dr_base_wheel_friction: torch.Tensor | None = None
+        self._dr_base_wheel_dynamic_friction: torch.Tensor | None = None
+        self._dr_base_wheel_viscous_friction: torch.Tensor | None = None
+        self._dr_curr_wheel_friction: torch.Tensor | None = None
+        self._dr_curr_wheel_dynamic_friction: torch.Tensor | None = None
+        self._dr_curr_wheel_viscous_friction: torch.Tensor | None = None
+        self._dr_object_material_base: dict[str, tuple[float, float]] = {}
 
         if self._multi_object:
             if self._num_object_types <= 0 or len(self._object_catalog) == 0:
@@ -306,13 +345,20 @@ class LeKiwiNavEnv(DirectRLEnv):
                 dtype=torch.float32,
                 device=self.device,
             )
+            self._catalog_mass = torch.tensor(
+                [max(float(obj.get("mass", self.cfg.object_mass)), 1e-5) for obj in self._object_catalog],
+                dtype=torch.float32,
+                device=self.device,
+            )
         else:
             self.object_bbox[:] = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=self.device)
             self.object_category_id[:] = 0.0
+            self._catalog_mass = torch.tensor([max(float(self.cfg.object_mass), 1e-5)], dtype=torch.float32, device=self.device)
 
         self._maybe_apply_tuned_dynamics_from_cfg()
         self._apply_baked_arm_limits()
         self._maybe_apply_arm_limits_from_cfg()
+        self._init_domain_randomization_buffers()
 
         print(f"  [LeKiwiFetchEnv] obs={self.cfg.observation_space} act={self.cfg.action_space}")
         print(f"  [LeKiwiFetchEnv] arm_idx={self.arm_idx.tolist()} wheel_idx={self.wheel_idx.tolist()}")
@@ -734,6 +780,323 @@ class LeKiwiNavEnv(DirectRLEnv):
                 "RL env action path stays in sim space."
             )
 
+    # Grasp attach helpers (fixed joint)
+    @staticmethod
+    def _resolve_env_pattern_path(path_pattern: str, env_id: int) -> str:
+        return str(path_pattern).replace("env_.*", f"env_{int(env_id)}")
+
+    def _get_stage(self):
+        return omni.usd.get_context().get_stage()
+
+    def _gripper_body_prim_path(self, env_id: int) -> str:
+        return self._resolve_env_pattern_path(self.cfg.gripper_contact_prim_path, env_id)
+
+    def _object_body_prim_path(self, env_id: int, object_type: int) -> str:
+        if self._multi_object:
+            return self._resolve_env_pattern_path(f"/World/envs/env_.*/Object_{int(object_type)}", env_id)
+        return self._resolve_env_pattern_path(self.cfg.object_prim_path, env_id)
+
+    @staticmethod
+    def _quatd_to_quatf(quat_d: Gf.Quatd) -> Gf.Quatf:
+        imag = quat_d.GetImaginary()
+        return Gf.Quatf(float(quat_d.GetReal()), float(imag[0]), float(imag[1]), float(imag[2]))
+
+    def _get_or_create_grasp_fixed_joint(
+        self,
+        env_id: int,
+        object_type: int,
+        gripper_path: str,
+        object_path: str,
+    ) -> UsdPhysics.FixedJoint | None:
+        key = (int(env_id), int(object_type))
+        existing = self._grasp_fixed_joints.get(key)
+        if existing is not None and existing.GetPrim().IsValid():
+            return existing
+
+        stage = self._get_stage()
+        if stage is None:
+            return None
+
+        try:
+            joint_path = Sdf.Path(f"/World/envs/env_{int(env_id)}/GraspFixedJoint_{int(object_type)}")
+            joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+            if not joint:
+                return None
+        except Exception:
+            return None
+
+        joint.GetBody0Rel().SetTargets([Sdf.Path(gripper_path)])
+        joint.GetBody1Rel().SetTargets([Sdf.Path(object_path)])
+        joint.CreateCollisionEnabledAttr(False)
+        joint.CreateBreakForceAttr(float(self.cfg.grasp_joint_break_force))
+        joint.CreateBreakTorqueAttr(float(self.cfg.grasp_joint_break_torque))
+        joint.CreateJointEnabledAttr(False)
+
+        self._grasp_fixed_joints[key] = joint
+        return joint
+
+    def _attach_grasp_fixed_joint_for_envs(self, env_ids: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        stage = self._get_stage()
+        if stage is None:
+            return
+
+        for env_id_t in env_ids:
+            env_id = int(env_id_t.item())
+            object_type = int(self.active_object_idx[env_id].item()) if self._multi_object else 0
+            gripper_path = self._gripper_body_prim_path(env_id)
+            object_path = self._object_body_prim_path(env_id, object_type)
+
+            gripper_prim = stage.GetPrimAtPath(gripper_path)
+            object_prim = stage.GetPrimAtPath(object_path)
+            if not gripper_prim.IsValid() or not object_prim.IsValid():
+                if not self._grasp_fixed_joint_warned:
+                    self._grasp_fixed_joint_warned = True
+                    print(
+                        "  [WARN] grasp fixed-joint prim not found. "
+                        f"gripper={gripper_path}, object={object_path}. Falling back to teleport attach."
+                    )
+                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
+                continue
+
+            joint = self._get_or_create_grasp_fixed_joint(
+                env_id=env_id,
+                object_type=object_type,
+                gripper_path=gripper_path,
+                object_path=object_path,
+            )
+            if joint is None:
+                if not self._grasp_fixed_joint_warned:
+                    self._grasp_fixed_joint_warned = True
+                    print("  [WARN] failed to create grasp fixed-joint. Falling back to teleport attach.")
+                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
+                continue
+
+            try:
+                tf_gripper = omni.usd.get_world_transform_matrix(gripper_prim)
+                tf_object = omni.usd.get_world_transform_matrix(object_prim)
+                local_tf0 = tf_gripper.GetInverse() * tf_object
+                local_pos0 = local_tf0.ExtractTranslation()
+                local_rot0 = self._quatd_to_quatf(local_tf0.ExtractRotationQuat())
+
+                joint.GetLocalPos0Attr().Set(local_pos0)
+                joint.GetLocalRot0Attr().Set(local_rot0)
+                joint.GetLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                joint.GetLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                joint.GetJointEnabledAttr().Set(True)
+            except Exception:
+                if not self._grasp_fixed_joint_warned:
+                    self._grasp_fixed_joint_warned = True
+                    print("  [WARN] failed to configure/enable grasp fixed-joint. Falling back to teleport attach.")
+                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
+
+    def _disable_grasp_fixed_joint_for_envs(self, env_ids: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        max_object_types = max(int(self._num_object_types), 1)
+        for env_id_t in env_ids:
+            env_id = int(env_id_t.item())
+            for object_type in range(max_object_types):
+                joint = self._grasp_fixed_joints.get((env_id, object_type))
+                if joint is None or not joint.GetPrim().IsValid():
+                    continue
+                joint.GetJointEnabledAttr().Set(False)
+
+    def _teleport_attach_for_envs(self, env_ids: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        metrics_root = self.robot.data.root_state_w[:, :3]
+        self.object_pos_w[env_ids, :2] = metrics_root[env_ids, :2]
+        self.object_pos_w[env_ids, 2] = metrics_root[env_ids, 2] + float(self.cfg.grasp_attach_height)
+        if self._multi_object and len(self.object_rigids) > 0:
+            for oi, rigid in enumerate(self.object_rigids):
+                oi_mask = self.active_object_idx[env_ids] == oi
+                if not oi_mask.any():
+                    continue
+                ids = env_ids[oi_mask]
+                pose = rigid.data.root_pose_w[ids].clone()
+                pose[:, :3] = self.object_pos_w[ids]
+                pose[:, 3:7] = self.robot.data.root_state_w[ids, 3:7]
+                rigid.write_root_pose_to_sim(pose, env_ids=ids)
+                zero_vel = torch.zeros((len(ids), 6), dtype=torch.float32, device=self.device)
+                rigid.write_root_velocity_to_sim(zero_vel, env_ids=ids)
+        elif self._physics_grasp and self.object_rigid is not None:
+            pose = self.object_rigid.data.root_pose_w[env_ids].clone()
+            pose[:, :3] = self.object_pos_w[env_ids]
+            pose[:, 3:7] = self.robot.data.root_state_w[env_ids, 3:7]
+            self.object_rigid.write_root_pose_to_sim(pose, env_ids=env_ids)
+            zero_vel = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
+            self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
+
+    # Domain randomization helpers
+    def _init_domain_randomization_buffers(self):
+        self._dr_base_wheel_stiffness = self.robot.data.joint_stiffness[:, self.wheel_idx].clone()
+        self._dr_base_wheel_damping = self.robot.data.joint_damping[:, self.wheel_idx].clone()
+        self._dr_base_arm_stiffness = self.robot.data.joint_stiffness[:, self.arm_idx].clone()
+        self._dr_base_arm_damping = self.robot.data.joint_damping[:, self.arm_idx].clone()
+
+        self._dr_curr_wheel_stiffness = self._dr_base_wheel_stiffness.clone()
+        self._dr_curr_wheel_damping = self._dr_base_wheel_damping.clone()
+        self._dr_curr_arm_stiffness = self._dr_base_arm_stiffness.clone()
+        self._dr_curr_arm_damping = self._dr_base_arm_damping.clone()
+
+        friction_base = 0.0
+        dynamic_friction_base = 0.0
+        viscous_friction_base = 0.0
+        if self._applied_dynamics_params is not None:
+            friction_base = float(self._applied_dynamics_params.get("wheel_friction_coeff", 0.0))
+            dynamic_friction_base = float(self._applied_dynamics_params.get("wheel_dynamic_friction_coeff", 0.0))
+            viscous_friction_base = float(self._applied_dynamics_params.get("wheel_viscous_friction_coeff", 0.0))
+
+        self._dr_base_wheel_friction = torch.full_like(self._dr_base_wheel_damping, friction_base)
+        self._dr_base_wheel_dynamic_friction = torch.full_like(self._dr_base_wheel_damping, dynamic_friction_base)
+        self._dr_base_wheel_viscous_friction = torch.full_like(self._dr_base_wheel_damping, viscous_friction_base)
+        self._dr_curr_wheel_friction = self._dr_base_wheel_friction.clone()
+        self._dr_curr_wheel_dynamic_friction = self._dr_base_wheel_dynamic_friction.clone()
+        self._dr_curr_wheel_viscous_friction = self._dr_base_wheel_viscous_friction.clone()
+
+    @staticmethod
+    def _parse_scale_range(v: tuple[float, float]) -> tuple[float, float]:
+        lo = float(v[0])
+        hi = float(v[1])
+        if not math.isfinite(lo) or not math.isfinite(hi):
+            return 1.0, 1.0
+        if hi < lo:
+            lo, hi = hi, lo
+        return lo, hi
+
+    def _sample_scale(self, v: tuple[float, float], n: int) -> torch.Tensor:
+        lo, hi = self._parse_scale_range(v)
+        if n <= 0:
+            return torch.empty((0, 1), device=self.device)
+        if abs(hi - lo) < 1e-8:
+            return torch.full((n, 1), lo, dtype=torch.float32, device=self.device)
+        return torch.empty((n, 1), dtype=torch.float32, device=self.device).uniform_(lo, hi)
+
+    def _apply_object_mass_randomization(self, env_ids: torch.Tensor):
+        if len(env_ids) == 0:
+            return
+        lo, hi = self._parse_scale_range(self.cfg.dr_object_mass_scale_range)
+        sf_lo, sf_hi = self._parse_scale_range(self.cfg.dr_object_static_friction_scale_range)
+        df_lo, df_hi = self._parse_scale_range(self.cfg.dr_object_dynamic_friction_scale_range)
+        if (
+            abs(hi - lo) < 1e-8
+            and abs(lo - 1.0) < 1e-8
+            and abs(sf_hi - sf_lo) < 1e-8
+            and abs(sf_lo - 1.0) < 1e-8
+            and abs(df_hi - df_lo) < 1e-8
+            and abs(df_lo - 1.0) < 1e-8
+        ):
+            return
+        stage = self._get_stage()
+        if stage is None:
+            return
+        scales = self._sample_scale(self.cfg.dr_object_mass_scale_range, len(env_ids)).squeeze(-1)
+        sf_scales = self._sample_scale(self.cfg.dr_object_static_friction_scale_range, len(env_ids)).squeeze(-1)
+        df_scales = self._sample_scale(self.cfg.dr_object_dynamic_friction_scale_range, len(env_ids)).squeeze(-1)
+        for i, env_id_t in enumerate(env_ids):
+            env_id = int(env_id_t.item())
+            object_type = int(self.active_object_idx[env_id].item()) if self._multi_object else 0
+            base_mass = float(self._catalog_mass[min(object_type, len(self._catalog_mass) - 1)].item())
+            mass_val = max(base_mass * float(scales[i].item()), 1e-5)
+            prim_path = self._object_body_prim_path(env_id, object_type)
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+            try:
+                if not prim.HasAPI(UsdPhysics.MassAPI):
+                    UsdPhysics.MassAPI.Apply(prim)
+                mass_api = UsdPhysics.MassAPI(prim)
+                attr = mass_api.GetMassAttr()
+                if not attr:
+                    attr = mass_api.CreateMassAttr()
+                attr.Set(mass_val)
+
+                # Object surface friction randomization (MaterialAPI on object prim).
+                if not prim.HasAPI(UsdPhysics.MaterialAPI):
+                    UsdPhysics.MaterialAPI.Apply(prim)
+                mat_api = UsdPhysics.MaterialAPI(prim)
+                sf_attr = mat_api.GetStaticFrictionAttr()
+                df_attr = mat_api.GetDynamicFrictionAttr()
+                if not sf_attr:
+                    sf_attr = mat_api.CreateStaticFrictionAttr()
+                if not df_attr:
+                    df_attr = mat_api.CreateDynamicFrictionAttr()
+
+                base_sf, base_df = self._dr_object_material_base.get(prim_path, (0.8, 0.6))
+                cur_sf = sf_attr.Get()
+                cur_df = df_attr.Get()
+                if prim_path not in self._dr_object_material_base:
+                    if cur_sf is not None:
+                        try:
+                            base_sf = float(cur_sf)
+                        except (TypeError, ValueError):
+                            base_sf = 0.8
+                    if cur_df is not None:
+                        try:
+                            base_df = float(cur_df)
+                        except (TypeError, ValueError):
+                            base_df = 0.6
+                    self._dr_object_material_base[prim_path] = (base_sf, base_df)
+
+                sf_val = max(base_sf * float(sf_scales[i].item()), 0.0)
+                df_val = max(base_df * float(df_scales[i].item()), 0.0)
+                sf_attr.Set(sf_val)
+                df_attr.Set(min(df_val, sf_val))
+            except Exception:
+                # Material/physics schema authoring can fail on some USD instance setups.
+                continue
+
+    def _apply_domain_randomization(self, env_ids: torch.Tensor):
+        if not bool(self.cfg.enable_domain_randomization) or len(env_ids) == 0:
+            return
+        if self._dr_base_wheel_stiffness is None or self._dr_curr_wheel_stiffness is None:
+            return
+
+        n = len(env_ids)
+        ids = env_ids
+        ws = self._sample_scale(self.cfg.dr_wheel_stiffness_scale_range, n)
+        wd = self._sample_scale(self.cfg.dr_wheel_damping_scale_range, n)
+        as_ = self._sample_scale(self.cfg.dr_arm_stiffness_scale_range, n)
+        ad = self._sample_scale(self.cfg.dr_arm_damping_scale_range, n)
+
+        self._dr_curr_wheel_stiffness[ids] = torch.clamp(self._dr_base_wheel_stiffness[ids] * ws, min=0.0)
+        self._dr_curr_wheel_damping[ids] = torch.clamp(self._dr_base_wheel_damping[ids] * wd, min=0.0)
+        self._dr_curr_arm_stiffness[ids] = torch.clamp(self._dr_base_arm_stiffness[ids] * as_, min=0.0)
+        self._dr_curr_arm_damping[ids] = torch.clamp(self._dr_base_arm_damping[ids] * ad, min=0.0)
+
+        wheel_ids = self.wheel_idx.tolist()
+        arm_ids = self.arm_idx.tolist()
+        self.robot.write_joint_stiffness_to_sim(self._dr_curr_wheel_stiffness, joint_ids=wheel_ids)
+        self.robot.write_joint_damping_to_sim(self._dr_curr_wheel_damping, joint_ids=wheel_ids)
+        self.robot.write_joint_stiffness_to_sim(self._dr_curr_arm_stiffness, joint_ids=arm_ids)
+        self.robot.write_joint_damping_to_sim(self._dr_curr_arm_damping, joint_ids=arm_ids)
+
+        wf = self._sample_scale(self.cfg.dr_wheel_friction_scale_range, n)
+        wdf = self._sample_scale(self.cfg.dr_wheel_dynamic_friction_scale_range, n)
+        wvf = self._sample_scale(self.cfg.dr_wheel_viscous_friction_scale_range, n)
+        self._dr_curr_wheel_friction[ids] = torch.clamp(self._dr_base_wheel_friction[ids] * wf, min=0.0)
+        self._dr_curr_wheel_dynamic_friction[ids] = torch.clamp(
+            self._dr_base_wheel_dynamic_friction[ids] * wdf, min=0.0
+        )
+        self._dr_curr_wheel_viscous_friction[ids] = torch.clamp(
+            self._dr_base_wheel_viscous_friction[ids] * wvf, min=0.0
+        )
+
+        if hasattr(self.robot, "write_joint_friction_coefficient_to_sim"):
+            self.robot.write_joint_friction_coefficient_to_sim(self._dr_curr_wheel_friction, joint_ids=wheel_ids)
+        if hasattr(self.robot, "write_joint_dynamic_friction_coefficient_to_sim"):
+            self.robot.write_joint_dynamic_friction_coefficient_to_sim(
+                self._dr_curr_wheel_dynamic_friction, joint_ids=wheel_ids
+            )
+        if hasattr(self.robot, "write_joint_viscous_friction_coefficient_to_sim"):
+            self.robot.write_joint_viscous_friction_coefficient_to_sim(
+                self._dr_curr_wheel_viscous_friction, joint_ids=wheel_ids
+            )
+
+        self._apply_object_mass_randomization(env_ids=env_ids)
+
     # Action pipeline
     def _pre_physics_step(self, actions: torch.Tensor):
         self.prev_actions = self.actions.clone()
@@ -770,37 +1133,6 @@ class LeKiwiNavEnv(DirectRLEnv):
         pos_target = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         pos_target[:, self.arm_idx] = arm_targets
         self.robot.set_joint_position_target(pos_target)
-
-        # In physics grasp mode, keep grasped object attached to robot body for stable carry behavior.
-        if self._multi_object and bool(self.object_grasped.any()) and len(self.object_rigids) > 0:
-            grasped_ids = self.object_grasped.nonzero(as_tuple=False).squeeze(-1)
-            if len(grasped_ids) > 0:
-                for oi, rigid in enumerate(self.object_rigids):
-                    oi_mask = self.active_object_idx[grasped_ids] == oi
-                    if not oi_mask.any():
-                        continue
-                    env_ids = grasped_ids[oi_mask]
-                    obj_pose = rigid.data.root_pose_w[env_ids].clone()
-                    robot_pose = self.robot.data.root_state_w[env_ids, :7]
-                    obj_pose[:, :2] = robot_pose[:, :2]
-                    obj_pose[:, 2] = robot_pose[:, 2] + float(self.cfg.grasp_attach_height)
-                    obj_pose[:, 3:7] = robot_pose[:, 3:7]
-                    rigid.write_root_pose_to_sim(obj_pose, env_ids=env_ids)
-                    zero_vel = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
-                    rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-                    self.object_pos_w[env_ids] = obj_pose[:, :3]
-        elif self._physics_grasp and self.object_rigid is not None and bool(self.object_grasped.any()):
-            grasped_ids = self.object_grasped.nonzero(as_tuple=False).squeeze(-1)
-            if len(grasped_ids) > 0:
-                obj_pose = self.object_rigid.data.root_pose_w[grasped_ids].clone()
-                robot_pose = self.robot.data.root_state_w[grasped_ids, :7]
-                obj_pose[:, :2] = robot_pose[:, :2]
-                obj_pose[:, 2] = robot_pose[:, 2] + float(self.cfg.grasp_attach_height)
-                obj_pose[:, 3:7] = robot_pose[:, 3:7]
-                self.object_rigid.write_root_pose_to_sim(obj_pose, env_ids=grasped_ids)
-                zero_vel = torch.zeros((len(grasped_ids), 6), dtype=torch.float32, device=self.device)
-                self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=grasped_ids)
-                self.object_pos_w[grasped_ids] = obj_pose[:, :3]
 
     def _contact_force_per_env(self) -> torch.Tensor:
         force = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
@@ -843,18 +1175,14 @@ class LeKiwiNavEnv(DirectRLEnv):
     # Task metric helpers
     def _compute_metrics(self) -> Dict[str, torch.Tensor]:
         if self._multi_object and len(self.object_rigids) > 0:
-            not_grasped = ~self.object_grasped
-            if not_grasped.any():
-                for oi, rigid in enumerate(self.object_rigids):
-                    mask = (self.active_object_idx == oi) & not_grasped
-                    if not mask.any():
-                        continue
-                    ids = mask.nonzero(as_tuple=False).squeeze(-1)
-                    self.object_pos_w[ids] = rigid.data.root_pos_w[ids]
+            for oi, rigid in enumerate(self.object_rigids):
+                mask = self.active_object_idx == oi
+                if not mask.any():
+                    continue
+                ids = mask.nonzero(as_tuple=False).squeeze(-1)
+                self.object_pos_w[ids] = rigid.data.root_pos_w[ids]
         elif self._physics_grasp and self.object_rigid is not None:
-            not_grasped = ~self.object_grasped
-            if not_grasped.any():
-                self.object_pos_w[not_grasped] = self.object_rigid.data.root_pos_w[not_grasped]
+            self.object_pos_w[:] = self.object_rigid.data.root_pos_w
 
         root_pos_w = self.robot.data.root_pos_w
         root_quat_w = self.robot.data.root_quat_w
@@ -1036,30 +1364,11 @@ class LeKiwiNavEnv(DirectRLEnv):
         if newly_grasped.any():
             newly_grasped_ids = newly_grasped.nonzero(as_tuple=False).squeeze(-1)
             self.just_grasped[newly_grasped] = True
-            # Attach to robot for stable carry once grasp is successful.
-            self.object_pos_w[newly_grasped, :2] = metrics["root_pos_w"][newly_grasped, :2]
-            self.object_pos_w[newly_grasped, 2] = (
-                metrics["root_pos_w"][newly_grasped, 2] + float(self.cfg.grasp_attach_height)
-            )
-            if self._multi_object and len(self.object_rigids) > 0:
-                for oi, rigid in enumerate(self.object_rigids):
-                    oi_mask = self.active_object_idx[newly_grasped_ids] == oi
-                    if not oi_mask.any():
-                        continue
-                    env_ids = newly_grasped_ids[oi_mask]
-                    pose = rigid.data.root_pose_w[env_ids].clone()
-                    pose[:, :3] = self.object_pos_w[env_ids]
-                    pose[:, 3:7] = self.robot.data.root_state_w[env_ids, 3:7]
-                    rigid.write_root_pose_to_sim(pose, env_ids=env_ids)
-                    zero_vel = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
-                    rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-            elif self._physics_grasp and self.object_rigid is not None:
-                pose = self.object_rigid.data.root_pose_w[newly_grasped_ids].clone()
-                pose[:, :3] = self.object_pos_w[newly_grasped_ids]
-                pose[:, 3:7] = self.robot.data.root_state_w[newly_grasped_ids, 3:7]
-                self.object_rigid.write_root_pose_to_sim(pose, env_ids=newly_grasped_ids)
-                zero_vel = torch.zeros((len(newly_grasped_ids), 6), dtype=torch.float32, device=self.device)
-                self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=newly_grasped_ids)
+            if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+                self._attach_grasp_fixed_joint_for_envs(newly_grasped_ids)
+            else:
+                # Legacy fallback (single-shot snap) for non-fixed-joint mode.
+                self._teleport_attach_for_envs(newly_grasped_ids)
 
         # RETURN 성공
         return_mask = phase_prev == PHASE_RETURN
@@ -1209,12 +1518,21 @@ class LeKiwiNavEnv(DirectRLEnv):
     def _reset_idx(self, env_ids: torch.Tensor):
         super()._reset_idx(env_ids)
         num = len(env_ids)
+        if num == 0:
+            return
+
+        if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+            self._disable_grasp_fixed_joint_for_envs(env_ids)
 
         # Root reset
         default_root_state = self.robot.data.default_root_state[env_ids].clone()
-        default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * 0.1
+        root_xy_std = float(self.cfg.dr_root_xy_noise_std) if bool(self.cfg.enable_domain_randomization) else 0.1
+        default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * root_xy_std
 
         random_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+        if bool(self.cfg.enable_domain_randomization) and float(self.cfg.dr_root_yaw_jitter_rad) > 0.0:
+            random_yaw += torch.randn(num, device=self.device) * float(self.cfg.dr_root_yaw_jitter_rad)
+            random_yaw = torch.atan2(torch.sin(random_yaw), torch.cos(random_yaw))
         half_yaw = random_yaw * 0.5
         default_root_state[:, 3] = torch.cos(half_yaw)
         default_root_state[:, 4] = 0.0
@@ -1296,6 +1614,9 @@ class LeKiwiNavEnv(DirectRLEnv):
             self.active_object_idx[env_ids] = 0
             self.object_bbox[env_ids] = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=self.device)
             self.object_category_id[env_ids] = 0.0
+
+        # Reset-time domain randomization around tuned/base dynamics.
+        self._apply_domain_randomization(env_ids)
         self._resample_search_targets(env_ids)
 
         # Task state reset
