@@ -187,12 +187,13 @@ def main():
         torch.FloatTensor(obs_data),
         torch.FloatTensor(act_data),
     )
-    train_size = int(len(dataset) * args.train_split)
+    train_size = max(int(len(dataset) * args.train_split), 1)
+    train_size = min(train_size, len(dataset))
     val_size = len(dataset) - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size) if val_size > 0 else None
 
     # —— 모델 ————————————————————————————————————————————————
     policy = BCPolicy(obs_dim, act_dim).cuda()
@@ -224,12 +225,15 @@ def main():
         train_loss /= len(train_loader)
 
         policy.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for obs_b, act_b in val_loader:
-                obs_b, act_b = obs_b.cuda(), act_b.cuda()
-                val_loss += loss_fn(policy(obs_b), act_b).item()
-        val_loss /= len(val_loader)
+        if val_loader is not None and len(val_loader) > 0:
+            val_loss = 0.0
+            with torch.no_grad():
+                for obs_b, act_b in val_loader:
+                    obs_b, act_b = obs_b.cuda(), act_b.cuda()
+                    val_loss += loss_fn(policy(obs_b), act_b).item()
+            val_loss /= len(val_loader)
+        else:
+            val_loss = train_loss
 
         is_best = val_loss < best_val_loss
         if is_best:

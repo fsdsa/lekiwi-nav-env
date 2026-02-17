@@ -14,7 +14,9 @@ LeKiwi Sim vs Real Calibration Test (Isaac Sim Script Editor)
 """
 
 import asyncio
+import json
 import math
+import os
 
 import omni.kit.app
 import omni.timeline
@@ -49,6 +51,9 @@ LIN_SCALE = 1.0166
 ANG_SCALE = 1.2360
 # real(+)=CCW, sim(+)=CW 이면 -1.0, 동일 기준이면 +1.0
 WZ_SIGN = -1.0
+# tuned_dynamics.json의 command_transform에서 보정값 자동 동기화 (없으면 fallback 상수 사용)
+AUTO_LOAD_COMP_FROM_DYNAMICS = True
+DYNAMICS_JSON_PATH = "calibration/tuned_dynamics.json"
 
 # Linear map 후보(행렬 M): sim = LIN_SCALE * M * real
 LINEAR_MAP_CANDIDATES = {
@@ -108,6 +113,68 @@ def _apply_linear_map(vx_real, vy_real, map_m):
     sim_vx = map_m[0][0] * float(vx_real) + map_m[0][1] * float(vy_real)
     sim_vy = map_m[1][0] * float(vx_real) + map_m[1][1] * float(vy_real)
     return sim_vx, sim_vy
+
+
+def _to_float_or(default_value, value):
+    try:
+        return float(value)
+    except Exception:
+        return float(default_value)
+
+
+def _resolve_dynamics_json_path():
+    raw = os.path.expanduser(DYNAMICS_JSON_PATH)
+    candidates = [
+        raw,
+        os.path.join(os.getcwd(), raw),
+        os.path.join(os.getcwd(), "scripts", "lekiwi_nav_env", raw),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def maybe_load_comp_from_dynamics_json():
+    """tuned_dynamics.json command_transform을 읽어 보정 상수를 동기화."""
+    global LIN_SCALE, ANG_SCALE, WZ_SIGN
+    global LINEAR_MAP_NAME, ACTIVE_LINEAR_MAP_NAME, ACTIVE_LINEAR_MAP
+
+    if not AUTO_LOAD_COMP_FROM_DYNAMICS:
+        return
+
+    path = _resolve_dynamics_json_path()
+    if path is None:
+        print(f"[INFO] dynamics json not found; keep manual compensation constants ({DYNAMICS_JSON_PATH})")
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        print(f"[WARN] failed to load dynamics json: {path} ({exc})")
+        return
+
+    command_transform = payload.get("command_transform")
+    if not isinstance(command_transform, dict):
+        print(f"[INFO] command_transform missing in dynamics json: {path}")
+        return
+
+    linear_map_name = str(command_transform.get("linear_map", LINEAR_MAP_NAME))
+    if linear_map_name not in LINEAR_MAP_CANDIDATES:
+        print(f"[WARN] unknown linear_map in dynamics json: {linear_map_name!r}; keep {LINEAR_MAP_NAME!r}")
+        linear_map_name = LINEAR_MAP_NAME
+
+    LIN_SCALE = _to_float_or(LIN_SCALE, command_transform.get("lin_scale"))
+    ANG_SCALE = _to_float_or(ANG_SCALE, command_transform.get("ang_scale"))
+    WZ_SIGN = _to_float_or(WZ_SIGN, command_transform.get("wz_sign"))
+    LINEAR_MAP_NAME = linear_map_name
+    ACTIVE_LINEAR_MAP_NAME = linear_map_name
+    ACTIVE_LINEAR_MAP = LINEAR_MAP_CANDIDATES[linear_map_name]
+    print(
+        "[INFO] loaded compensation from dynamics json: "
+        f"path={path}, lin={LIN_SCALE:.4f}, ang={ANG_SCALE:.4f}, wz_sign={WZ_SIGN:+.1f}, map={linear_map_name}"
+    )
 
 
 def body_to_semantic(dx_body, dy_body):
@@ -438,6 +505,7 @@ async def _run_all_tests():
     if stage is None:
         raise RuntimeError("Open a stage first.")
 
+    maybe_load_comp_from_dynamics_json()
     pose_prim_path = resolve_pose_prim_path()
     await auto_select_linear_map(pose_prim_path)
     print(f"  robot prim : {ROBOT_PRIM_PATH}")

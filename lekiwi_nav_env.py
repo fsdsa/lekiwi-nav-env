@@ -265,6 +265,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         self.episode_reward_sum = torch.zeros(self.num_envs, device=self.device)
         self.reached_count = 0
         self._cached_metrics: Dict[str, torch.Tensor] | None = None
+        self._phase_before_update = self.phase.clone()
 
         if self._multi_object:
             if self._num_object_types <= 0 or len(self._object_catalog) == 0:
@@ -349,7 +350,10 @@ class LeKiwiNavEnv(DirectRLEnv):
                 if not obj_usd:
                     raise ValueError(f"multi_object_json[{oi}].usd is missing.")
                 if not os.path.isfile(obj_usd):
-                    raise FileNotFoundError(f"multi_object_json[{oi}].usd not found: {obj_usd}")
+                    raise FileNotFoundError(
+                        f"multi_object_json[{oi}].usd not found: {obj_usd}\n"
+                        "Hint: regenerate catalog with build_object_catalog.py using real USD paths."
+                    )
                 obj_mass = float(obj_info.get("mass", self.cfg.object_mass))
                 obj_scale = float(obj_info.get("scale", self.cfg.object_scale))
                 prim_path = f"/World/envs/env_.*/Object_{oi}"
@@ -759,7 +763,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                     obj_pose = rigid.data.root_pose_w[env_ids].clone()
                     robot_pose = self.robot.data.root_state_w[env_ids, :7]
                     obj_pose[:, :2] = robot_pose[:, :2]
-                    obj_pose[:, 2] = float(self.cfg.grasp_attach_height)
+                    obj_pose[:, 2] = robot_pose[:, 2] + float(self.cfg.grasp_attach_height)
                     obj_pose[:, 3:7] = robot_pose[:, 3:7]
                     rigid.write_root_pose_to_sim(obj_pose, env_ids=env_ids)
                     zero_vel = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
@@ -771,7 +775,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                 obj_pose = self.object_rigid.data.root_pose_w[grasped_ids].clone()
                 robot_pose = self.robot.data.root_state_w[grasped_ids, :7]
                 obj_pose[:, :2] = robot_pose[:, :2]
-                obj_pose[:, 2] = float(self.cfg.grasp_attach_height)
+                obj_pose[:, 2] = robot_pose[:, 2] + float(self.cfg.grasp_attach_height)
                 obj_pose[:, 3:7] = robot_pose[:, 3:7]
                 self.object_rigid.write_root_pose_to_sim(obj_pose, env_ids=grasped_ids)
                 zero_vel = torch.zeros((len(grasped_ids), 6), dtype=torch.float32, device=self.device)
@@ -875,28 +879,42 @@ class LeKiwiNavEnv(DirectRLEnv):
             "wheel_vel": wheel_vel,
         }
 
-    def _sample_targets_around(self, env_ids: torch.Tensor, base_xy: torch.Tensor, dist_min: float, dist_max: float):
+    def _sample_targets_around(
+        self,
+        env_ids: torch.Tensor,
+        base_xy: torch.Tensor,
+        dist_min: float,
+        dist_max: float,
+        base_z: torch.Tensor | None = None,
+    ):
         n = len(env_ids)
         angle = torch.rand(n, device=self.device) * 2.0 * math.pi
         dist = torch.rand(n, device=self.device) * (dist_max - dist_min) + dist_min
         x = base_xy[:, 0] + dist * torch.cos(angle)
         y = base_xy[:, 1] + dist * torch.sin(angle)
-        z = torch.full((n,), self.cfg.object_height, device=self.device)
+        if base_z is None:
+            z = torch.full((n,), self.cfg.object_height, device=self.device)
+        else:
+            z = base_z + float(self.cfg.object_height)
         return torch.stack([x, y, z], dim=-1)
 
     def _resample_search_targets(self, env_ids: torch.Tensor):
         if len(env_ids) == 0:
             return
         base_xy = self.home_pos_w[env_ids, :2]
+        base_z = self.home_pos_w[env_ids, 2]
         self.search_target_w[env_ids] = self._sample_targets_around(
             env_ids=env_ids,
             base_xy=base_xy,
             dist_min=self.cfg.search_dist_min,
             dist_max=self.cfg.search_dist_max,
+            base_z=base_z,
         )
 
     def _update_phase_state(self, metrics: Dict[str, torch.Tensor]):
-        phase = self.phase.clone()
+        phase_prev = self.phase.clone()
+        phase = phase_prev.clone()
+        self._phase_before_update = phase_prev
 
         # 이벤트 플래그 초기화
         self.just_detected[:] = False
@@ -905,7 +923,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         self.task_success[:] = False
 
         # SEARCH 동안 scan score 누적
-        search_mask = phase == PHASE_SEARCH
+        search_mask = phase_prev == PHASE_SEARCH
         self.search_scan_score[search_mask] += torch.abs(self.actions[search_mask, 2]) * self.step_dt
 
         # "벽 뒤 가림"을 단순화한 reveal 조건: 일정 이동/스캔 이후에만 검출 가능
@@ -934,16 +952,24 @@ class LeKiwiNavEnv(DirectRLEnv):
             phase[detect] = PHASE_APPROACH
             self.just_detected[detect] = True
 
+        # APPROACH -> SEARCH (시야를 잃으면 재탐색)
+        approach_mask = phase_prev == PHASE_APPROACH
+        lost_object = approach_mask & (~visible) & (~self.object_grasped)
+        if lost_object.any():
+            phase[lost_object] = PHASE_SEARCH
+            lost_ids = lost_object.nonzero(as_tuple=False).squeeze(-1)
+            if len(lost_ids) > 0:
+                self._resample_search_targets(lost_ids)
+
         # APPROACH -> GRASP
-        approach_mask = phase == PHASE_APPROACH
-        ready_grasp = approach_mask & (metrics["object_dist"] < self.cfg.approach_thresh)
+        ready_grasp = approach_mask & visible & (metrics["object_dist"] < self.cfg.approach_thresh)
         if ready_grasp.any():
             phase[ready_grasp] = PHASE_GRASP
             self.just_reached_grasp[ready_grasp] = True
             self.grasp_entry_step[ready_grasp] = self.episode_length_buf[ready_grasp]
 
         # GRASP timeout → APPROACH (재시도)
-        grasp_mask = phase == PHASE_GRASP
+        grasp_mask = phase_prev == PHASE_GRASP
         if self.cfg.grasp_timeout_steps > 0:
             grasp_elapsed = self.episode_length_buf - self.grasp_entry_step
             timed_out = grasp_mask & (grasp_elapsed > self.cfg.grasp_timeout_steps) & (~self.object_grasped)
@@ -951,7 +977,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                 phase[timed_out] = PHASE_APPROACH
 
         # GRASP -> RETURN
-        grasp_mask = phase == PHASE_GRASP
+        grasp_mask = phase_prev == PHASE_GRASP
         if self._physics_grasp and self.contact_sensor is not None:
             gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
             gripper_closed = gripper_pos < float(self.cfg.grasp_gripper_threshold)
@@ -980,7 +1006,9 @@ class LeKiwiNavEnv(DirectRLEnv):
             self.just_grasped[newly_grasped] = True
             # Attach to robot for stable carry once grasp is successful.
             self.object_pos_w[newly_grasped, :2] = metrics["root_pos_w"][newly_grasped, :2]
-            self.object_pos_w[newly_grasped, 2] = float(self.cfg.grasp_attach_height)
+            self.object_pos_w[newly_grasped, 2] = (
+                metrics["root_pos_w"][newly_grasped, 2] + float(self.cfg.grasp_attach_height)
+            )
             if self._multi_object and len(self.object_rigids) > 0:
                 for oi, rigid in enumerate(self.object_rigids):
                     oi_mask = self.active_object_idx[newly_grasped_ids] == oi
@@ -1002,7 +1030,8 @@ class LeKiwiNavEnv(DirectRLEnv):
                 self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=newly_grasped_ids)
 
         # RETURN 성공
-        return_success = (phase == PHASE_RETURN) & self.object_grasped & (metrics["home_dist"] < self.cfg.return_thresh)
+        return_mask = phase_prev == PHASE_RETURN
+        return_success = return_mask & self.object_grasped & (metrics["home_dist"] < self.cfg.return_thresh)
         self.task_success[return_success] = True
 
         self.phase[:] = phase
@@ -1061,10 +1090,11 @@ class LeKiwiNavEnv(DirectRLEnv):
         object_progress = torch.clamp(self.prev_object_dist - metrics["object_dist"], -0.2, 0.2)
         home_progress = torch.clamp(self.prev_home_dist - metrics["home_dist"], -0.2, 0.2)
 
-        search_mask = self.phase == PHASE_SEARCH
-        approach_mask = self.phase == PHASE_APPROACH
-        grasp_mask = self.phase == PHASE_GRASP
-        return_mask = self.phase == PHASE_RETURN
+        phase_for_reward = self._phase_before_update
+        search_mask = phase_for_reward == PHASE_SEARCH
+        approach_mask = phase_for_reward == PHASE_APPROACH
+        grasp_mask = phase_for_reward == PHASE_GRASP
+        return_mask = phase_for_reward == PHASE_RETURN
 
         effort_pen = self.cfg.rew_effort_weight * (self.actions[:, :3] ** 2).sum(dim=-1)
         arm_pen = self.cfg.rew_arm_move_weight * (metrics["arm_vel"] ** 2).sum(dim=-1)
@@ -1079,7 +1109,8 @@ class LeKiwiNavEnv(DirectRLEnv):
         )
         reward += self.just_detected.float() * self.cfg.rew_detect_bonus
 
-        reward += approach_mask.float() * (
+        approach_reward_mask = approach_mask & self.object_visible
+        reward += approach_reward_mask.float() * (
             self.cfg.rew_approach_progress_weight * object_progress
             + self.cfg.rew_approach_heading_weight * torch.cos(metrics["heading_object"])
             + self.cfg.rew_approach_vel_weight * metrics["vel_toward_object"]
@@ -1173,6 +1204,7 @@ class LeKiwiNavEnv(DirectRLEnv):
             base_xy=base_xy,
             dist_min=self.cfg.object_dist_min,
             dist_max=self.cfg.object_dist_max,
+            base_z=self.home_pos_w[env_ids, 2],
         )
         if self._multi_object and len(self.object_rigids) > 0:
             chosen = torch.randint(0, self._num_object_types, (num,), device=self.device)
@@ -1180,7 +1212,7 @@ class LeKiwiNavEnv(DirectRLEnv):
             self.object_bbox[env_ids] = self._catalog_bbox[chosen]
             self.object_category_id[env_ids] = self._catalog_category[chosen]
             # Keep object resting on ground based on per-object bbox z (scaled).
-            self.object_pos_w[env_ids, 2] = torch.clamp(
+            self.object_pos_w[env_ids, 2] = self.home_pos_w[env_ids, 2] + torch.clamp(
                 self.object_bbox[env_ids, 2] * 0.5,
                 min=float(self.cfg.object_height),
             )
@@ -1246,12 +1278,16 @@ class LeKiwiNavEnv(DirectRLEnv):
         self.just_reached_grasp[env_ids] = False
         self.just_grasped[env_ids] = False
         self.grasp_entry_step[env_ids] = 0
+        self._phase_before_update[env_ids] = PHASE_SEARCH
 
         # Progress buffers init
         # 리셋 직후 "이전 거리"는 실제 시작 root 위치 기준으로 맞춘다.
-        start_xy = default_root_state[:, :2]
-        obj_dist = torch.norm(self.object_pos_w[env_ids, :2] - start_xy, dim=-1)
-        search_dist = torch.norm(self.search_target_w[env_ids, :2] - start_xy, dim=-1)
+        start_pos = default_root_state[:, :3]
+        start_quat = default_root_state[:, 3:7]
+        obj_rel = self.object_pos_w[env_ids] - start_pos
+        search_rel = self.search_target_w[env_ids] - start_pos
+        obj_dist = torch.norm(quat_apply_inverse(start_quat, obj_rel)[:, :2], dim=-1)
+        search_dist = torch.norm(quat_apply_inverse(start_quat, search_rel)[:, :2], dim=-1)
         self.prev_object_dist[env_ids] = obj_dist
         self.prev_search_dist[env_ids] = search_dist
         self.prev_home_dist[env_ids] = 0.0

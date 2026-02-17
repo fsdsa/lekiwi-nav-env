@@ -137,6 +137,11 @@ pxr 환경(Isaac Sim Python)에서 실행해야 함.
 
 **Step 3~5의 모든 학습/수집 명령어가 `--dynamics_json`과 `--arm_limit_json`을 사용하므로, 이 단계를 먼저 완료해야 한다.** 캘리브레이션 없이 학습된 정책은 실제 로봇의 dynamics와 불일치하여 Sim2Real 전이 성능이 저하된다.
 
+중요:
+- `sim_real_calibration_test.py`(Script Editor)는 **보조 검증**이다.
+- 이 스크립트는 base의 pose-level(총 이동거리/총 회전각) 정합을 빠르게 확인하는 용도이며, PRE-3~6(SysID/replay/gate)를 대체하지 않는다.
+- VLA 파인튜닝 데이터 수집/실배포 판단은 반드시 PRE-3~6 결과(`tuned_dynamics.json`, replay report, gate pass)로 최종 확정한다.
+
 #### 2-1. 실로봇 측정
 
 ```bash
@@ -299,7 +304,19 @@ headless CLI가 아니라 Isaac Sim UI에서 실행한다.
 - 실사용 기준: linear / angular 모두 `0.95 ~ 1.05` 범위
 - 회전 부호는 좌표계 차이를 고려해 `WZ_SIGN`으로 맞춘다
   - 현재 LeKiwi 설정: `WZ_SIGN = -1.0`
+- 스크립트는 `AUTO_LOAD_COMP_FROM_DYNAMICS=True`일 때 `calibration/tuned_dynamics.json`의
+  `command_transform`(`lin_scale`, `ang_scale`, `wz_sign`, `linear_map`)를 우선 로드하고,
+  파일이 없으면 코드 상수(`LIN_SCALE`, `ANG_SCALE`, `WZ_SIGN`)를 fallback으로 사용한다.
 - `wheel joint delta = n/a`가 나와도 pose 기반 거리/각도 검증은 정상 수행 가능
+
+적용 범위와 한계:
+- 확인 가능한 것:
+  - base 직진/회전 명령의 총량 비율(거리, 각도)
+  - 좌표계/부호 정합(`WZ_SIGN`, `LINEAR_MAP`, forward axis)
+- 확인 불가한 것:
+  - wheel/arm의 과도응답(상승시간, 오버슈트, 감쇠)
+  - arm 6축 command-response 정합(시간축 RMSE)
+- 따라서 이 테스트 단독 통과만으로는 RL/VLA 실배포 적합 판정을 내리지 않는다.
 
 #### 2-7. 스케일값 사용 규칙 (데이터 수집 / 실배포)
 
@@ -347,6 +364,20 @@ headless CLI가 아니라 Isaac Sim UI에서 실행한다.
 - 주의:
   - 같은 신호 경로에 `dynamics_json` 명령 스케일과 위 보정을 중복 적용하지 않는다.
   - 어느 단계에서 적용했는지(run config/로그)에 명시한다.
+  - 실배포 송신 경로에는 `sim -> real` 역변환이 실제 코드로 구현되어 있어야 한다(문서 수식만 두고 누락하지 않음).
+
+#### 2-8. VLA 파인튜닝/실배포 Go-NoGo 기준
+
+- NoGo:
+  - `sim_real_calibration_test.py`만 통과했고 PRE-3~6을 수행하지 않은 상태
+  - replay report 없이 `LIN_SCALE/ANG_SCALE/WZ_SIGN`만으로 배포를 결정한 상태
+- Go(최소):
+  - PRE-3 완료: `calibration/tuned_dynamics.json` 생성
+  - PRE-4/5 완료: command + arm replay/plot 확인
+  - PRE-6 완료: `check_calibration_gate.py` 기준 wheel/arm RMSE 임계값 통과
+- Go(권장):
+  - 보정 상수(`LIN_SCALE`, `ANG_SCALE`, `WZ_SIGN`, `LINEAR_MAP`) 변경 시 PRE-3~6 재실행
+  - 실배포 전, 송신 코드에서 `sim -> real` 역변환 단위 테스트 로그를 보관
 
 ### Step 3. 환경 검증
 

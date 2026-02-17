@@ -76,6 +76,12 @@ parser.add_argument("--listen_port", type=int, default=15002,
                     help="TCP 직접 수신 모드 listen port")
 parser.add_argument("--calibration_json", type=str, default=None,
                     help="calibration JSON 경로 (wheel/base geometry override)")
+parser.add_argument("--dynamics_json", type=str, default=None,
+                    help="tune_sim_dynamics.py 출력 JSON 경로")
+parser.add_argument("--arm_limit_json", type=str, default=None,
+                    help="arm limit JSON 경로")
+parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0,
+                    help="arm limit margin (rad)")
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -248,15 +254,37 @@ class TcpTeleopSubscriber(TeleopInputBase):
             return
 
         with self._lock:
-            names = msg.get("name", [])
-            positions = msg.get("position", [])
+            payload = msg.get("action", msg) if isinstance(msg, dict) else {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            # Legacy packet: {"name":[...], "position":[...], "base":{...}}
+            names = msg.get("name", []) if isinstance(msg, dict) else []
+            positions = msg.get("position", []) if isinstance(msg, dict) else []
             if isinstance(names, list) and isinstance(positions, list) and len(names) == len(positions):
                 name_to_pos = dict(zip(names, positions))
                 for i, jn in enumerate(ARM_JOINT_NAMES):
                     if jn in name_to_pos:
                         self._arm_positions[i] = float(name_to_pos[jn])
 
-            base = msg.get("base", {})
+            # New packet compatibility: teleop_dual_logger.py forwards {"action": {...}}
+            arm_fallback_keys = [
+                "arm_shoulder_pan.pos",
+                "arm_shoulder_lift.pos",
+                "arm_elbow_flex.pos",
+                "arm_wrist_flex.pos",
+                "arm_wrist_roll.pos",
+                "arm_gripper.pos",
+            ]
+            for i, key in enumerate(arm_fallback_keys):
+                if key in payload:
+                    self._arm_positions[i] = float(payload[key])
+            for i, jn in enumerate(ARM_JOINT_NAMES):
+                if jn in payload:
+                    self._arm_positions[i] = float(payload[jn])
+
+            # Base command parsing: support both {"base":{vx,vy,wz}} and x.vel/y.vel/theta.vel.
+            base = msg.get("base", {}) if isinstance(msg, dict) else {}
             if isinstance(base, dict):
                 self._base_cmd[0] = float(base.get("vx", self._base_cmd[0]))
                 self._base_cmd[1] = float(base.get("vy", self._base_cmd[1]))
@@ -265,6 +293,10 @@ class TcpTeleopSubscriber(TeleopInputBase):
                 self._base_cmd[0] = float(base[0])
                 self._base_cmd[1] = float(base[1])
                 self._base_cmd[2] = float(base[2])
+
+            self._base_cmd[0] = float(payload.get("x.vel", payload.get("base.vx", self._base_cmd[0])))
+            self._base_cmd[1] = float(payload.get("y.vel", payload.get("base.vy", self._base_cmd[1])))
+            self._base_cmd[2] = float(payload.get("theta.vel", payload.get("base.wz", self._base_cmd[2])))
 
             self._stamp = time.time()
 
@@ -310,6 +342,9 @@ def teleop_to_action(
     max_lin_vel: float,
     max_ang_vel: float,
     arm_action_scale: float,
+    arm_action_to_limits: bool = False,
+    arm_center: np.ndarray | None = None,
+    arm_half_range: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     텔레옵 데이터 → Isaac Lab 환경 action (9D, [-1, 1]).
@@ -324,7 +359,11 @@ def teleop_to_action(
     action[0] = np.clip(vx / max_lin_vel, -1.0, 1.0)
     action[1] = np.clip(vy / max_lin_vel, -1.0, 1.0)
     action[2] = np.clip(wz / max_ang_vel, -1.0, 1.0)
-    action[3:9] = np.clip(arm_pos / arm_action_scale, -1.0, 1.0)
+    if arm_action_to_limits and arm_center is not None and arm_half_range is not None:
+        safe_half = np.where(np.abs(arm_half_range) > 1e-6, arm_half_range, 1.0)
+        action[3:9] = np.clip((arm_pos - arm_center) / safe_half, -1.0, 1.0)
+    else:
+        action[3:9] = np.clip(arm_pos / arm_action_scale, -1.0, 1.0)
 
     return action
 
@@ -365,6 +404,11 @@ def main():
     if args.calibration_json is not None:
         raw = str(args.calibration_json).strip()
         env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
+    if args.dynamics_json:
+        env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
+    if args.arm_limit_json:
+        env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
+        env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
     env = LeKiwiNavEnv(cfg=env_cfg)
 
     base_radius = float(env.base_radius)
@@ -409,9 +453,20 @@ def main():
         raise ValueError(f"Unsupported teleop source: {selected_source}")
 
     # 환경 파라미터
-    max_lin_vel = env_cfg.max_lin_vel
-    max_ang_vel = env_cfg.max_ang_vel
-    arm_action_scale = env_cfg.arm_action_scale
+    max_lin_vel = float(env.cfg.max_lin_vel)
+    max_ang_vel = float(env.cfg.max_ang_vel)
+    arm_action_scale = float(env.cfg.arm_action_scale)
+    arm_action_to_limits = bool(env.cfg.arm_action_to_limits)
+    arm_center = None
+    arm_half_range = None
+    if arm_action_to_limits:
+        lim = env.robot.data.soft_joint_pos_limits[0, env.arm_idx].detach().cpu().numpy()
+        arm_center = 0.5 * (lim[:, 0] + lim[:, 1])
+        arm_half_range = 0.5 * (lim[:, 1] - lim[:, 0])
+        arm_half_range = np.where(np.abs(arm_half_range) > 1e-6, arm_half_range, 1.0)
+        print("  arm mapping: action [-1,1] -> joint limits (center/half-range)")
+    else:
+        print(f"  arm mapping: action * arm_action_scale ({arm_action_scale:.4f})")
     goal_thresh = env_cfg.goal_reached_thresh
 
     # —— 녹화 루프 ——
@@ -419,10 +474,22 @@ def main():
 
     episode_obs = []
     episode_actions = []
+    episode_active = []
     saved_count = 0
     step_count = 0
 
     hdf5_file = h5py.File(output_path, "w")
+    hdf5_file.attrs["obs_dim"] = int(obs["policy"].shape[-1])
+    hdf5_file.attrs["action_dim"] = 9
+    hdf5_file.attrs["max_lin_vel"] = float(max_lin_vel)
+    hdf5_file.attrs["max_ang_vel"] = float(max_ang_vel)
+    hdf5_file.attrs["arm_action_scale"] = float(arm_action_scale)
+    hdf5_file.attrs["arm_action_to_limits"] = bool(arm_action_to_limits)
+    if args.dynamics_json:
+        hdf5_file.attrs["dynamics_json"] = str(os.path.expanduser(args.dynamics_json))
+    if args.arm_limit_json:
+        hdf5_file.attrs["arm_limit_json"] = str(os.path.expanduser(args.arm_limit_json))
+        hdf5_file.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
 
     print("  ⏳ 텔레옵 입력 연결 대기 중...")
 
@@ -436,6 +503,9 @@ def main():
                 action_np = teleop_to_action(
                     arm_pos, body_cmd,
                     max_lin_vel, max_ang_vel, arm_action_scale,
+                    arm_action_to_limits=arm_action_to_limits,
+                    arm_center=arm_center,
+                    arm_half_range=arm_half_range,
                 )
             else:
                 action_np = np.zeros(9)  # 연결 끊겼으면 정지
@@ -446,10 +516,10 @@ def main():
             next_obs, reward, terminated, truncated, info = env.step(action)
             step_count += 1
 
-            # 데이터 기록 (항상 — 텔레옵 활성 여부 무관)
-            if is_active:
-                episode_obs.append(obs["policy"][0].cpu().numpy())
-                episode_actions.append(action_np)
+            # 데이터 기록 (항상): 시계열 간격을 일정하게 유지한다.
+            episode_obs.append(obs["policy"][0].cpu().numpy())
+            episode_actions.append(action_np)
+            episode_active.append(bool(is_active))
 
             # 상태 출력
             if step_count % 25 == 0:  # 25Hz control → 매초
@@ -475,17 +545,20 @@ def main():
                 final_dist = float(np.linalg.norm(root_pos - goal_pos))
 
                 # 성공: task_success가 있으면 그것을 우선 사용, 없으면 기존 distance 기반 fallback
+                active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
                 if hasattr(env, "task_success"):
-                    success = bool(env.task_success[0].item()) and len(episode_obs) > 10
+                    success = bool(env.task_success[0].item()) and active_steps > 10
                 else:
-                    success = bool(truncated.any() and final_dist < goal_thresh * 2 and len(episode_obs) > 10)
+                    success = bool(truncated.any() and final_dist < goal_thresh * 2 and active_steps > 10)
 
                 if success:
                     ep_name = f"episode_{saved_count}"
                     grp = hdf5_file.create_group(ep_name)
                     grp.create_dataset("obs", data=np.array(episode_obs))
                     grp.create_dataset("actions", data=np.array(episode_actions))
+                    grp.create_dataset("teleop_active", data=np.array(episode_active, dtype=np.int8))
                     grp.attrs["num_steps"] = len(episode_obs)
+                    grp.attrs["num_active_steps"] = active_steps
                     grp.attrs["final_dist"] = final_dist
                     grp.attrs["success"] = True
                     hdf5_file.flush()
@@ -501,6 +574,7 @@ def main():
                 # 리셋
                 episode_obs.clear()
                 episode_actions.clear()
+                episode_active.clear()
                 obs, info = env.reset()
                 step_count = 0
 

@@ -585,6 +585,20 @@ def _fill_nan(values: np.ndarray) -> np.ndarray:
     return out
 
 
+def _wz_to_rad_per_s(cmd: dict, default_wz: float) -> float:
+    """Command dict의 wz 단위를 명시값 우선으로 rad/s로 정규화."""
+    wz_raw = float(cmd.get("wz", default_wz))
+    unit = str(cmd.get("wz_unit", "")).strip().lower()
+
+    if unit in ("deg_per_s", "deg/s", "degps", "degree_per_s", "degrees_per_second"):
+        return float(math.radians(wz_raw))
+    if unit in ("rad_per_s", "rad/s", "radps", "radian_per_s", "radians_per_second"):
+        return float(wz_raw)
+
+    # Backward compatibility for legacy logs without wz_unit.
+    return float(math.radians(wz_raw) if abs(wz_raw) > 8.0 else wz_raw)
+
+
 def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float) -> list[dict]:
     sequences: list[dict] = []
 
@@ -640,9 +654,7 @@ def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float)
             "sample_hz": float(cmd.get("sample_hz", 1.0 / max(np.median(np.diff(t_arr)), 1e-6))),
         }
 
-        # LeKiwi real logger uses theta.vel in deg/s. Convert to rad/s for kinematics.
-        if abs(command["wz"]) > 8.0:
-            command["wz"] = float(math.radians(command["wz"]))
+        command["wz"] = _wz_to_rad_per_s(cmd, default_cmd["wz"])
 
         sequences.append(
             {

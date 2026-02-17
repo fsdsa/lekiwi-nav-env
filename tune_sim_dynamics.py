@@ -397,6 +397,20 @@ def _fill_nan(values: np.ndarray) -> np.ndarray:
     return out
 
 
+def _wz_to_rad_per_s(cmd: dict, default_wz: float) -> float:
+    """Command dict의 wz 단위를 명시값 우선으로 rad/s로 정규화."""
+    wz_raw = float(cmd.get("wz", default_wz))
+    unit = str(cmd.get("wz_unit", "")).strip().lower()
+
+    if unit in ("deg_per_s", "deg/s", "degps", "degree_per_s", "degrees_per_second"):
+        return float(math.radians(wz_raw))
+    if unit in ("rad_per_s", "rad/s", "radps", "radian_per_s", "radians_per_second"):
+        return float(wz_raw)
+
+    # Backward compatibility for legacy logs without wz_unit.
+    return float(math.radians(wz_raw) if abs(wz_raw) > 8.0 else wz_raw)
+
+
 def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float) -> list[dict]:
     sequences: list[dict] = []
 
@@ -452,10 +466,7 @@ def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float)
 
         unit = resolve_encoder_unit(str(block.get("encoder_unit", "auto")), ws, args.encoder_unit)
 
-        wz_raw = float(cmd.get("wz", default_cmd["wz"]))
-        # LeKiwi real logger uses theta.vel in deg/s; convert to rad/s for kinematics.
-        wz = math.radians(wz_raw) if abs(wz_raw) > 8.0 else wz_raw
-        command["wz"] = float(wz)
+        command["wz"] = _wz_to_rad_per_s(cmd, default_cmd["wz"])
 
         pairs = []
         for key in wheel_keys:
@@ -667,41 +678,51 @@ class CommandRunner:
         wheel_ids = self.wheel_idx.tolist()
         arm_ids = self.arm_idx.tolist()
 
+        wheel_stiff = float(params.get("wheel_stiffness_scale", 1.0))
+        wheel_damp = float(params.get("wheel_damping_scale", 1.0))
+        wheel_arm = float(params.get("wheel_armature_scale", 1.0))
+        wheel_fc = float(params.get("wheel_friction_coeff", 0.0))
+        wheel_dfc = float(params.get("wheel_dynamic_friction_coeff", 0.0))
+        wheel_vfc = float(params.get("wheel_viscous_friction_coeff", 0.0))
+        arm_stiff = float(params.get("arm_stiffness_scale", 1.0))
+        arm_damp = float(params.get("arm_damping_scale", 1.0))
+        arm_arm = float(params.get("arm_armature_scale", 1.0))
+
         self.robot.write_joint_stiffness_to_sim(
-            self.base_wheel_stiffness * float(params["wheel_stiffness_scale"]),
+            self.base_wheel_stiffness * wheel_stiff,
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_damping_to_sim(
-            self.base_wheel_damping * float(params["wheel_damping_scale"]),
+            self.base_wheel_damping * wheel_damp,
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_armature_to_sim(
-            self.base_wheel_armature * float(params["wheel_armature_scale"]),
+            self.base_wheel_armature * wheel_arm,
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_friction_coefficient_to_sim(
-            torch.full_like(self.base_wheel_damping, float(params["wheel_friction_coeff"])),
+            torch.full_like(self.base_wheel_damping, wheel_fc),
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_dynamic_friction_coefficient_to_sim(
-            torch.full_like(self.base_wheel_damping, float(params["wheel_dynamic_friction_coeff"])),
+            torch.full_like(self.base_wheel_damping, wheel_dfc),
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_viscous_friction_coefficient_to_sim(
-            torch.full_like(self.base_wheel_damping, float(params["wheel_viscous_friction_coeff"])),
+            torch.full_like(self.base_wheel_damping, wheel_vfc),
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_stiffness_to_sim(
-            self.base_arm_stiffness * float(params["arm_stiffness_scale"]),
+            self.base_arm_stiffness * arm_stiff,
             joint_ids=arm_ids,
         )
         self.robot.write_joint_damping_to_sim(
-            self.base_arm_damping * float(params["arm_damping_scale"]),
+            self.base_arm_damping * arm_damp,
             joint_ids=arm_ids,
         )
         # Armature typically smaller impact for position loops, but keep parity with wheel tuning.
         self.robot.write_joint_armature_to_sim(
-            self.base_arm_armature * float(params["arm_armature_scale"]),
+            self.base_arm_armature * arm_arm,
             joint_ids=arm_ids,
         )
 

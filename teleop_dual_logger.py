@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keyboard_id", type=str, default="my_laptop_keyboard")
 
     parser.add_argument("--desktop_host", type=str, default="127.0.0.1", help="Desktop IP running sim receiver")
-    parser.add_argument("--desktop_port", type=int, default=16000)
+    parser.add_argument("--desktop_port", type=int, default=15002)
     parser.add_argument("--reconnect_interval_s", type=float, default=2.0)
     parser.add_argument("--connect_timeout_s", type=float, default=0.05,
                         help="TCP connect timeout for desktop forwarder (low for teleop latency)")

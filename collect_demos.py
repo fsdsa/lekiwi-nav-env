@@ -15,8 +15,8 @@ HDF5 구조 (v6):
     episode_N/
         obs              (T, obs_dim)       float32
         actions          (T, 9)             float32
-        robot_state      (T, 9)             float32  [optional]
-        subtask_ids      (T,)               int32    [optional]
+        robot_state      (T, 9)             float32
+        subtask_ids      (T,)               int64    [optional]
         images/
           base_rgb       (T, 720, 1280, 3)  uint8  gzip-4
           wrist_rgb      (T, 480, 640, 3)   uint8  gzip-4
@@ -86,6 +86,11 @@ parser.add_argument(
     "--annotate_subtasks",
     action="store_true",
     help="v6 annotation (robot_state 9D + subtask_ids + transitions)",
+)
+parser.add_argument(
+    "--allow_missing_state_preprocessor",
+    action="store_true",
+    help="checkpoint에 state preprocessor가 없을 때 raw obs로 진행 (기본: 에러로 중단)",
 )
 
 # Camera
@@ -225,6 +230,27 @@ def compute_deterministic_action(obs_policy: torch.Tensor, policy_model: PolicyN
         proc_obs = obs_policy
     feat = policy_model.net(proc_obs)
     return policy_model.mean_layer(feat).clamp(-1.0, 1.0)
+
+
+def resolve_state_preprocessor(agent, allow_missing: bool):
+    """skrl 버전 차이에 따른 state preprocessor 속성명을 안전하게 탐색."""
+    candidates = [
+        getattr(agent, "_state_preprocessor", None),
+        getattr(agent, "state_preprocessor", None),
+    ]
+    pre = next((c for c in candidates if callable(c)), None)
+    if pre is not None:
+        return pre
+
+    if allow_missing:
+        print("  [WARN] state preprocessor를 찾지 못해 raw obs를 사용합니다.")
+        return None
+
+    raise RuntimeError(
+        "state preprocessor를 찾지 못했습니다. "
+        "skrl 버전/체크포인트 호환을 확인하거나 "
+        "--allow_missing_state_preprocessor 로 명시적으로 raw obs를 허용하세요."
+    )
 
 
 def extract_robot_state_9d(env: LeKiwiNavEnv) -> torch.Tensor:
@@ -431,7 +457,9 @@ def main():
         ) from exc
 
     agent.set_running_mode("eval")
-    state_preprocessor = getattr(agent, "_state_preprocessor", None)
+    state_preprocessor = resolve_state_preprocessor(
+        agent, allow_missing=bool(args.allow_missing_state_preprocessor)
+    )
     if state_preprocessor is not None:
         print("  상태 전처리기: RunningStandardScaler")
     print("  정책 로드 완료\n")
@@ -469,6 +497,9 @@ def main():
     hdf5_file = h5py.File(output_path, "w")
     hdf5_file.attrs["has_camera"] = use_camera
     hdf5_file.attrs["has_subtask_annotation"] = bool(args.annotate_subtasks)
+    hdf5_file.attrs["has_robot_state"] = True
+    hdf5_file.attrs["obs_dim"] = int(env.observation_space.shape[0])
+    hdf5_file.attrs["action_dim"] = int(env.action_space.shape[0])
     hdf5_file.attrs["has_spawn_metadata"] = bool(use_spawn)
     hdf5_file.attrs["subtask_id_to_text_json"] = json.dumps(SUBTASK_ID_TO_TEXT_STATIC, ensure_ascii=False)
     hdf5_file.attrs["full_task_id"] = int(FULL_TASK_ID)
@@ -506,11 +537,17 @@ def main():
 
     try:
         while saved < args.num_demos and attempts < args.max_attempts:
-            step_robot_state = None
+            step_robot_state = extract_robot_state_9d(env)
             step_subtask_ids = None
             if args.annotate_subtasks:
-                step_robot_state = extract_robot_state_9d(env)
                 step_subtask_ids = env.phase.clone()
+
+            # obs/action과 동일 시점(t)의 이미지를 먼저 캡처한다.
+            base_rgb = None
+            wrist_rgb = None
+            if use_camera:
+                base_rgb = env.get_base_rgb()
+                wrist_rgb = env.get_wrist_rgb()
 
             with torch.no_grad():
                 action = compute_deterministic_action(
@@ -524,17 +561,11 @@ def main():
             if use_spawn and spawn_mgr is not None:
                 spawn_mgr.update_all_positions(env, env.object_pos_w)
 
-            base_rgb = None
-            wrist_rgb = None
-            if use_camera:
-                base_rgb = env.get_base_rgb()
-                wrist_rgb = env.get_wrist_rgb()
-
             for i in range(args.num_envs):
                 ep_obs[i].append(obs["policy"][i].cpu().numpy())
                 ep_act[i].append(action[i].cpu().numpy())
-                if args.annotate_subtasks and step_robot_state is not None and step_subtask_ids is not None:
-                    ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
+                ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
+                if args.annotate_subtasks and step_subtask_ids is not None:
                     ep_subtask_ids[i].append(int(step_subtask_ids[i].item()))
                 if use_camera:
                     if base_rgb is not None:
@@ -589,11 +620,11 @@ def main():
                     grp = hdf5_file.create_group(f"episode_{saved}")
                     grp.create_dataset("obs", data=np.array(ep_obs[idx]))
                     grp.create_dataset("actions", data=np.array(ep_act[idx]))
+                    robot_state_np = np.array(ep_robot_state[idx], dtype=np.float32)
+                    grp.create_dataset("robot_state", data=robot_state_np)
 
                     if args.annotate_subtasks:
-                        robot_state_np = np.array(ep_robot_state[idx], dtype=np.float32)
-                        subtask_ids_np = np.array(ep_subtask_ids[idx], dtype=np.int32)
-                        grp.create_dataset("robot_state", data=robot_state_np)
+                        subtask_ids_np = np.array(ep_subtask_ids[idx], dtype=np.int64)
                         grp.create_dataset("subtask_ids", data=subtask_ids_np)
 
                         obj_name_for_transition = ep_object_name[idx] if use_spawn else ""

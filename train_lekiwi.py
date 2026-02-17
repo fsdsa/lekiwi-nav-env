@@ -151,6 +151,20 @@ def load_bc_into_policy(policy_model: PolicyNet, bc_checkpoint: str) -> bool:
     return True
 
 
+def infer_bc_obs_dim(bc_checkpoint: str) -> int | None:
+    """BC 체크포인트의 입력 obs 차원을 추론."""
+    if not os.path.exists(bc_checkpoint):
+        return None
+    try:
+        bc_state = torch.load(bc_checkpoint, map_location="cpu", weights_only=True)
+    except Exception:
+        return None
+    w = bc_state.get("net.0.weight")
+    if isinstance(w, torch.Tensor) and w.ndim == 2:
+        return int(w.shape[1])
+    return None
+
+
 def find_bc_norm_path(bc_checkpoint: str) -> str | None:
     """BC 정규화 파일 경로 추정."""
     ckpt_dir = os.path.dirname(os.path.abspath(bc_checkpoint))
@@ -179,6 +193,9 @@ def _mode_label(mode: str) -> str:
 
 def main():
     set_seed(42)
+
+    if args.resume and not args.checkpoint:
+        raise ValueError("--resume 옵션은 --checkpoint와 함께 사용해야 합니다.")
 
     # —— 모드 결정 ————————————————————————————————————————————
     if args.resume and args.checkpoint:
@@ -225,6 +242,17 @@ def main():
     env = wrap_env(raw_env, wrapper="isaaclab")
 
     device = env.device
+
+    if mode == "bc_finetune":
+        bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
+        env_obs_dim = int(env.observation_space.shape[0])
+        if bc_obs_dim is not None and bc_obs_dim != env_obs_dim:
+            print(
+                f"  ⚠ BC obs_dim({bc_obs_dim}) != env obs_dim({env_obs_dim}) "
+                "-> BC warm-start를 비활성화하고 PPO from scratch로 전환합니다."
+            )
+            mode = "scratch"
+            mode_label = _mode_label(mode)
 
     print("\n" + "=" * 60)
     print(f"  LeKiwi Nav PPO Training — {mode_label}")

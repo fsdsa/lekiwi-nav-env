@@ -4,6 +4,7 @@
 #  - arm: name/position
 #  - base: {"vx","vy","wz"} (key-state based, sent every tick)
 
+import argparse
 import json
 import math
 import socket
@@ -23,8 +24,10 @@ except Exception:
 
 FPS = 20
 
-HOME_TAILSCALE_IP = "100.91.14.65"
-HOME_TCP_PORT = 15002
+DEFAULT_HOME_TAILSCALE_IP = "100.91.14.65"
+DEFAULT_HOME_TCP_PORT = 15002
+DEFAULT_LEADER_PORT = "COM8"
+DEFAULT_LEADER_ID = "my_awesome_leader_arm"
 
 JOINT_NAMES = [
     "STS3215_03a_v1_Revolute_45",
@@ -74,6 +77,16 @@ pressed: Dict[str, bool] = {}
 prev_pressed: Dict[str, bool] = {}
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="SO100 leader -> TCP JSON forwarder")
+    parser.add_argument("--host", type=str, default=DEFAULT_HOME_TAILSCALE_IP)
+    parser.add_argument("--port", type=int, default=DEFAULT_HOME_TCP_PORT)
+    parser.add_argument("--leader_port", type=str, default=DEFAULT_LEADER_PORT)
+    parser.add_argument("--leader_id", type=str, default=DEFAULT_LEADER_ID)
+    parser.add_argument("--fps", type=float, default=float(FPS))
+    return parser.parse_args()
+
+
 def _norm_key_char(k) -> Optional[str]:
     try:
         if hasattr(k, "char") and k.char is not None:
@@ -95,10 +108,10 @@ def on_release(k):
         pressed[kc] = False
 
 
-def _connect_tcp() -> socket.socket:
+def _connect_tcp(host: str, port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(5.0)
-    sock.connect((HOME_TAILSCALE_IP, HOME_TCP_PORT))
+    sock.connect((host, port))
     sock.settimeout(None)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     return sock
@@ -137,7 +150,7 @@ def extract_leader_deg(raw_action: Any) -> List[float]:
 
 def leader_deg_to_rad6(deg6: List[float]) -> List[float]:
     rad6 = [math.radians(x) for x in deg6]
-    rad6[0] = wrap_pi(rad6[0])
+    rad6 = [wrap_pi(v) for v in rad6]
     return rad6
 
 
@@ -191,11 +204,15 @@ def compute_base_cmd() -> Dict[str, float]:
 
 
 def main():
-    leader = SO100Leader(SO100LeaderConfig(port="COM8", id="my_awesome_leader_arm"))
+    args = parse_args()
+    fps = max(float(args.fps), 1.0)
+
+    leader = SO100Leader(SO100LeaderConfig(port=args.leader_port, id=args.leader_id))
     leader.connect()
     if not leader.is_connected:
         raise RuntimeError("Leader arm not connected")
 
+    listener = None
     if PYNPUT_OK:
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.start()
@@ -203,7 +220,7 @@ def main():
     else:
         print("[KEY] pynput not available. base command stays zero.")
 
-    print(f"Target TCP = {HOME_TAILSCALE_IP}:{HOME_TCP_PORT}")
+    print(f"Target TCP = {args.host}:{args.port}")
     print("SIM_REST_RAD6    =", [round(x, 6) for x in SIM_REST_RAD6])
     print("LEADER_REST_RAD6 =", [round(x, 6) for x in LEADER_REST_RAD6])
     print("SIGNS            =", SIGNS)
@@ -213,63 +230,81 @@ def main():
     last_t = time.time()
     t_stream_start: Optional[float] = None
 
-    while True:
-        if sock is None:
+    try:
+        while True:
+            if sock is None:
+                try:
+                    sock = _connect_tcp(args.host, int(args.port))
+                    t_stream_start = time.time()
+                    print("CONNECTED")
+                except Exception as exc:
+                    print("connect failed:", exc)
+                    time.sleep(1.0)
+                    continue
+
+            tick_start = time.perf_counter()
+
+            deg6 = extract_leader_deg(leader.get_action())
+            leader_rad6 = leader_deg_to_rad6(deg6)
+
+            delta = [leader_rad6[i] - LEADER_REST_RAD6[i] for i in range(6)]
+            target = [SIM_REST_RAD6[i] + SIGNS[i] * delta[i] for i in range(6)]
+
+            if t_stream_start is not None and RAMP_SECONDS > 0:
+                alpha = min(max((time.time() - t_stream_start) / RAMP_SECONDS, 0.0), 1.0)
+                target = [SIM_REST_RAD6[i] + alpha * (target[i] - SIM_REST_RAD6[i]) for i in range(6)]
+
+            now = time.time()
+            dt = now - last_t
+            last_t = now
+
+            if last_out is None:
+                out = list(target)
+            else:
+                tmp = [rate_limit(target[i], last_out[i], MAX_SPEED_RAD_S, dt) for i in range(6)]
+                a = SMOOTH_ALPHA
+                out = [(1.0 - a) * last_out[i] + a * tmp[i] for i in range(6)]
+            last_out = list(out)
+
+            base_cmd = compute_base_cmd() if PYNPUT_OK else {"vx": 0.0, "vy": 0.0, "wz": 0.0}
+
+            payload = {
+                "t": time.time(),
+                "name": JOINT_NAMES,
+                "position": out,
+                "base": base_cmd,
+                "src": "so100_leader+keyboard",
+            }
+
             try:
-                sock = _connect_tcp()
-                t_stream_start = time.time()
-                print("CONNECTED")
+                sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
             except Exception as exc:
-                print("connect failed:", exc)
-                time.sleep(1.0)
+                print("send failed:", exc)
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                sock = None
                 continue
 
-        tick_start = time.perf_counter()
-
-        deg6 = extract_leader_deg(leader.get_action())
-        leader_rad6 = leader_deg_to_rad6(deg6)
-
-        delta = [leader_rad6[i] - LEADER_REST_RAD6[i] for i in range(6)]
-        target = [SIM_REST_RAD6[i] + SIGNS[i] * delta[i] for i in range(6)]
-
-        if t_stream_start is not None and RAMP_SECONDS > 0:
-            alpha = min(max((time.time() - t_stream_start) / RAMP_SECONDS, 0.0), 1.0)
-            target = [SIM_REST_RAD6[i] + alpha * (target[i] - SIM_REST_RAD6[i]) for i in range(6)]
-
-        now = time.time()
-        dt = now - last_t
-        last_t = now
-
-        if last_out is None:
-            out = list(target)
-        else:
-            tmp = [rate_limit(target[i], last_out[i], MAX_SPEED_RAD_S, dt) for i in range(6)]
-            a = SMOOTH_ALPHA
-            out = [(1.0 - a) * last_out[i] + a * tmp[i] for i in range(6)]
-        last_out = list(out)
-
-        base_cmd = compute_base_cmd() if PYNPUT_OK else {"vx": 0.0, "vy": 0.0, "wz": 0.0}
-
-        payload = {
-            "t": time.time(),
-            "name": JOINT_NAMES,
-            "position": out,
-            "base": base_cmd,
-            "src": "so100_leader+keyboard",
-        }
-
-        try:
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        except Exception as exc:
-            print("send failed:", exc)
+            precise_sleep(max(1.0 / fps - (time.perf_counter() - tick_start), 0.0))
+    except KeyboardInterrupt:
+        print("\nstopped by user")
+    finally:
+        if sock is not None:
             try:
                 sock.close()
             except Exception:
                 pass
-            sock = None
-            continue
-
-        precise_sleep(max(1.0 / FPS - (time.perf_counter() - tick_start), 0.0))
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+        try:
+            leader.disconnect()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
