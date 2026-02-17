@@ -192,6 +192,8 @@ python scripts/lekiwi_nav_env/calibrate_real_robot.py \
 - 최근 Script Editor 검증 결과 (2026-02-17 실행 로그):
   - linear: `SIM 75.03 cm` vs `REAL 75.00 cm` (`R/S = 0.9996`)
   - angular magnitude: `SIM 295.39 deg` vs `REAL 298.00 deg` (`R/S = 1.0088`)
+- 중요:
+  - 위 보정 상수를 변경했으면 PRE-3(tune) → PRE-4(replay) → PRE-5(compare) → PRE-6(gate)를 다시 실행해 최신 리포트를 갱신한다.
 
 #### 2-2. Arm Joint Limit JSON 생성
 
@@ -207,8 +209,18 @@ python scripts/lekiwi_nav_env/build_arm_limits_real2sim.py \
 ```bash
 python scripts/lekiwi_nav_env/tune_sim_dynamics.py \
   --calibration calibration/calibration_latest.json \
-  --iterations 60 --output calibration/tuned_dynamics.json --headless
+  --iterations 60 \
+  --cmd_transform_mode real_to_sim \
+  --cmd_linear_map identity \
+  --cmd_lin_scale 1.0166 \
+  --cmd_ang_scale 1.2360 \
+  --cmd_wz_sign -1.0 \
+  --output calibration/tuned_dynamics.json --headless
 ```
+
+메모:
+- `tuned_dynamics.json`에는 `best_params`(wheel/arm dynamics + `lin_cmd_scale`/`ang_cmd_scale`)와 함께 `command_transform`이 저장된다.
+- 이후 replay 단계에서 `--dynamics_json`을 주면 `lin_cmd_scale`/`ang_cmd_scale`는 자동으로 그 값을 기본 사용한다(명시 인자 전달 시 override).
 
 #### 2-4. Replay 검증
 
@@ -218,14 +230,18 @@ python scripts/lekiwi_nav_env/replay_in_sim.py \
   --mode command \
   --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_real2sim.json \
-  --report_path calibration/replay_command_report.json --headless
+  --report_path calibration/replay_command_report.json \
+  --series_path calibration/replay_command_series.json \
+  --headless
 
 python scripts/lekiwi_nav_env/replay_in_sim.py \
   --calibration calibration/calibration_latest.json \
   --mode arm_command \
   --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_real2sim.json \
-  --report_path calibration/replay_arm_report.json --headless
+  --report_path calibration/replay_arm_report.json \
+  --series_path calibration/replay_arm_series.json \
+  --headless
 
 python scripts/lekiwi_nav_env/compare_real_sim.py \
   --input calibration/replay_command_series.json \
@@ -235,6 +251,12 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
   --input calibration/replay_arm_series.json \
   --output_dir calibration/plots
 ```
+
+메모:
+- `replay_in_sim.py`는 기본적으로 `--dynamics_json`에서 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`, `command_transform`을 읽어 적용한다.
+- 필요 시 아래 인자로 override 가능:
+  - `--lin_cmd_scale`, `--ang_cmd_scale`
+  - `--cmd_transform_mode`, `--cmd_linear_map`, `--cmd_lin_scale`, `--cmd_ang_scale`, `--cmd_wz_sign`
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
 
@@ -318,6 +340,10 @@ headless CLI가 아니라 Isaac Sim UI에서 실행한다.
   - 이 경우 수집 시점에 추가 역변환을 넣지 않는다.
 - 실배포(real):
   - 모델 출력(sim 기준 base 명령)을 실로봇 전송 직전에 `sim -> real` 역변환 1회 적용한다.
+- PRE-3/4 (SysID/replay):
+  - 실측 command 로그를 sim에서 재생해야 하므로 `real -> sim` 변환을 적용한 상태로 튜닝/검증한다.
+  - 현재 파이프라인은 `tune_sim_dynamics.py` 인자와 `tuned_dynamics.json.command_transform`으로 이를 고정한다.
+  - `replay_in_sim.py`는 `--cmd_transform_mode auto` 기본값에서 `dynamics_json`의 변환 설정을 자동 상속한다.
 - 주의:
   - 같은 신호 경로에 `dynamics_json` 명령 스케일과 위 보정을 중복 적용하지 않는다.
   - 어느 단계에서 적용했는지(run config/로그)에 명시한다.

@@ -74,6 +74,16 @@ def check_replay_report(data: dict, path: str, thresholds: dict) -> list[str]:
 
     msg = f"  {path} [{mode}] {label}_rmse={rmse_str} (threshold={thresh:.4f}) mae={mae_str} → {status}"
     print(msg)
+    if mode == "command":
+        if "lin_cmd_scale" in data and "ang_cmd_scale" in data:
+            print(
+                "    cmd_scale: lin={:.6f}, ang={:.6f}".format(
+                    float(data.get("lin_cmd_scale", 1.0)),
+                    float(data.get("ang_cmd_scale", 1.0)),
+                )
+            )
+        if isinstance(data.get("command_transform"), dict):
+            print(f"    cmd_transform: {data['command_transform']}")
 
     if status == "FAIL":
         failures.append(msg)

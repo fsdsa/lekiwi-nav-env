@@ -11,7 +11,8 @@ Usage:
   python replay_in_sim.py --calibration calibration/calibration_latest.json --mode command --headless
   python replay_in_sim.py --calibration calibration/calibration_latest.json --mode arm_command --headless
   python replay_in_sim.py --calibration calibration/calibration_latest.json --mode command \
-      --dynamics_json calibration/tuned_dynamics.json --series_path calibration/replay_series.json
+      --dynamics_json calibration/tuned_dynamics.json --series_path calibration/replay_series.json \
+      --cmd_transform_mode auto
 """
 
 from __future__ import annotations
@@ -51,11 +52,28 @@ parser.add_argument(
 )
 parser.add_argument("--fallback_vx", type=float, default=0.15, help="used if command metadata is missing")
 parser.add_argument("--fallback_wz", type=float, default=1.0, help="used if command metadata is missing")
-parser.add_argument("--lin_cmd_scale", type=float, default=1.0)
-parser.add_argument("--ang_cmd_scale", type=float, default=1.0)
+parser.add_argument("--lin_cmd_scale", type=float, default=None, help="override linear cmd scale (default: from dynamics_json)")
+parser.add_argument("--ang_cmd_scale", type=float, default=None, help="override angular cmd scale (default: from dynamics_json)")
 parser.add_argument("--dynamics_json", type=str, default=None, help="optional tuned dynamics JSON")
 parser.add_argument("--arm_limit_json", type=str, default=None, help="optional arm joint limit JSON (real2sim calibration)")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0, help="margin added to arm limits from --arm_limit_json")
+parser.add_argument(
+    "--cmd_transform_mode",
+    type=str,
+    default="auto",
+    choices=["auto", "none", "real_to_sim"],
+    help="base command transform mode before replay",
+)
+parser.add_argument(
+    "--cmd_linear_map",
+    type=str,
+    default="auto",
+    choices=["auto", "identity", "flip_180", "rot_cw_90", "rot_ccw_90"],
+    help="2D linear map for --cmd_transform_mode real_to_sim",
+)
+parser.add_argument("--cmd_lin_scale", type=float, default=None, help="linear scale for command transform")
+parser.add_argument("--cmd_ang_scale", type=float, default=None, help="angular scale for command transform")
+parser.add_argument("--cmd_wz_sign", type=float, default=None, help="wz sign for command transform")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -99,6 +117,13 @@ REAL_ARM_ID_TO_SIM_JOINT = {
     motor_id: sim_joint
     for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
     if sim_joint.startswith("STS3215_")
+}
+
+LINEAR_MAPS = {
+    "identity": ((1.0, 0.0), (0.0, 1.0)),
+    "flip_180": ((-1.0, 0.0), (0.0, -1.0)),
+    "rot_cw_90": ((0.0, 1.0), (-1.0, 0.0)),
+    "rot_ccw_90": ((0.0, -1.0), (1.0, 0.0)),
 }
 
 
@@ -164,6 +189,95 @@ def resolve_motion_geometry(cal: dict) -> tuple[float, float, dict]:
         "base_radius_source": br_src,
     }
     return float(wr), float(br), meta
+
+
+def _to_float_or_default(v: object, default: float) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    if not np.isfinite(f):
+        return float(default)
+    return float(f)
+
+
+def _default_command_transform() -> dict:
+    return {
+        "mode": "none",
+        "linear_map": "identity",
+        "lin_scale": 1.0,
+        "ang_scale": 1.0,
+        "wz_sign": 1.0,
+    }
+
+
+def _normalize_command_transform(raw: dict | None) -> dict:
+    cfg = _default_command_transform()
+    if not isinstance(raw, dict):
+        return cfg
+
+    mode = str(raw.get("mode", cfg["mode"])).strip().lower()
+    if mode not in ("none", "real_to_sim"):
+        mode = cfg["mode"]
+
+    linear_map = str(raw.get("linear_map", cfg["linear_map"])).strip().lower()
+    if linear_map not in LINEAR_MAPS:
+        linear_map = cfg["linear_map"]
+
+    cfg["mode"] = mode
+    cfg["linear_map"] = linear_map
+    cfg["lin_scale"] = _to_float_or_default(raw.get("lin_scale"), cfg["lin_scale"])
+    cfg["ang_scale"] = _to_float_or_default(raw.get("ang_scale"), cfg["ang_scale"])
+    cfg["wz_sign"] = _to_float_or_default(raw.get("wz_sign"), cfg["wz_sign"])
+    return cfg
+
+
+def resolve_command_transform(dynamics_payload: dict | None) -> dict:
+    dyn_cfg = _default_command_transform()
+    if isinstance(dynamics_payload, dict):
+        dyn_cfg = _normalize_command_transform(dynamics_payload.get("command_transform"))
+
+    mode_arg = str(args.cmd_transform_mode).strip().lower()
+    if mode_arg == "auto":
+        mode = str(dyn_cfg["mode"])
+    else:
+        mode = mode_arg
+    if mode not in ("none", "real_to_sim"):
+        mode = "none"
+
+    linear_map_arg = str(args.cmd_linear_map).strip().lower()
+    linear_map = dyn_cfg["linear_map"] if linear_map_arg == "auto" else linear_map_arg
+    if linear_map not in LINEAR_MAPS:
+        linear_map = "identity"
+
+    lin_scale = dyn_cfg["lin_scale"] if args.cmd_lin_scale is None else _to_float_or_default(args.cmd_lin_scale, 1.0)
+    ang_scale = dyn_cfg["ang_scale"] if args.cmd_ang_scale is None else _to_float_or_default(args.cmd_ang_scale, 1.0)
+    wz_sign = dyn_cfg["wz_sign"] if args.cmd_wz_sign is None else _to_float_or_default(args.cmd_wz_sign, 1.0)
+
+    return {
+        "mode": mode,
+        "linear_map": linear_map,
+        "lin_scale": float(lin_scale),
+        "ang_scale": float(ang_scale),
+        "wz_sign": float(wz_sign),
+    }
+
+
+def apply_command_transform(vx: float, vy: float, wz: float, cfg: dict) -> tuple[float, float, float]:
+    if str(cfg.get("mode", "none")) != "real_to_sim":
+        return float(vx), float(vy), float(wz)
+
+    linear_map = str(cfg.get("linear_map", "identity"))
+    if linear_map not in LINEAR_MAPS:
+        linear_map = "identity"
+    m = LINEAR_MAPS[linear_map]
+
+    vx_m = m[0][0] * float(vx) + m[0][1] * float(vy)
+    vy_m = m[1][0] * float(vx) + m[1][1] * float(vy)
+    vx_m *= _to_float_or_default(cfg.get("lin_scale"), 1.0)
+    vy_m *= _to_float_or_default(cfg.get("lin_scale"), 1.0)
+    wz_m = float(wz) * _to_float_or_default(cfg.get("wz_sign"), 1.0) * _to_float_or_default(cfg.get("ang_scale"), 1.0)
+    return float(vx_m), float(vy_m), float(wz_m)
 
 
 def _extract_arm_limits_payload(payload: dict) -> dict[str, tuple[float, float]]:
@@ -741,7 +855,7 @@ class ArticulationCommandRunner:
             scale = float(params["arm_armature_scale"])
             self.robot.write_joint_armature_to_sim(self.base_arm_armature * scale, joint_ids=arm_ids)
 
-    def run_sequence(self, seq: dict, lin_cmd_scale: float, ang_cmd_scale: float) -> dict:
+    def run_sequence(self, seq: dict, lin_cmd_scale: float, ang_cmd_scale: float, cmd_transform: dict) -> dict:
         self.reset_robot()
 
         steps = len(seq["time_s"])
@@ -749,9 +863,15 @@ class ArticulationCommandRunner:
             raise RuntimeError(f"sequence '{seq['name']}' is too short")
 
         cmd = seq["command"]
-        vx = float(cmd["vx"]) * lin_cmd_scale
-        vy = float(cmd["vy"]) * lin_cmd_scale
-        wz = float(cmd["wz"]) * ang_cmd_scale
+        vx_base, vy_base, wz_base = apply_command_transform(
+            float(cmd["vx"]),
+            float(cmd["vy"]),
+            float(cmd["wz"]),
+            cfg=cmd_transform,
+        )
+        vx = float(vx_base) * lin_cmd_scale
+        vy = float(vy_base) * lin_cmd_scale
+        wz = float(wz_base) * ang_cmd_scale
 
         arm_target = self.default_joint_pos.clone()
 
@@ -780,6 +900,12 @@ class ArticulationCommandRunner:
             "time_s": np.asarray(t, dtype=np.float64),
             "wheel_pos_rad": {k: np.asarray(v, dtype=np.float64) for k, v in wheel_pos.items()},
             "command": {"vx": vx, "vy": vy, "wz": wz},
+            "command_real": {
+                "vx": float(cmd["vx"]),
+                "vy": float(cmd["vy"]),
+                "wz": float(cmd["wz"]),
+            },
+            "command_transformed": {"vx": vx_base, "vy": vy_base, "wz": wz_base},
         }
 
     def run_arm_sequence(self, test: dict) -> dict:
@@ -968,7 +1094,15 @@ def run_position_mode(cal: dict, wr: float, br: float) -> tuple[dict, dict | Non
     return report, None
 
 
-def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | None) -> tuple[dict, dict]:
+def run_command_mode(
+    cal: dict,
+    wr: float,
+    br: float,
+    dynamics_params: dict | None,
+    lin_cmd_scale: float,
+    ang_cmd_scale: float,
+    cmd_transform: dict,
+) -> tuple[dict, dict]:
     print("\n[Mode] command replay")
 
     sequences = extract_command_sequences(cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz)
@@ -994,8 +1128,9 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
         "measured_base_radius": br,
         "config_wheel_radius": WHEEL_RADIUS,
         "config_base_radius": BASE_RADIUS,
-        "lin_cmd_scale": args.lin_cmd_scale,
-        "ang_cmd_scale": args.ang_cmd_scale,
+        "lin_cmd_scale": float(lin_cmd_scale),
+        "ang_cmd_scale": float(ang_cmd_scale),
+        "command_transform": dict(cmd_transform),
         "dynamics_params": dynamics_params or {},
         "sequences": [],
         "global_mae_rad": None,
@@ -1005,6 +1140,9 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
     series_out = {
         "mode": "command",
         "calibration_path": cal.get("_resolved_path", args.calibration),
+        "lin_cmd_scale": float(lin_cmd_scale),
+        "ang_cmd_scale": float(ang_cmd_scale),
+        "command_transform": dict(cmd_transform),
         "sequences": [],
     }
 
@@ -1012,7 +1150,12 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
     global_sq_err = []
 
     for seq in sequences:
-        sim_trace = runner.run_sequence(seq, lin_cmd_scale=args.lin_cmd_scale, ang_cmd_scale=args.ang_cmd_scale)
+        sim_trace = runner.run_sequence(
+            seq,
+            lin_cmd_scale=float(lin_cmd_scale),
+            ang_cmd_scale=float(ang_cmd_scale),
+            cmd_transform=cmd_transform,
+        )
 
         mapping = build_auto_mapping(seq["wheel_keys"], WHEEL_JOINT_NAMES)
         mapping.update(load_mapping_override(args.mapping_json))
@@ -1058,6 +1201,8 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
                     "sim_joint": sim_joint,
                     "encoder_unit": enc_unit,
                     "command": sim_trace["command"],
+                    "command_real": sim_trace["command_real"],
+                    "command_transformed": sim_trace["command_transformed"],
                     "time_s": aligned["time_s"].tolist(),
                     "real_delta_rad": aligned["real_delta_rad"].tolist(),
                     "sim_delta_rad": aligned["sim_delta_rad"].tolist(),
@@ -1072,6 +1217,8 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
             "name": seq["name"],
             "encoder_unit": enc_unit,
             "command": sim_trace["command"],
+            "command_real": sim_trace["command_real"],
+            "command_transformed": sim_trace["command_transformed"],
             "mapped_wheels": seq_pairs,
             "mean_mae_rad": float(np.mean(seq_abs_err)) if seq_abs_err else None,
             "mean_rmse_rad": float(np.sqrt(np.mean(seq_sq_err))) if seq_sq_err else None,
@@ -1203,18 +1350,46 @@ def main():
         )
 
     dynamics_params = None
+    dynamics_payload = None
     if args.dynamics_json:
         with open(Path(args.dynamics_json).expanduser(), "r", encoding="utf-8") as f:
             dyn = json.load(f)
+        if isinstance(dyn, dict):
+            dynamics_payload = dyn
         if isinstance(dyn, dict) and "best_params" in dyn and isinstance(dyn["best_params"], dict):
             dynamics_params = dyn["best_params"]
         elif isinstance(dyn, dict):
             dynamics_params = dyn
 
+    lin_cmd_scale = args.lin_cmd_scale
+    if lin_cmd_scale is None:
+        lin_cmd_scale = _to_float_or_default((dynamics_params or {}).get("lin_cmd_scale"), 1.0)
+    else:
+        lin_cmd_scale = _to_float_or_default(lin_cmd_scale, 1.0)
+
+    ang_cmd_scale = args.ang_cmd_scale
+    if ang_cmd_scale is None:
+        ang_cmd_scale = _to_float_or_default((dynamics_params or {}).get("ang_cmd_scale"), 1.0)
+    else:
+        ang_cmd_scale = _to_float_or_default(ang_cmd_scale, 1.0)
+
+    cmd_transform = resolve_command_transform(dynamics_payload)
+    print(f"    lin_cmd_scale        = {lin_cmd_scale:.6f}")
+    print(f"    ang_cmd_scale        = {ang_cmd_scale:.6f}")
+    print(f"    command_transform    = {cmd_transform}")
+
     if args.mode == "position":
         report, series = run_position_mode(cal, wr=wr, br=br)
     elif args.mode == "command":
-        report, series = run_command_mode(cal, wr=wr, br=br, dynamics_params=dynamics_params)
+        report, series = run_command_mode(
+            cal,
+            wr=wr,
+            br=br,
+            dynamics_params=dynamics_params,
+            lin_cmd_scale=lin_cmd_scale,
+            ang_cmd_scale=ang_cmd_scale,
+            cmd_transform=cmd_transform,
+        )
     else:
         report, series = run_arm_command_mode(cal, wr=wr, br=br, dynamics_params=dynamics_params)
 

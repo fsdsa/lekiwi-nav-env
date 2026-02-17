@@ -13,6 +13,9 @@ Input expected from calibrate_real_robot.py:
 Usage:
   python tune_sim_dynamics.py \
       --calibration calibration/calibration_latest.json \
+      --cmd_transform_mode real_to_sim \
+      --cmd_linear_map identity \
+      --cmd_lin_scale 1.0166 --cmd_ang_scale 1.2360 --cmd_wz_sign -1.0 \
       --iterations 60 --output calibration/tuned_dynamics.json --headless
 """
 
@@ -67,6 +70,39 @@ parser.add_argument("--ang_scale_max", type=float, default=1.3)
 parser.add_argument("--top_k", type=int, default=10)
 parser.add_argument("--arm_weight", type=float, default=1.0, help="weight of arm RMSE term in objective")
 
+parser.add_argument(
+    "--cmd_transform_mode",
+    type=str,
+    default="none",
+    choices=["none", "real_to_sim"],
+    help="optional base command transform before replay",
+)
+parser.add_argument(
+    "--cmd_linear_map",
+    type=str,
+    default="identity",
+    choices=["identity", "flip_180", "rot_cw_90", "rot_ccw_90"],
+    help="2D linear map used when --cmd_transform_mode real_to_sim",
+)
+parser.add_argument(
+    "--cmd_lin_scale",
+    type=float,
+    default=1.0,
+    help="linear scale used when --cmd_transform_mode real_to_sim",
+)
+parser.add_argument(
+    "--cmd_ang_scale",
+    type=float,
+    default=1.0,
+    help="angular scale used when --cmd_transform_mode real_to_sim",
+)
+parser.add_argument(
+    "--cmd_wz_sign",
+    type=float,
+    default=1.0,
+    help="wz sign used when --cmd_transform_mode real_to_sim",
+)
+
 parser.add_argument("--arm_damping_min", type=float, default=0.4)
 parser.add_argument("--arm_damping_max", type=float, default=2.5)
 parser.add_argument("--arm_stiffness_min", type=float, default=0.5)
@@ -114,6 +150,13 @@ REAL_ARM_ID_TO_SIM_JOINT = {
     motor_id: sim_joint
     for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
     if sim_joint.startswith("STS3215_")
+}
+
+LINEAR_MAPS = {
+    "identity": ((1.0, 0.0), (0.0, 1.0)),
+    "flip_180": ((-1.0, 0.0), (0.0, -1.0)),
+    "rot_cw_90": ((0.0, 1.0), (-1.0, 0.0)),
+    "rot_ccw_90": ((0.0, -1.0), (1.0, 0.0)),
 }
 
 
@@ -510,6 +553,29 @@ def kiwi_ik(vx: float, vy: float, wz: float, wheel_radius: float, base_radius: f
     return m.dot(np.array([vx, vy, wz], dtype=np.float64)) / max(wheel_radius, 1e-6)
 
 
+def _command_transform_meta() -> dict:
+    return {
+        "mode": str(args.cmd_transform_mode),
+        "linear_map": str(args.cmd_linear_map),
+        "lin_scale": float(args.cmd_lin_scale),
+        "ang_scale": float(args.cmd_ang_scale),
+        "wz_sign": float(args.cmd_wz_sign),
+    }
+
+
+def apply_command_transform(vx: float, vy: float, wz: float) -> tuple[float, float, float]:
+    if args.cmd_transform_mode != "real_to_sim":
+        return float(vx), float(vy), float(wz)
+
+    m = LINEAR_MAPS[str(args.cmd_linear_map)]
+    vx_m = m[0][0] * float(vx) + m[0][1] * float(vy)
+    vy_m = m[1][0] * float(vx) + m[1][1] * float(vy)
+    vx_m *= float(args.cmd_lin_scale)
+    vy_m *= float(args.cmd_lin_scale)
+    wz_m = float(wz) * float(args.cmd_wz_sign) * float(args.cmd_ang_scale)
+    return vx_m, vy_m, wz_m
+
+
 def align_and_compare(real_t: np.ndarray, real_series: np.ndarray, sim_t: np.ndarray, sim_series: np.ndarray) -> dict:
     t_end = min(float(real_t[-1]), float(sim_t[-1]))
     n = max(5, min(len(real_t), len(sim_t)))
@@ -642,9 +708,14 @@ class CommandRunner:
     def run_sequence(self, command: dict, num_steps: int, lin_scale: float, ang_scale: float) -> dict:
         self.reset_robot()
 
-        vx = float(command["vx"]) * lin_scale
-        vy = float(command["vy"]) * lin_scale
-        wz = float(command["wz"]) * ang_scale
+        vx_base, vy_base, wz_base = apply_command_transform(
+            float(command["vx"]),
+            float(command["vy"]),
+            float(command["wz"]),
+        )
+        vx = float(vx_base) * lin_scale
+        vy = float(vy_base) * lin_scale
+        wz = float(wz_base) * ang_scale
 
         arm_target = self.default_joint_pos.clone()
 
@@ -849,6 +920,7 @@ def main():
         f"base_radius={br:.6f} ({geom_meta['base_radius_source']}, "
         f"cfg={geom_meta['base_radius_config']:.6f}, cal={geom_meta['base_radius_calibration']})"
     )
+    print(f"command_transform={_command_transform_meta()}")
     print("=" * 72)
 
     runner = CommandRunner(wheel_radius=wr, base_radius=br)
@@ -897,6 +969,7 @@ def main():
         "iterations": args.iterations,
         "arm_weight": float(args.arm_weight),
         "geometry": geom_meta,
+        "command_transform": _command_transform_meta(),
         "wheel_radius_used": float(wr),
         "base_radius_used": float(br),
         "best_score": float(best["eval"]["score"]),
