@@ -428,6 +428,9 @@ python train_lekiwi.py \
 
 참고:
 - multi-object(37D)는 기존 33D BC 체크포인트와 호환 안 됨 → 자동으로 from scratch 전환
+- `train_bc.py`의 기본값은 `--normalize` OFF이다(권장 기본 경로).
+- `--normalize`로 BC를 학습하면 `checkpoints/bc_nav_norm.npz`가 생성되며,
+  `train_lekiwi.py`에서 BC warm-start 시 정규화 mismatch 보호 로직이 동작한다.
 - 학습 완료 후: `logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt`
 
 ### Step 5. RL Expert 데모 수집

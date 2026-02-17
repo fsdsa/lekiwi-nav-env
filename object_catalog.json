@@ -1,50 +1,182 @@
 [
   {
-    "name": "small_cube",
-    "usd": "/path/to/objects/small_cube.usd",
-    "bbox": [0.04, 0.04, 0.04],
-    "mass": 0.15,
+    "name": "POUNDING_MUSHROOMS",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/POUNDING_MUSHROOMS/model_clean.usd",
+    "bbox": [
+      0.16483300924301147,
+      0.21354800462722778,
+      0.09909500181674957
+    ],
+    "mass": 1.2208421365357935,
     "scale": 1.0,
-    "category": 0
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 0,
+    "cluster_size": 153
   },
   {
-    "name": "medium_cube",
-    "usd": "/path/to/objects/medium_cube.usd",
-    "bbox": [0.07, 0.07, 0.07],
-    "mass": 0.30,
+    "name": "Diamond_Visions_Scissors_Red",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Diamond_Visions_Scissors_Red/model_clean.usd",
+    "bbox": [
+      0.07666200399398804,
+      0.20956900715827942,
+      0.014597000554203987
+    ],
+    "mass": 0.08208029030356556,
     "scale": 1.0,
-    "category": 0
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 1,
+    "cluster_size": 8
   },
   {
-    "name": "cylinder_thin",
-    "usd": "/path/to/objects/cylinder_thin.usd",
-    "bbox": [0.03, 0.03, 0.10],
-    "mass": 0.20,
+    "name": "Nickelodeon_Teenage_Mutant_Ninja_Turtles_Raphael",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Nickelodeon_Teenage_Mutant_Ninja_Turtles_Raphael/model_clean.usd",
+    "bbox": [
+      0.09699700027704239,
+      0.06522899866104126,
+      0.12956200540065765
+    ],
+    "mass": 0.2869093674235046,
     "scale": 1.0,
-    "category": 1
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 2,
+    "cluster_size": 146
   },
   {
-    "name": "sphere_small",
-    "usd": "/path/to/objects/sphere_small.usd",
-    "bbox": [0.04, 0.04, 0.04],
-    "mass": 0.10,
+    "name": "Bifidus_Balance_FOS",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Bifidus_Balance_FOS/model_clean.usd",
+    "bbox": [
+      0.05397599935531616,
+      0.05320499837398529,
+      0.09646699577569962
+    ],
+    "mass": 0.09696163760963827,
     "scale": 1.0,
-    "category": 2
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 3,
+    "cluster_size": 77
   },
   {
-    "name": "box_flat",
-    "usd": "/path/to/objects/box_flat.usd",
-    "bbox": [0.10, 0.06, 0.03],
-    "mass": 0.25,
+    "name": "Google_Cardboard_Original_package",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Google_Cardboard_Original_package/model_clean.usd",
+    "bbox": [
+      0.21432900428771973,
+      0.17520299553871155,
+      0.022799000144004822
+    ],
+    "mass": 0.2996444934979081,
     "scale": 1.0,
-    "category": 3
+    "category": 3,
+    "category_name": "flat_box_like",
+    "cluster_id": 4,
+    "cluster_size": 48
   },
   {
-    "name": "bottle_small",
-    "usd": "/path/to/objects/bottle_small.usd",
-    "bbox": [0.04, 0.04, 0.12],
-    "mass": 0.20,
+    "name": "Womens_Audrey_Slip_On_Boat_Shoe_in_Graphite_Nubuck_xWVkCJ5vxZe",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Womens_Audrey_Slip_On_Boat_Shoe_in_Graphite_Nubuck_xWVkCJ5vxZe/model_clean.usd",
+    "bbox": [
+      0.0831110030412674,
+      0.24860399961471558,
+      0.07084300369024277
+    ],
+    "mass": 0.5123085982631892,
     "scale": 1.0,
-    "category": 4
+    "category": 4,
+    "category_name": "bottle_like",
+    "cluster_id": 5,
+    "cluster_size": 75
+  },
+  {
+    "name": "ALPHABET_AZ_GRADIENT",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/ALPHABET_AZ_GRADIENT/model_clean.usd",
+    "bbox": [
+      0.33232802152633667,
+      0.2777949869632721,
+      0.012540999799966812
+    ],
+    "mass": 0.4052206582855433,
+    "scale": 1.0,
+    "category": 3,
+    "category_name": "flat_box_like",
+    "cluster_id": 6,
+    "cluster_size": 3
+  },
+  {
+    "name": "F5_TRX_FG",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/F5_TRX_FG/model_clean.usd",
+    "bbox": [
+      0.10164900124073029,
+      0.2830300033092499,
+      0.11846800148487091
+    ],
+    "mass": 1.1929018190130591,
+    "scale": 1.0,
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 7,
+    "cluster_size": 217
+  },
+  {
+    "name": "Super_Mario_Kart_Super_Nintendo_Entertainment_System",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Super_Mario_Kart_Super_Nintendo_Entertainment_System/model_clean.usd",
+    "bbox": [
+      0.13657701015472412,
+      0.02621699869632721,
+      0.08853500336408615
+    ],
+    "mass": 0.11095417576143518,
+    "scale": 1.0,
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 8,
+    "cluster_size": 53
+  },
+  {
+    "name": "HP_Card_Invitation_Kit",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/HP_Card_Invitation_Kit/model_clean.usd",
+    "bbox": [
+      0.15315400063991547,
+      0.0404449999332428,
+      0.19645199179649353
+    ],
+    "mass": 0.42590984958224,
+    "scale": 1.0,
+    "category": 3,
+    "category_name": "flat_box_like",
+    "cluster_id": 9,
+    "cluster_size": 57
+  },
+  {
+    "name": "BEDROOM_CLASSIC",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/BEDROOM_CLASSIC/model_clean.usd",
+    "bbox": [
+      0.2685970067977905,
+      0.3149549961090088,
+      0.153779998421669
+    ],
+    "mass": 1.5,
+    "scale": 1.0,
+    "category": 5,
+    "category_name": "irregular",
+    "cluster_id": 10,
+    "cluster_size": 112
+  },
+  {
+    "name": "Melissa_Doug_Cart_Turtle_Block",
+    "usd": "/home/yubin/isaac-objects/mujoco_scanned_objects/models/Melissa_Doug_Cart_Turtle_Block/model_clean.usd",
+    "bbox": [
+      0.27323800325393677,
+      0.35216498374938965,
+      0.06967700272798538
+    ],
+    "mass": 1.5,
+    "scale": 1.0,
+    "category": 3,
+    "category_name": "flat_box_like",
+    "cluster_id": 11,
+    "cluster_size": 81
   }
 ]

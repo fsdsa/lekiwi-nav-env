@@ -23,40 +23,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
-
-REAL_ARM_KEY_TO_SIM_JOINT = {
-    "arm_shoulder_pan.pos": "STS3215_03a_v1_Revolute_45",
-    "arm_shoulder_lift.pos": "STS3215_03a_v1_1_Revolute_49",
-    "arm_elbow_flex.pos": "STS3215_03a_v1_2_Revolute_51",
-    "arm_wrist_flex.pos": "STS3215_03a_v1_3_Revolute_53",
-    "arm_wrist_roll.pos": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-    "arm_gripper.pos": "STS3215_03a_v1_4_Revolute_57",
-}
-
-SIM_JOINT_TO_REAL_MOTOR_ID = {
-    "STS3215_03a_v1_Revolute_45": 1,
-    "STS3215_03a_v1_1_Revolute_49": 2,
-    "STS3215_03a_v1_2_Revolute_51": 3,
-    "STS3215_03a_v1_3_Revolute_53": 4,
-    "STS3215_03a_Wrist_Roll_v1_Revolute_55": 5,
-    "STS3215_03a_v1_4_Revolute_57": 6,
-}
-REAL_ARM_ID_TO_SIM_JOINT = {mid: name for name, mid in SIM_JOINT_TO_REAL_MOTOR_ID.items()}
-REAL_ARM_KEY_TO_MOTOR_NAME = {
-    "arm_shoulder_pan.pos": "arm_shoulder_pan",
-    "arm_shoulder_lift.pos": "arm_shoulder_lift",
-    "arm_elbow_flex.pos": "arm_elbow_flex",
-    "arm_wrist_flex.pos": "arm_wrist_flex",
-    "arm_wrist_roll.pos": "arm_wrist_roll",
-    "arm_gripper.pos": "arm_gripper",
-}
+from calibration_common import (
+    EncoderCalibrationMapper,
+    REAL_ARM_KEY_TO_SIM_JOINT,
+    SIM_JOINT_TO_REAL_MOTOR_ID,
+    infer_sim_arm_from_real_key as _infer_sim_arm_from_real_key,
+    is_gripper_key as _is_gripper_key,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,43 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit_margin_rad", type=float, default=0.0, help="expand each side by this margin")
     parser.add_argument("--output", type=str, default="calibration/arm_limits_real2sim.json")
     return parser.parse_args()
-
-
-def _normalize_key(s: str) -> str:
-    return "".join(ch.lower() for ch in s if ch.isalnum())
-
-
-def _is_gripper_key(real_key: str) -> bool:
-    return "gripper" in _normalize_key(real_key)
-
-
-def _extract_motor_id_candidates(key: str) -> list[int]:
-    return [int(n) for n in re.findall(r"\d+", key)]
-
-
-def _infer_sim_arm_from_real_key(key: str) -> str | None:
-    nk = _normalize_key(key)
-    token_to_joint = {
-        "armshoulderpan": "STS3215_03a_v1_Revolute_45",
-        "armshoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "armelbowflex": "STS3215_03a_v1_2_Revolute_51",
-        "armwristflex": "STS3215_03a_v1_3_Revolute_53",
-        "armwristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "armgripper": "STS3215_03a_v1_4_Revolute_57",
-        "shoulderpan": "STS3215_03a_v1_Revolute_45",
-        "shoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "elbow": "STS3215_03a_v1_2_Revolute_51",
-        "wristflex": "STS3215_03a_v1_3_Revolute_53",
-        "wristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "gripper": "STS3215_03a_v1_4_Revolute_57",
-    }
-    for token, joint_name in token_to_joint.items():
-        if token in nk:
-            return joint_name
-    for motor_id in reversed(_extract_motor_id_candidates(key)):
-        if motor_id in REAL_ARM_ID_TO_SIM_JOINT:
-            return REAL_ARM_ID_TO_SIM_JOINT[motor_id]
-    return None
 
 
 def _extract_joint_ranges(payload: dict) -> dict[str, tuple[float, float]]:
@@ -131,86 +72,6 @@ def _extract_joint_ranges(payload: dict) -> dict[str, tuple[float, float]]:
             lo, hi = hi, lo
         out[str(key)] = (lo, hi)
     return out
-
-
-class EncoderCalibrationMapper:
-    def __init__(self, by_motor_name: dict[str, dict[str, float]], ticks_per_turn: int = 4096):
-        self.by_motor_name = by_motor_name
-        self.by_motor_id: dict[int, dict[str, float]] = {}
-        for cfg in by_motor_name.values():
-            mid = int(cfg.get("id", -1))
-            if mid > 0:
-                self.by_motor_id[mid] = cfg
-        self.ticks_per_turn = int(ticks_per_turn)
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> EncoderCalibrationMapper | None:
-        if not isinstance(payload, dict):
-            return None
-        by_name: dict[str, dict[str, float]] = {}
-        for motor_name, raw in payload.items():
-            if not isinstance(raw, dict):
-                continue
-            try:
-                mid = int(raw.get("id"))
-                drive_mode = int(raw.get("drive_mode", 0))
-                range_min = float(raw.get("range_min"))
-                range_max = float(raw.get("range_max"))
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(range_min) or not np.isfinite(range_max):
-                continue
-            if abs(range_max - range_min) < 1e-9:
-                continue
-            by_name[str(motor_name)] = {
-                "id": float(mid),
-                "drive_mode": float(drive_mode),
-                "range_min": float(range_min),
-                "range_max": float(range_max),
-            }
-        if not by_name:
-            return None
-        return cls(by_name)
-
-    def _get_cfg_for_real_key(self, real_key: str) -> dict[str, float] | None:
-        motor_name = REAL_ARM_KEY_TO_MOTOR_NAME.get(real_key)
-        if motor_name and motor_name in self.by_motor_name:
-            return self.by_motor_name[motor_name]
-        sim_joint = REAL_ARM_KEY_TO_SIM_JOINT.get(real_key)
-        if sim_joint is None:
-            return None
-        motor_id = SIM_JOINT_TO_REAL_MOTOR_ID.get(sim_joint)
-        if motor_id is None:
-            return None
-        return self.by_motor_id.get(int(motor_id))
-
-    def _raw_to_rad(self, raw_pos: float, cfg: dict[str, float]) -> float:
-        range_min = float(cfg["range_min"])
-        range_max = float(cfg["range_max"])
-        mid = 0.5 * (range_min + range_max)
-        max_res = max(1.0, float(self.ticks_per_turn - 1))
-        deg = (float(raw_pos) - mid) * 360.0 / max_res
-        return float(np.deg2rad(deg))
-
-    def normalized_to_rad(self, real_key: str, value: float) -> float | None:
-        cfg = self._get_cfg_for_real_key(real_key)
-        if cfg is None:
-            return None
-        lo = min(float(cfg["range_min"]), float(cfg["range_max"]))
-        hi = max(float(cfg["range_min"]), float(cfg["range_max"]))
-        drive_mode = int(cfg["drive_mode"]) != 0
-
-        if _is_gripper_key(real_key):
-            v = float(np.clip(value, 0.0, 100.0))
-            if drive_mode:
-                v = 100.0 - v
-            raw = (v / 100.0) * (hi - lo) + lo
-        else:
-            v = float(np.clip(value, -100.0, 100.0))
-            if drive_mode:
-                v = -v
-            raw = ((v + 100.0) / 200.0) * (hi - lo) + lo
-        return self._raw_to_rad(raw, cfg)
 
 
 def _default_range_for_unit(real_key: str, unit: str) -> tuple[float, float]:
@@ -365,4 +226,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

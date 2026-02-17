@@ -25,11 +25,19 @@ import argparse
 import json
 import math
 import os
-import re
 import sys
 from pathlib import Path
 
 import numpy as np
+from calibration_common import (
+    align_and_compare,
+    align_and_compare_best_polarity,
+    extract_motor_id_candidates,
+    infer_sim_arm_from_real_key,
+    infer_sim_wheel_from_real_key,
+    kiwi_ik_np,
+    normalize_key,
+)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -129,29 +137,6 @@ from lekiwi_robot_cfg import (
     WHEEL_RADIUS,
 )
 
-# Canonical mapping (left: sim joint name, right: real motor ID)
-SIM_JOINT_TO_REAL_MOTOR_ID = {
-    "axle_0_joint": 8,
-    "axle_1_joint": 9,
-    "axle_2_joint": 7,
-    "STS3215_03a_v1_4_Revolute_57": 6,
-    "STS3215_03a_Wrist_Roll_v1_Revolute_55": 5,
-    "STS3215_03a_v1_3_Revolute_53": 4,
-    "STS3215_03a_v1_2_Revolute_51": 3,
-    "STS3215_03a_v1_1_Revolute_49": 2,
-    "STS3215_03a_v1_Revolute_45": 1,
-}
-REAL_WHEEL_ID_TO_SIM_JOINT = {
-    motor_id: sim_joint
-    for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
-    if sim_joint.startswith("axle_")
-}
-REAL_ARM_ID_TO_SIM_JOINT = {
-    motor_id: sim_joint
-    for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
-    if sim_joint.startswith("STS3215_")
-}
-
 LINEAR_MAPS = {
     "identity": ((1.0, 0.0), (0.0, 1.0)),
     "flip_180": ((-1.0, 0.0), (0.0, -1.0)),
@@ -221,66 +206,6 @@ def resolve_motion_geometry(cal: dict) -> tuple[float, float, dict]:
         "base_radius_source": br_src,
     }
     return float(wr), float(br), meta
-
-
-def normalize_key(s: str) -> str:
-    return "".join(ch.lower() for ch in s if ch.isalnum())
-
-
-def extract_motor_id_candidates(key: str) -> list[int]:
-    return [int(n) for n in re.findall(r"\d+", key)]
-
-
-def infer_sim_wheel_from_real_key(key: str) -> str | None:
-    nk = normalize_key(key)
-    if "axle2" in nk or "frontleft" in nk or "baseleftwheel" in nk or "leftwheel" in nk:
-        return "axle_2_joint"
-    if "axle1" in nk or "frontright" in nk or "baserightwheel" in nk or "rightwheel" in nk:
-        return "axle_1_joint"
-    if "axle0" in nk or "back" in nk or "rear" in nk or "basebackwheel" in nk:
-        return "axle_0_joint"
-    for mid in reversed(extract_motor_id_candidates(key)):
-        if mid in REAL_WHEEL_ID_TO_SIM_JOINT:
-            return REAL_WHEEL_ID_TO_SIM_JOINT[mid]
-    return None
-
-
-def infer_sim_arm_from_real_key(key: str) -> str | None:
-    nk = normalize_key(key)
-    token_to_joint = {
-        "armshoulderpan": "STS3215_03a_v1_Revolute_45",
-        "armshoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "armelbowflex": "STS3215_03a_v1_2_Revolute_51",
-        "armwristflex": "STS3215_03a_v1_3_Revolute_53",
-        "armwristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "armgripper": "STS3215_03a_v1_4_Revolute_57",
-        "shoulderpan": "STS3215_03a_v1_Revolute_45",
-        "shoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "elbow": "STS3215_03a_v1_2_Revolute_51",
-        "wristflex": "STS3215_03a_v1_3_Revolute_53",
-        "wristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "gripper": "STS3215_03a_v1_4_Revolute_57",
-    }
-    for tok, joint in token_to_joint.items():
-        if tok in nk:
-            return joint
-    # weak fallback for generic ordering tags
-    if "joint0" in nk or "arm0" in nk:
-        return "STS3215_03a_v1_Revolute_45"
-    if "joint1" in nk or "arm1" in nk:
-        return "STS3215_03a_v1_1_Revolute_49"
-    if "joint2" in nk or "arm2" in nk:
-        return "STS3215_03a_v1_2_Revolute_51"
-    if "joint3" in nk or "arm3" in nk:
-        return "STS3215_03a_v1_3_Revolute_53"
-    if "joint4" in nk or "arm4" in nk:
-        return "STS3215_03a_Wrist_Roll_v1_Revolute_55"
-    if "joint5" in nk or "arm5" in nk:
-        return "STS3215_03a_v1_4_Revolute_57"
-    for mid in reversed(extract_motor_id_candidates(key)):
-        if mid in REAL_ARM_ID_TO_SIM_JOINT:
-            return REAL_ARM_ID_TO_SIM_JOINT[mid]
-    return None
 
 
 def _arm_sort_key(real_key: str) -> tuple[int, str]:
@@ -559,11 +484,6 @@ def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict
     return tests
 
 
-def kiwi_ik(vx: float, vy: float, wz: float, wheel_radius: float, base_radius: float) -> np.ndarray:
-    m = np.array([[np.cos(a), np.sin(a), base_radius] for a in WHEEL_ANGLES_RAD], dtype=np.float64)
-    return m.dot(np.array([vx, vy, wz], dtype=np.float64)) / max(wheel_radius, 1e-6)
-
-
 def _command_transform_meta() -> dict:
     return {
         "mode": str(args.cmd_transform_mode),
@@ -572,6 +492,10 @@ def _command_transform_meta() -> dict:
         "ang_scale": float(args.cmd_ang_scale),
         "wz_sign": float(args.cmd_wz_sign),
     }
+
+
+def kiwi_ik(vx: float, vy: float, wz: float, wheel_radius: float, base_radius: float) -> np.ndarray:
+    return kiwi_ik_np(vx, vy, wz, wheel_radius, base_radius, WHEEL_ANGLES_RAD)
 
 
 def apply_command_transform(vx: float, vy: float, wz: float) -> tuple[float, float, float]:
@@ -585,41 +509,6 @@ def apply_command_transform(vx: float, vy: float, wz: float) -> tuple[float, flo
     vy_m *= float(args.cmd_lin_scale)
     wz_m = float(wz) * float(args.cmd_wz_sign) * float(args.cmd_ang_scale)
     return vx_m, vy_m, wz_m
-
-
-def align_and_compare(real_t: np.ndarray, real_series: np.ndarray, sim_t: np.ndarray, sim_series: np.ndarray) -> dict:
-    t_end = min(float(real_t[-1]), float(sim_t[-1]))
-    n = max(5, min(len(real_t), len(sim_t)))
-    t_common = np.linspace(0.0, max(t_end, 1e-6), n)
-
-    rr = np.interp(t_common, real_t, real_series)
-    ss = np.interp(t_common, sim_t, sim_series)
-
-    rr = np.unwrap(rr)
-    ss = np.unwrap(ss)
-
-    rr = rr - rr[0]
-    ss = ss - ss[0]
-
-    err = ss - rr
-    return {
-        "mae_rad": float(np.mean(np.abs(err))),
-        "rmse_rad": float(np.sqrt(np.mean(err**2))),
-        "max_err_rad": float(np.max(np.abs(err))),
-        "time_s": t_common,
-        "real_delta_rad": rr,
-        "sim_delta_rad": ss,
-    }
-
-
-def align_and_compare_best_polarity(
-    real_t: np.ndarray, real_series: np.ndarray, sim_t: np.ndarray, sim_series: np.ndarray
-) -> dict:
-    aligned = align_and_compare(real_t=real_t, real_series=real_series, sim_t=sim_t, sim_series=sim_series)
-    aligned["sim_polarity"] = 1
-    flipped = align_and_compare(real_t=real_t, real_series=real_series, sim_t=sim_t, sim_series=-sim_series)
-    flipped["sim_polarity"] = -1
-    return flipped if flipped["rmse_rad"] < aligned["rmse_rad"] else aligned
 
 
 class CommandRunner:

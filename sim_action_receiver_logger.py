@@ -31,6 +31,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from calibration_common import (
+    EncoderCalibrationMapper,
+    REAL_ARM_KEY_TO_SIM_JOINT,
+    SIM_JOINT_TO_REAL_ARM_KEY,
+    infer_sim_arm_from_real_key as _infer_sim_arm_from_real_key,
+    is_gripper_key as _is_gripper_real_key,
+)
 
 from isaaclab.app import AppLauncher
 
@@ -97,146 +104,11 @@ from lekiwi_robot_cfg import (
     WHEEL_RADIUS,
 )
 
-
-REAL_ARM_KEY_TO_SIM_JOINT = {
-    "arm_shoulder_pan.pos": "STS3215_03a_v1_Revolute_45",
-    "arm_shoulder_lift.pos": "STS3215_03a_v1_1_Revolute_49",
-    "arm_elbow_flex.pos": "STS3215_03a_v1_2_Revolute_51",
-    "arm_wrist_flex.pos": "STS3215_03a_v1_3_Revolute_53",
-    "arm_wrist_roll.pos": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-    "arm_gripper.pos": "STS3215_03a_v1_4_Revolute_57",
-}
-
-SIM_JOINT_TO_REAL_MOTOR_ID = {
-    "STS3215_03a_v1_Revolute_45": 1,
-    "STS3215_03a_v1_1_Revolute_49": 2,
-    "STS3215_03a_v1_2_Revolute_51": 3,
-    "STS3215_03a_v1_3_Revolute_53": 4,
-    "STS3215_03a_Wrist_Roll_v1_Revolute_55": 5,
-    "STS3215_03a_v1_4_Revolute_57": 6,
-}
-REAL_ARM_ID_TO_SIM_JOINT = {mid: name for name, mid in SIM_JOINT_TO_REAL_MOTOR_ID.items()}
-SIM_JOINT_TO_REAL_ARM_KEY = {sim_joint: real_key for real_key, sim_joint in REAL_ARM_KEY_TO_SIM_JOINT.items()}
-REAL_ARM_KEY_TO_MOTOR_NAME = {
-    "arm_shoulder_pan.pos": "arm_shoulder_pan",
-    "arm_shoulder_lift.pos": "arm_shoulder_lift",
-    "arm_elbow_flex.pos": "arm_elbow_flex",
-    "arm_wrist_flex.pos": "arm_wrist_flex",
-    "arm_wrist_roll.pos": "arm_wrist_roll",
-    "arm_gripper.pos": "arm_gripper",
-}
-
-
 def _safe_float(payload: dict, key: str, default: float) -> float:
     try:
         return float(payload.get(key, default))
     except (TypeError, ValueError):
         return float(default)
-
-
-def _is_gripper_real_key(real_key: str) -> bool:
-    return "gripper" in _normalize_key(real_key)
-
-
-class EncoderCalibrationMapper:
-    """Convert LeRobot normalized STS3215 commands (m100_100/0_100) into radians."""
-
-    def __init__(self, by_motor_name: dict[str, dict[str, float]], ticks_per_turn: int = 4096):
-        self.by_motor_name = by_motor_name
-        self.by_motor_id: dict[int, dict[str, float]] = {}
-        for cfg in by_motor_name.values():
-            mid = int(cfg.get("id", -1))
-            if mid > 0:
-                self.by_motor_id[mid] = cfg
-        self.ticks_per_turn = int(ticks_per_turn)
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> EncoderCalibrationMapper | None:
-        if not isinstance(payload, dict):
-            return None
-        by_motor_name: dict[str, dict[str, float]] = {}
-        for motor_name, raw in payload.items():
-            if not isinstance(raw, dict):
-                continue
-            try:
-                motor_id = int(raw.get("id"))
-                drive_mode = int(raw.get("drive_mode", 0))
-                range_min = float(raw.get("range_min"))
-                range_max = float(raw.get("range_max"))
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(range_min) or not np.isfinite(range_max):
-                continue
-            if abs(range_max - range_min) < 1e-9:
-                continue
-            by_motor_name[str(motor_name)] = {
-                "id": float(motor_id),
-                "drive_mode": float(drive_mode),
-                "range_min": float(range_min),
-                "range_max": float(range_max),
-            }
-        if not by_motor_name:
-            return None
-        return cls(by_motor_name=by_motor_name)
-
-    def _get_cfg_for_real_key(self, real_key: str) -> dict[str, float] | None:
-        motor_name = REAL_ARM_KEY_TO_MOTOR_NAME.get(real_key)
-        if motor_name and motor_name in self.by_motor_name:
-            return self.by_motor_name[motor_name]
-        sim_joint = REAL_ARM_KEY_TO_SIM_JOINT.get(real_key)
-        if sim_joint is None:
-            return None
-        motor_id = SIM_JOINT_TO_REAL_MOTOR_ID.get(sim_joint)
-        if motor_id is None:
-            return None
-        return self.by_motor_id.get(int(motor_id))
-
-    def _raw_to_rad(self, raw_pos: float, cfg: dict[str, float]) -> float:
-        range_min = float(cfg["range_min"])
-        range_max = float(cfg["range_max"])
-        mid = 0.5 * (range_min + range_max)
-        max_res = max(1.0, float(self.ticks_per_turn - 1))
-        deg = (float(raw_pos) - mid) * 360.0 / max_res
-        return float(np.deg2rad(deg))
-
-    def normalized_to_rad(self, real_key: str, value: float) -> float | None:
-        cfg = self._get_cfg_for_real_key(real_key)
-        if cfg is None:
-            return None
-
-        range_min = float(cfg["range_min"])
-        range_max = float(cfg["range_max"])
-        drive_mode = int(cfg["drive_mode"]) != 0
-        lo = min(range_min, range_max)
-        hi = max(range_min, range_max)
-
-        if _is_gripper_real_key(real_key):
-            v = float(np.clip(value, 0.0, 100.0))
-            if drive_mode:
-                v = 100.0 - v
-            raw = (v / 100.0) * (hi - lo) + lo
-        else:
-            v = float(np.clip(value, -100.0, 100.0))
-            if drive_mode:
-                v = -v
-            raw = ((v + 100.0) / 200.0) * (hi - lo) + lo
-
-        return self._raw_to_rad(raw, cfg)
-
-    def limits_rad_for_real_key(self, real_key: str) -> tuple[float, float] | None:
-        if _is_gripper_real_key(real_key):
-            low = self.normalized_to_rad(real_key, 0.0)
-            high = self.normalized_to_rad(real_key, 100.0)
-        else:
-            low = self.normalized_to_rad(real_key, -100.0)
-            high = self.normalized_to_rad(real_key, 100.0)
-        if low is None or high is None:
-            return None
-        lo = float(min(low, high))
-        hi = float(max(low, high))
-        if not np.isfinite(lo) or not np.isfinite(hi) or abs(hi - lo) < 1e-8:
-            return None
-        return (lo, hi)
 
 
 def _guess_encoder_calibration_path(robot_id: str) -> Path:
@@ -436,49 +308,6 @@ def _resolve_arm_input_unit(unit: str, encoder_mapper: EncoderCalibrationMapper 
         return unit
     # auto: with encoder calibration prefer normalized mode, otherwise preserve old heuristic (deg)
     return "m100_100" if encoder_mapper is not None else "deg"
-
-
-def _normalize_key(s: str) -> str:
-    return "".join(ch.lower() for ch in s if ch.isalnum())
-
-
-def _extract_motor_id_candidates(key: str) -> list[int]:
-    out: list[int] = []
-    cur = ""
-    for ch in key:
-        if ch.isdigit():
-            cur += ch
-        elif cur:
-            out.append(int(cur))
-            cur = ""
-    if cur:
-        out.append(int(cur))
-    return out
-
-
-def _infer_sim_arm_from_real_key(key: str) -> str | None:
-    nk = _normalize_key(key)
-    token_to_joint = {
-        "armshoulderpan": "STS3215_03a_v1_Revolute_45",
-        "armshoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "armelbowflex": "STS3215_03a_v1_2_Revolute_51",
-        "armwristflex": "STS3215_03a_v1_3_Revolute_53",
-        "armwristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "armgripper": "STS3215_03a_v1_4_Revolute_57",
-        "shoulderpan": "STS3215_03a_v1_Revolute_45",
-        "shoulderlift": "STS3215_03a_v1_1_Revolute_49",
-        "elbow": "STS3215_03a_v1_2_Revolute_51",
-        "wristflex": "STS3215_03a_v1_3_Revolute_53",
-        "wristroll": "STS3215_03a_Wrist_Roll_v1_Revolute_55",
-        "gripper": "STS3215_03a_v1_4_Revolute_57",
-    }
-    for token, joint_name in token_to_joint.items():
-        if token in nk:
-            return joint_name
-    for motor_id in reversed(_extract_motor_id_candidates(key)):
-        if motor_id in REAL_ARM_ID_TO_SIM_JOINT:
-            return REAL_ARM_ID_TO_SIM_JOINT[motor_id]
-    return None
 
 
 def _extract_joint_ranges(payload: dict) -> dict[str, tuple[float, float]]:

@@ -223,11 +223,64 @@ class LeKiwiNavEnvWithCam(LeKiwiNavEnv):
         return self._extract_rgb(self.wrist_cam)
 
 
-def compute_deterministic_action(obs_policy: torch.Tensor, policy_model: PolicyNet, state_preprocessor) -> torch.Tensor:
+def _extract_first_tensor(payload):
+    if torch.is_tensor(payload):
+        return payload
+    if isinstance(payload, (tuple, list)):
+        for item in payload:
+            found = _extract_first_tensor(item)
+            if found is not None:
+                return found
+    if isinstance(payload, dict):
+        for key in ("actions", "action", "mean_actions"):
+            if key in payload and torch.is_tensor(payload[key]):
+                return payload[key]
+        for item in payload.values():
+            found = _extract_first_tensor(item)
+            if found is not None:
+                return found
+    return None
+
+
+def compute_deterministic_action(
+    obs_policy: torch.Tensor,
+    policy_model: PolicyNet,
+    state_preprocessor,
+    agent=None,
+) -> torch.Tensor:
     if state_preprocessor is not None:
         proc_obs = state_preprocessor(obs_policy, train=False)
     else:
         proc_obs = obs_policy
+
+    if agent is not None and callable(getattr(agent, "act", None)):
+        state_dict = {"states": proc_obs}
+        act_calls = [
+            lambda: agent.act(state_dict, timestep=0, timesteps=1, deterministic=True),
+            lambda: agent.act(state_dict, timestep=0, timesteps=1),
+            lambda: agent.act(state_dict, deterministic=True),
+            lambda: agent.act(state_dict),
+            lambda: agent.act(proc_obs),
+        ]
+        for call in act_calls:
+            try:
+                out = call()
+            except TypeError:
+                continue
+            except Exception:
+                continue
+            action_tensor = _extract_first_tensor(out)
+            if torch.is_tensor(action_tensor) and action_tensor.ndim >= 2 and action_tensor.shape[0] == proc_obs.shape[0]:
+                return action_tensor.clamp(-1.0, 1.0)
+
+    # Prefer skrl model API (stable), fallback to legacy architecture path.
+    try:
+        out = policy_model.compute({"states": proc_obs}, role="policy")
+        if isinstance(out, tuple) and len(out) > 0 and torch.is_tensor(out[0]):
+            return out[0].clamp(-1.0, 1.0)
+    except Exception:
+        pass
+
     feat = policy_model.net(proc_obs)
     return policy_model.mean_layer(feat).clamp(-1.0, 1.0)
 
@@ -554,6 +607,7 @@ def main():
                     obs_policy=obs["policy"],
                     policy_model=models["policy"],
                     state_preprocessor=state_preprocessor,
+                    agent=agent,
                 )
 
             next_obs, reward, terminated, truncated, info = env.step(action)

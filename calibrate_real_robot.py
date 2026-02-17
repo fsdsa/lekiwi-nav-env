@@ -46,35 +46,22 @@ import argparse
 import json
 import math
 import os
-import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from calibration_common import (
+    REAL_ARM_ID_TO_SIM_JOINT,
+    extract_motor_id_candidates as _extract_motor_id_candidates,
+    infer_sim_wheel_from_real_key as _infer_sim_wheel_from_real_key,
+    normalize_key,
+)
 
-# Canonical mapping (left: sim joint name, right: real motor ID)
-SIM_JOINT_TO_REAL_MOTOR_ID = {
-    "axle_0_joint": 8,
-    "axle_1_joint": 9,
-    "axle_2_joint": 7,
-    "STS3215_03a_v1_4_Revolute_57": 6,
-    "STS3215_03a_Wrist_Roll_v1_Revolute_55": 5,
-    "STS3215_03a_v1_3_Revolute_53": 4,
-    "STS3215_03a_v1_2_Revolute_51": 3,
-    "STS3215_03a_v1_1_Revolute_49": 2,
-    "STS3215_03a_v1_Revolute_45": 1,
-}
-REAL_WHEEL_ID_TO_SIM_JOINT = {
-    motor_id: sim_joint
-    for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
-    if sim_joint.startswith("axle_")
-}
 REAL_ARM_IDS = {
     motor_id
-    for sim_joint, motor_id in SIM_JOINT_TO_REAL_MOTOR_ID.items()
-    if sim_joint.startswith("STS3215_")
+    for motor_id in REAL_ARM_ID_TO_SIM_JOINT
 }
 
 
@@ -324,50 +311,6 @@ def _wheel_cos_factor_from_key(key: str) -> float | None:
         return abs(math.cos(math.radians(-150.0)))
     if sim_joint == "axle_0_joint":  # Back
         return abs(math.cos(math.radians(90.0)))
-    return None
-
-
-def normalize_key(s: str) -> str:
-    return "".join(ch.lower() for ch in s if ch.isalnum())
-
-
-def _extract_motor_id_candidates(key: str) -> list[int]:
-    nums = re.findall(r"\d+", key)
-    return [int(n) for n in nums]
-
-
-def _infer_sim_wheel_from_real_key(key: str) -> str | None:
-    """Infer sim wheel joint from real observation key."""
-    k = normalize_key(key)
-
-    # 1) explicit axle names
-    if "axle2" in k:
-        return "axle_2_joint"
-    if "axle1" in k:
-        return "axle_1_joint"
-    if "axle0" in k:
-        return "axle_0_joint"
-
-    # 2) semantic tokens
-    if "frontleft" in k:
-        return "axle_2_joint"
-    if "frontright" in k:
-        return "axle_1_joint"
-    if "back" in k or "rear" in k:
-        return "axle_0_joint"
-    if "baseleftwheel" in k or "leftwheel" in k:
-        return "axle_2_joint"
-    if "baserightwheel" in k or "rightwheel" in k:
-        return "axle_1_joint"
-    if "basebackwheel" in k:
-        return "axle_0_joint"
-
-    # 3) motor id mapping (7/8/9)
-    ids = _extract_motor_id_candidates(key)
-    for mid in reversed(ids):  # prefer tail id (e.g., STS3215_7 -> 7)
-        if mid in REAL_WHEEL_ID_TO_SIM_JOINT:
-            return REAL_WHEEL_ID_TO_SIM_JOINT[mid]
-
     return None
 
 
