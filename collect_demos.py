@@ -60,6 +60,12 @@ parser.add_argument(
     default=None,
     help="tune_sim_dynamics.py 출력 JSON (best_params) 경로",
 )
+parser.add_argument(
+    "--calibration_json",
+    type=str,
+    default=None,
+    help="calibration JSON 경로 (wheel/base geometry override)",
+)
 parser.add_argument("--arm_limit_json", type=str, default=None, help="optional arm joint limit JSON (real2sim calibration)")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0, help="margin added to arm limits from --arm_limit_json")
 parser.add_argument("--object_usd", type=str, default="", help="physics grasp object USD path (empty = legacy proximity grasp)")
@@ -324,6 +330,12 @@ def main():
         print("  SpawnMgr   : 비활성")
     if args.dynamics_json:
         print(f"  Dynamics   : {os.path.expanduser(args.dynamics_json)}")
+    if args.calibration_json is not None:
+        cal_path = str(args.calibration_json).strip()
+        if cal_path:
+            print(f"  Calibration: {os.path.expanduser(cal_path)}")
+        else:
+            print("  Calibration: (disabled)")
     if args.arm_limit_json:
         print(
             f"  Arm limits : {os.path.expanduser(args.arm_limit_json)} "
@@ -346,6 +358,9 @@ def main():
 
     env_cfg = LeKiwiNavEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
+    if args.calibration_json is not None:
+        raw = str(args.calibration_json).strip()
+        env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
     if args.dynamics_json:
         env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
     if args.arm_limit_json:
@@ -374,6 +389,10 @@ def main():
     else:
         env = LeKiwiNavEnv(cfg=env_cfg)
 
+    print(
+        f"  Geometry in env: wheel={env.wheel_radius:.6f}, "
+        f"base={env.base_radius:.6f}"
+    )
     if args.dynamics_json:
         print(
             f"  Dynamics limits: lin={env.cfg.max_lin_vel:.4f}, "

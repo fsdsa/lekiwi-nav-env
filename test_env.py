@@ -25,6 +25,8 @@ parser.add_argument("--multi_object_json", type=str, default="")
 parser.add_argument("--gripper_contact_prim_path", type=str, default="")
 parser.add_argument("--dynamics_json", type=str, default=None,
                     help="tune_sim_dynamics.py 출력 JSON (best_params) 경로")
+parser.add_argument("--calibration_json", type=str, default=None,
+                    help="calibration JSON 경로 (wheel/base geometry override)")
 parser.add_argument("--arm_limit_json", type=str, default=None,
                     help="optional arm joint limit JSON (real2sim calibration)")
 AppLauncher.add_app_launcher_args(parser)
@@ -40,6 +42,9 @@ from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
 def main():
     cfg = LeKiwiNavEnvCfg()
     cfg.scene.num_envs = args.num_envs
+    if args.calibration_json is not None:
+        raw = str(args.calibration_json).strip()
+        cfg.calibration_json = os.path.expanduser(raw) if raw else ""
     if args.object_usd:
         cfg.object_usd = os.path.expanduser(args.object_usd)
     if args.multi_object_json:
@@ -58,6 +63,11 @@ def main():
     print(f"  obs_space: {env.observation_space}")
     print(f"  act_space: {env.action_space}")
     print(f"  device: {env.device}")
+    if cfg.calibration_json:
+        print(f"  calibration_json: {cfg.calibration_json}")
+    else:
+        print("  calibration_json: (disabled)")
+    print(f"  geometry: wheel={env.wheel_radius:.6f}, base={env.base_radius:.6f}")
     if args.multi_object_json:
         print(f"  multi_object_json: {os.path.expanduser(args.multi_object_json)}")
     if args.object_usd:

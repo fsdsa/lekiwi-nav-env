@@ -30,6 +30,8 @@ scripts/lekiwi_nav_env/
 ├── replay_in_sim.py
 ├── tune_sim_dynamics.py
 ├── compare_real_sim.py
+├── check_calibration_gate.py   # ★ 캘리브레이션 품질 게이트 (RMSE 임계값 pass/fail)
+├── sim_real_calibration_test.py # ★ Isaac Sim Script Editor용 sim-real 이동/회전 정합 테스트
 ├── build_arm_limits_real2sim.py
 ├── record_teleop.py
 ├── teleop_dual_logger.py
@@ -138,12 +140,58 @@ pxr 환경(Isaac Sim Python)에서 실행해야 함.
 #### 2-1. 실로봇 측정
 
 ```bash
+# 전체 측정 (wheel/base/arm/rest/sysid)
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
   --mode all --connection_mode direct --robot_port /dev/ttyACM0 --sample_hz 20
 
+# arm 6축 range만 재측정 (권장: 수동 시작/종료)
+python scripts/lekiwi_nav_env/calibrate_real_robot.py \
+  --mode joint_range --connection_mode direct --robot_port /dev/ttyACM0 \
+  --client_id my_awesome_kiwi --joint_range_duration 0 --sample_hz 20
+
+# 단일 관절만 재측정 (예: gripper)
+python scripts/lekiwi_nav_env/calibrate_real_robot.py \
+  --mode joint_range_single --connection_mode direct --robot_port /dev/ttyACM0 \
+  --client_id my_awesome_kiwi --joint_key arm_gripper.pos \
+  --joint_range_duration 0 --sample_hz 20
+
+# arm sysid만 별도 측정
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
   --mode arm_sysid --sample_hz 50
 ```
+
+메모:
+- `--joint_range_duration 0` 또는 음수면 고정 시간 대신 Enter로 시작/종료한다.
+- `joint_range`/`joint_range_single` 측정 중에는 arm torque가 자동으로 OFF되고, 종료 시 ON으로 복구된다.
+- `joint_range_single`은 기존 `wheel_radius`/`base_radius`를 유지한 채 지정 관절 range만 갱신한다.
+- direct 모드에서 모터 캘리브레이션 파일을 쓰려면 현재 로봇 ID에 맞게 `--client_id`를 지정한다(예: `my_awesome_kiwi`).
+
+#### 2-1-1. 현재 진행 현황 (업데이트: 2026-02-17)
+
+- 상태: arm 6축 joint range 재측정 완료, sim-real 이동/회전 정합용 보정값 확정.
+- 기준 파일: `calibration/calibration_latest.json` (`timestamp`: `2026-02-15 16:51:18`, `connection_mode`: `direct`)
+- arm joint ranges (실측 반영 완료):
+  - `arm_shoulder_pan.pos = [-100.0, 98.59623199113409]`
+  - `arm_shoulder_lift.pos = [-100.0, 100.0]`
+  - `arm_elbow_flex.pos = [-98.39572192513369, 99.37611408199643]`
+  - `arm_wrist_flex.pos = [-99.83079526226734, 97.80033840947547]`
+  - `arm_wrist_roll.pos = [-96.28815628815629, 89.84126984126982]`
+  - `arm_gripper.pos = [0.3762227238525207, 100.0]`
+- 참고: `calibration_latest.json`의 1회 추정 wheel/base 값
+  - `wheel_radius_m = 0.06550005957508184`
+  - `base_radius_m = 0.01620267362424141`
+  - 위 값은 수집 조건/축 분리 영향으로 일관성이 낮아, sim 기하 상수로 직접 사용하지 않음.
+- sim-real 정합에 사용 중인 확정값:
+  - 기하 상수: `WHEEL_RADIUS = 0.049m`, `BASE_RADIUS = 0.1085m`
+  - 보정 상수 (`scripts/lekiwi_nav_env/sim_real_calibration_test.py`):
+    - `LIN_SCALE = 1.0166`
+    - `ANG_SCALE = 1.2360`
+    - `WZ_SIGN = -1.0` (real `+CCW`, sim `+CW` 부호 차이 보정)
+    - `SIM_FORWARD_AXIS = "y"`, `SIM_FORWARD_SIGN = +1.0`
+    - `AUTO_SELECT_LINEAR_MAP = True` (최근 실행 자동 선택: `identity`)
+- 최근 Script Editor 검증 결과 (2026-02-17 실행 로그):
+  - linear: `SIM 75.03 cm` vs `REAL 75.00 cm` (`R/S = 0.9996`)
+  - angular magnitude: `SIM 295.39 deg` vs `REAL 298.00 deg` (`R/S = 1.0088`)
 
 #### 2-2. Arm Joint Limit JSON 생성
 
@@ -189,6 +237,90 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
 ```
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
+
+#### 2-5. 캘리브레이션 품질 게이트
+
+replay 결과가 임계값 이내인지 자동 검사. FAIL 시 캘리브레이션 재수행 필요:
+
+```bash
+python check_calibration_gate.py \
+  --reports calibration/replay_command_report.json \
+           calibration/replay_arm_report.json
+
+# 또는 tune 출력으로 직접 검사
+python check_calibration_gate.py \
+  --reports calibration/tuned_dynamics.json
+
+# 파이프라인 자동화: 게이트 통과 시에만 학습 진행
+python check_calibration_gate.py \
+  --reports calibration/replay_command_report.json \
+           calibration/replay_arm_report.json && \
+  python train_lekiwi.py --num_envs 2048 --headless
+```
+
+기본 임계값: wheel RMSE ≤ 0.20 rad, arm RMSE ≤ 0.15 rad. `--wheel_rmse_threshold`, `--arm_rmse_threshold`로 조정 가능.
+
+#### 2-6. Isaac Sim Script Editor 정합 검증 (권장)
+
+`scripts/lekiwi_nav_env/sim_real_calibration_test.py`는 Script Editor 전용 검증 스크립트다.
+headless CLI가 아니라 Isaac Sim UI에서 실행한다.
+
+```text
+1) Isaac Sim에서 LeKiwi USD 로드
+2) Play 상태로 전환
+3) Script Editor에서 sim_real_calibration_test.py 실행
+4) TEST 1(linear), TEST 2(angular) 결과의 ratio(R/S) 확인
+```
+
+권장 해석:
+- `ratio(R/S) = real_output / sim_output`가 1.0에 가까우면 정합 양호
+- 실사용 기준: linear / angular 모두 `0.95 ~ 1.05` 범위
+- 회전 부호는 좌표계 차이를 고려해 `WZ_SIGN`으로 맞춘다
+  - 현재 LeKiwi 설정: `WZ_SIGN = -1.0`
+- `wheel joint delta = n/a`가 나와도 pose 기반 거리/각도 검증은 정상 수행 가능
+
+#### 2-7. 스케일값 사용 규칙 (데이터 수집 / 실배포)
+
+`sim_real_calibration_test.py`에서 확정한 base 보정은 아래 변환으로 사용한다.
+
+정의:
+- `u_real = [vx_real, vy_real, wz_real]` (실로봇 기준 명령)
+- `u_sim = [vx_sim, vy_sim, wz_sim]` (시뮬레이터 기준 명령)
+- `M = ACTIVE_LINEAR_MAP` (현재 자동 선택: `identity`)
+
+변환식:
+- real -> sim
+  - `[vx_sim, vy_sim]^T = LIN_SCALE * M * [vx_real, vy_real]^T`
+  - `wz_sim = WZ_SIGN * ANG_SCALE * wz_real`
+- sim -> real (배포 시 역변환)
+  - `[vx_real, vy_real]^T = (1 / LIN_SCALE) * M^{-1} * [vx_sim, vy_sim]^T`
+  - `wz_real = wz_sim / (WZ_SIGN * ANG_SCALE)`
+
+현재 확정 상수:
+- `LIN_SCALE = 1.0166`
+- `ANG_SCALE = 1.2360`
+- `WZ_SIGN = -1.0`
+- `M = identity` (최근 auto-select 결과)
+
+현재 상수로 단순화된 식 (`M=identity`):
+- real -> sim
+  - `vx_sim = 1.0166 * vx_real`
+  - `vy_sim = 1.0166 * vy_real`
+  - `wz_sim = -1.2360 * wz_real`
+- sim -> real
+  - `vx_real = vx_sim / 1.0166`
+  - `vy_real = vy_sim / 1.0166`
+  - `wz_real = wz_sim / (-1.2360)`
+
+운영 규칙:
+- 데이터 수집(sim):
+  - `collect_demos.py` 기본 파이프라인은 sim action space 기준으로 수집한다.
+  - 이 경우 수집 시점에 추가 역변환을 넣지 않는다.
+- 실배포(real):
+  - 모델 출력(sim 기준 base 명령)을 실로봇 전송 직전에 `sim -> real` 역변환 1회 적용한다.
+- 주의:
+  - 같은 신호 경로에 `dynamics_json` 명령 스케일과 위 보정을 중복 적용하지 않는다.
+  - 어느 단계에서 적용했는지(run config/로그)에 명시한다.
 
 ### Step 3. 환경 검증
 
@@ -275,6 +407,7 @@ python collect_demos.py \
 참고:
 - physics grasp 모드에서는 SpawnManager(`--objects_index`)가 자동 비활성화됨
 - HDF5 attrs에 `object_bbox_xyz`, `object_category_id`, `active_object_type_idx` 저장됨
+- 저장되는 `action`은 sim action space 기준이므로, 실배포 시 base 명령은 `2-7`의 `sim -> real` 역변환을 적용
 
 ### Step 6. HDF5 → LeRobot v3 변환
 
@@ -297,6 +430,7 @@ python convert_hdf5_to_lerobot_v3.py \
 
 LeRobot v3 데이터셋으로 π0Fast 또는 GR00T 파인튜닝 (A100 서버).
 VLA 입력: `image + instruction + robot_state(9D)` → `action(9D)`.
+실배포 시 `action[0:3]`(base)는 `2-7`의 `sim -> real` 역변환 후 실로봇에 송신.
 
 ## 5) 데이터 흐름 요약
 
@@ -304,8 +438,9 @@ VLA 입력: `image + instruction + robot_state(9D)` → `action(9D)`.
 build_object_catalog.py
   1030종 USD → bbox 추출 → k-means → 대표 12종 object_catalog.json
 
-calibrate → tune → replay → compare  (★ RL 학습 전 필수)
+calibrate → tune → replay → compare → gate  (★ RL 학습 전 필수)
   실로봇 측정 → tuned_dynamics.json + arm_limits_real2sim.json 생성
+  check_calibration_gate.py로 RMSE 임계값 통과 확인
   이후 모든 학습/수집에 --dynamics_json --arm_limit_json 전달
 
 train_lekiwi.py (RL 학습)
@@ -339,7 +474,7 @@ VLA 파인튜닝
 
 ## 7) 주의사항
 
-- **★ `--dynamics_json`은 Step 2(캘리브레이션) 완료 후 생성됨** — Step 3~5의 학습/수집 전에 반드시 캘리브레이션을 완료할 것
+- **★ `--dynamics_json`은 Step 2(캘리브레이션) 완료 후 생성됨** — Step 3~5의 학습/수집 전에 반드시 캘리브레이션을 완료하고, `check_calibration_gate.py`로 품질 게이트 통과를 확인할 것
 - `--dynamics_json`은 학습/수집 모두 동일한 파일을 사용해야 Sim2Real 정합 유지
 - 37D 체크포인트는 33D 환경에서 로드 불가 (역도 마찬가지)
 - camera 수집 시 VRAM에 따라 `num_envs`를 1~8로 제한

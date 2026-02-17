@@ -8,21 +8,36 @@ LeKiwi 실측 캘리브레이션 스크립트.
   1) wheel_radius: 직진 이동거리 vs 바퀴 각도 변화
   2) base_radius: 제자리 회전각 vs 바퀴 각도 변화
   3) joint_range: 관절 min/max
+  3-1) joint_range_single: 단일 관절 min/max (기존 값 유지 + 지정 관절만 갱신)
   4) rest_position: REST 자세 평균
   5) trajectory: replay용 시계열 기록
   6) arm_sysid: 관절별 step/chirp 명령-응답 기록 ({cmd, pos})
 
 Usage:
-  # client 모드(원격 host 연결): arm/rest 위주
+  # client 모드(원격 host 연결): arm/rest 위주 (all은 arm_sysid 포함)
   python calibrate_real_robot.py --mode all --connection_mode client --remote_ip 192.168.1.46
 
-  # direct 모드(라즈베리파이 로컬): wheel/base 포함 전체 권장
+  # direct 모드(라즈베리파이 로컬): wheel/base 포함 전체 권장 (all은 arm_sysid 포함)
   python calibrate_real_robot.py --mode all --connection_mode direct --robot_port /dev/ttyACM0
+
+  # arm 6축 range만 측정 (duration<=0 이면 Enter로 시작/종료)
+  python calibrate_real_robot.py --mode joint_range --connection_mode direct \
+    --robot_port /dev/ttyACM0 --joint_range_duration 0
+
+  # 단일 관절 range만 측정 (기존 wheel/base 값 유지)
+  python calibrate_real_robot.py --mode joint_range_single --connection_mode direct \
+    --robot_port /dev/ttyACM0 --joint_key arm_gripper.pos --joint_range_duration 0
 
   python calibrate_real_robot.py --mode wheel_radius
   python calibrate_real_robot.py --mode base_radius --encoder_unit rad
   python calibrate_real_robot.py --mode record_trajectory --record_duration 30
   python calibrate_real_robot.py --mode arm_sysid
+
+Notes:
+  - calibration_latest.json은 모드별 실행 시 누적 업데이트된다.
+    (예: wheel_radius 후 arm_sysid 실행 시 기존 값 유지 + arm_sysid 추가)
+  - arm_sysid는 --arm_sysid_sample_hz (기본 50Hz)를 사용한다.
+  - joint_range / joint_range_single은 측정 중 arm torque를 자동으로 OFF/ON 처리한다.
 """
 
 from __future__ import annotations
@@ -32,6 +47,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -106,7 +122,7 @@ class RobotAdapter:
         self._connect_client()
 
     def _connect_client(self):
-        last_exc = None
+        errors: list[str] = []
         candidates = [
             ("lerobot.robots.lekiwi", "LeKiwiClient", "LeKiwiClientConfig"),
             ("lerobot.common.robots.lekiwi", "LeKiwiClient", "LeKiwiClientConfig"),
@@ -122,15 +138,15 @@ class RobotAdapter:
                 print(f"  Connected via {mod_name}")
                 return
             except Exception as exc:  # noqa: BLE001
-                last_exc = exc
+                errors.append(f"{mod_name}: {type(exc).__name__}: {exc}")
 
         raise RuntimeError(
             "LeKiwiClient import/connect 실패. LeRobot SDK 환경을 확인하세요.\n"
-            f"last error: {last_exc}"
+            + "\n".join(errors)
         )
 
     def _connect_direct(self):
-        last_exc = None
+        errors: list[str] = []
         candidates = [
             ("lerobot.robots.lekiwi", "LeKiwi", "LeKiwiConfig"),
             ("lerobot.common.robots.lekiwi", "LeKiwi", "LeKiwiConfig"),
@@ -147,11 +163,11 @@ class RobotAdapter:
                 print(f"  Connected DIRECT via {mod_name} (port={self.robot_port})")
                 return
             except Exception as exc:  # noqa: BLE001
-                last_exc = exc
+                errors.append(f"{mod_name}: {type(exc).__name__}: {exc}")
 
         raise RuntimeError(
             "LeKiwi direct import/connect 실패. 라즈베리파이 로컬 환경/포트를 확인하세요.\n"
-            f"last error: {last_exc}"
+            + "\n".join(errors)
         )
 
     def disconnect(self):
@@ -161,6 +177,25 @@ class RobotAdapter:
             self.robot.disconnect()
         except Exception:  # noqa: BLE001
             pass
+
+    def set_arm_torque(self, enabled: bool) -> bool:
+        """Best-effort torque toggle for arm motors (direct mode only)."""
+        if self.robot is None:
+            return False
+        bus = getattr(self.robot, "bus", None)
+        arm_motors = getattr(self.robot, "arm_motors", None)
+        if bus is None or not arm_motors:
+            return False
+        try:
+            if enabled:
+                bus.enable_torque(arm_motors)
+            else:
+                bus.disable_torque(arm_motors)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            mode = "enable" if enabled else "disable"
+            print(f"  warning: failed to {mode} arm torque: {exc}")
+            return False
 
     def get_observation(self) -> dict[str, float]:
         if self.robot is None:
@@ -203,6 +238,25 @@ class RobotAdapter:
         act["x.vel"] = float(vx)
         act["y.vel"] = float(vy)
         act["theta.vel"] = float(wz)
+
+        # Some LeRobot versions expect arm position targets on every call.
+        # Base-only action can trigger empty-motor writes without this fallback.
+        try:
+            obs = self.get_observation()
+            arm_pos_keys: list[str] = []
+            for key in _select_arm_keys(obs):
+                nk = key.lower()
+                if (".vel" in nk) or ("velocity" in nk):
+                    continue
+                if (".pos" in nk) or ("position" in nk):
+                    arm_pos_keys.append(key)
+            if arm_pos_keys and not any(k in act for k in arm_pos_keys):
+                for key in arm_pos_keys:
+                    val = obs.get(key)
+                    if isinstance(val, (int, float, np.integer, np.floating)) and np.isfinite(val):
+                        act[key] = float(val)
+        except Exception:  # noqa: BLE001
+            pass
 
         fn = getattr(self.robot, "send_action", None)
         if callable(fn):
@@ -354,20 +408,59 @@ def _select_arm_keys(obs: dict[str, float]) -> list[str]:
 
 
 def infer_angle_unit(deltas: list[float], user_choice: str) -> str:
-    if user_choice in ("rad", "deg"):
+    if user_choice in ("rad", "deg", "m100"):
         return user_choice
     abs_vals = [abs(v) for v in deltas if np.isfinite(v)]
     if not abs_vals:
         return "rad"
-    median = float(np.median(abs_vals))
-    # 직진/회전 짧은 측정에서 deg는 보통 수십~수백, rad는 대개 0~20
-    return "deg" if median > 20.0 else "rad"
+    p95_abs = float(np.percentile(abs_vals, 95))
+    if 60.0 <= p95_abs <= 110.0:
+        return "m100"
+    return "deg" if p95_abs > 20.0 else "rad"
+
+
+def infer_encoder_unit_from_series(series: dict[str, np.ndarray], user_choice: str) -> str:
+    if user_choice in ("rad", "deg", "m100"):
+        return user_choice
+    vals_all = []
+    for vals in series.values():
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size > 0:
+            vals_all.append(arr)
+    if not vals_all:
+        return "rad"
+    all_v = np.concatenate(vals_all)
+    p95_abs = float(np.percentile(np.abs(all_v), 95))
+    if 60.0 <= p95_abs <= 110.0:
+        return "m100"
+    return "deg" if p95_abs > 20.0 else "rad"
 
 
 def to_radians(value: float, unit: str) -> float:
     if unit == "deg":
         return math.radians(value)
+    if unit == "m100":
+        return value * (math.pi / 100.0)
     return value
+
+
+def to_unwrapped_radians(values: np.ndarray, unit: str) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    rad = arr.copy()
+    if unit == "deg":
+        rad = np.deg2rad(rad)
+    elif unit == "m100":
+        rad = rad * (np.pi / 100.0)
+    return np.unwrap(rad)
+
+
+def radians_to_unit(value_rad: float, unit: str) -> float:
+    if unit == "deg":
+        return float(np.rad2deg(value_rad))
+    if unit == "m100":
+        return float(value_rad * 100.0 / np.pi)
+    return float(value_rad)
 
 
 # =============================================================================
@@ -387,7 +480,11 @@ def _make_base_action(vx: float, vy: float, wz: float) -> dict[str, float]:
 def _stop_base(robot: RobotAdapter):
     action = _make_base_action(0.0, 0.0, 0.0)
     for _ in range(5):
-        robot.send_action(action)
+        try:
+            robot.send_action(action)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  warning: failed to send stop action: {exc}")
+            break
         time.sleep(0.05)
 
 
@@ -410,7 +507,7 @@ def _make_arm_action_safe(
 
 
 def _infer_arm_unit_from_obs(obs: dict[str, float], arm_keys: list[str], user_choice: str) -> str:
-    if user_choice in ("rad", "deg"):
+    if user_choice in ("rad", "deg", "m100"):
         return user_choice
     vals = [abs(float(obs.get(k, 0.0))) for k in arm_keys if np.isfinite(obs.get(k, np.nan))]
     if not vals:
@@ -448,11 +545,21 @@ def measure_wheel_radius(robot: RobotAdapter, encoder_unit: str, vx_cmd: float, 
     _stop_base(robot)
     time.sleep(0.3)
 
-    obs1 = robot.get_observation()
-    end = {k: obs1.get(k, start[k]) for k in wheel_keys}
+    wheel_series_raw: dict[str, np.ndarray] = {}
+    for k in wheel_keys:
+        vals = [entry.get("encoders", {}).get(k, np.nan) for entry in log]
+        wheel_series_raw[k] = np.asarray(vals, dtype=np.float64)
 
-    deltas = {k: float(end[k] - start[k]) for k in wheel_keys}
-    unit = infer_angle_unit(list(deltas.values()), encoder_unit)
+    unit = infer_encoder_unit_from_series(wheel_series_raw, encoder_unit)
+    deltas_rad = {}
+    deltas = {}
+    for k, arr in wheel_series_raw.items():
+        arr_u = to_unwrapped_radians(arr, unit)
+        if arr_u.size < 2:
+            continue
+        d_rad = float(arr_u[-1] - arr_u[0])
+        deltas_rad[k] = d_rad
+        deltas[k] = radians_to_unit(d_rad, unit)
 
     dist_cm = float(input("  실측 이동 거리(cm): "))
     dist_m = dist_cm / 100.0
@@ -465,7 +572,7 @@ def measure_wheel_radius(robot: RobotAdapter, encoder_unit: str, vx_cmd: float, 
     candidates = []
     skipped = []
     for key, raw_delta in deltas.items():
-        delta_rad = abs(to_radians(raw_delta, unit))
+        delta_rad = abs(float(deltas_rad.get(key, to_radians(raw_delta, unit))))
         cos_factor = _wheel_cos_factor_from_key(key)
         if cos_factor is None:
             skipped.append((key, "unknown_wheel_key"))
@@ -515,6 +622,7 @@ def measure_wheel_radius(robot: RobotAdapter, encoder_unit: str, vx_cmd: float, 
         "encoder_unit": unit,
         "measured_distance_m": dist_m,
         "mean_wheel_angle_rad": mean_angle_valid,
+        "encoder_unwrapped": True,
         "command": {
             "vx": float(vx_cmd),
             "vy": 0.0,
@@ -567,12 +675,23 @@ def measure_base_radius(
     _stop_base(robot)
     time.sleep(0.3)
 
-    obs1 = robot.get_observation()
-    end = {k: obs1.get(k, start[k]) for k in wheel_keys}
-    deltas = {k: float(end[k] - start[k]) for k in wheel_keys}
+    wheel_series_raw: dict[str, np.ndarray] = {}
+    for k in wheel_keys:
+        vals = [entry.get("encoders", {}).get(k, np.nan) for entry in log]
+        wheel_series_raw[k] = np.asarray(vals, dtype=np.float64)
 
-    unit = infer_angle_unit(list(deltas.values()), encoder_unit)
-    angles = [abs(to_radians(v, unit)) for v in deltas.values()]
+    unit = infer_encoder_unit_from_series(wheel_series_raw, encoder_unit)
+    deltas = {}
+    deltas_rad = {}
+    for k, arr in wheel_series_raw.items():
+        arr_u = to_unwrapped_radians(arr, unit)
+        if arr_u.size < 2:
+            continue
+        d_rad = float(arr_u[-1] - arr_u[0])
+        deltas_rad[k] = d_rad
+        deltas[k] = radians_to_unit(d_rad, unit)
+
+    angles = [abs(v) for v in deltas_rad.values()]
     mean_wheel_angle = float(np.mean(angles)) if angles else 0.0
 
     rot_deg = float(input("  실측 총 회전각(도): "))
@@ -588,6 +707,7 @@ def measure_base_radius(
         return {
             "ratio_L_over_r": ratio,
             "encoder_unit": unit,
+            "encoder_unwrapped": True,
             "total_rotation_rad": total_rot,
             "mean_wheel_angle_rad": mean_wheel_angle,
             "command": {
@@ -608,6 +728,7 @@ def measure_base_radius(
     return {
         "base_radius_m": base_radius,
         "encoder_unit": unit,
+        "encoder_unwrapped": True,
         "total_rotation_rad": total_rot,
         "mean_wheel_angle_rad": mean_wheel_angle,
         "wheel_radius_used_m": known_wheel_radius,
@@ -628,16 +749,43 @@ def measure_joint_ranges(robot: RobotAdapter, duration: float, sample_hz: float)
     print("\n" + "=" * 60)
     print("  JOINT RANGE 측정")
     print("=" * 60)
-    print("  관절을 최대/최소까지 천천히 움직인 뒤 Enter")
-    input()
+    torque_off = robot.set_arm_torque(False)
+    if torque_off:
+        print("  arm torque OFF (수동으로 관절을 움직일 수 있습니다)")
+
+    print("  Enter를 누르면 기록을 시작합니다.")
+    if duration > 0:
+        print(f"  기록 시작 후 {duration:.1f}초 동안 각 관절을 최대/최소 끝까지 천천히 왕복하세요.")
+    else:
+        print("  기록 시작 후 각 관절을 충분히 움직인 다음, 종료 Enter를 눌러 마칩니다.")
+    input("  준비되면 Enter: ")
 
     t0 = time.time()
     frames: list[dict] = []
+    try:
+        if duration > 0:
+            print(f"  recording... ({duration:.1f}s)")
+            while time.time() - t0 < duration:
+                obs = robot.get_observation()
+                frames.append({"t": time.time() - t0, "positions": obs})
+                time.sleep(1.0 / sample_hz)
+        else:
+            stop_evt = threading.Event()
 
-    while time.time() - t0 < duration:
-        obs = robot.get_observation()
-        frames.append({"t": time.time() - t0, "positions": obs})
-        time.sleep(1.0 / sample_hz)
+            def _wait_stop():
+                input("  종료하려면 Enter: ")
+                stop_evt.set()
+
+            threading.Thread(target=_wait_stop, daemon=True).start()
+            print("  recording... (manual stop)")
+            while not stop_evt.is_set():
+                obs = robot.get_observation()
+                frames.append({"t": time.time() - t0, "positions": obs})
+                time.sleep(1.0 / sample_hz)
+    finally:
+        if torque_off:
+            robot.set_arm_torque(True)
+            print("  arm torque ON")
 
     if not frames:
         return None
@@ -657,6 +805,72 @@ def measure_joint_ranges(robot: RobotAdapter, duration: float, sample_hz: float)
     return {
         "joint_ranges": ranges,
         "raw_readings": frames,
+    }
+
+
+def measure_single_joint_range(robot: RobotAdapter, joint_key: str, duration: float, sample_hz: float):
+    print("\n" + "=" * 60)
+    print("  SINGLE JOINT RANGE 측정")
+    print("=" * 60)
+    print(f"  target joint: {joint_key}")
+    torque_off = robot.set_arm_torque(False)
+    if torque_off:
+        print("  arm torque OFF (수동으로 관절을 움직일 수 있습니다)")
+
+    print("  Enter를 누르면 기록을 시작합니다.")
+    if duration > 0:
+        print(f"  기록 시작 후 {duration:.1f}초 동안 해당 관절만 최대/최소 끝까지 천천히 왕복하세요.")
+    else:
+        print("  기록 시작 후 해당 관절을 충분히 움직인 다음, 종료 Enter를 눌러 마칩니다.")
+    input("  준비되면 Enter: ")
+
+    t0 = time.time()
+    trace: list[dict[str, float]] = []
+    try:
+        if duration > 0:
+            print(f"  recording... ({duration:.1f}s)")
+            while time.time() - t0 < duration:
+                obs = robot.get_observation()
+                val = obs.get(joint_key)
+                if isinstance(val, (int, float, np.integer, np.floating)) and np.isfinite(val):
+                    trace.append({"t": float(time.time() - t0), "value": float(val)})
+                time.sleep(1.0 / sample_hz)
+        else:
+            stop_evt = threading.Event()
+
+            def _wait_stop():
+                input("  종료하려면 Enter: ")
+                stop_evt.set()
+
+            threading.Thread(target=_wait_stop, daemon=True).start()
+            print("  recording... (manual stop)")
+            while not stop_evt.is_set():
+                obs = robot.get_observation()
+                val = obs.get(joint_key)
+                if isinstance(val, (int, float, np.integer, np.floating)) and np.isfinite(val):
+                    trace.append({"t": float(time.time() - t0), "value": float(val)})
+                time.sleep(1.0 / sample_hz)
+    finally:
+        if torque_off:
+            robot.set_arm_torque(True)
+            print("  arm torque ON")
+
+    if not trace:
+        print(f"  warning: '{joint_key}' 값을 읽지 못했습니다.")
+        return None
+
+    vals = [x["value"] for x in trace]
+    rmin = float(np.min(vals))
+    rmax = float(np.max(vals))
+    print(f"  result: min={rmin:.6f}, max={rmax:.6f} ({len(trace)} samples)")
+
+    return {
+        "joint_key": joint_key,
+        "range": {"min": rmin, "max": rmax},
+        "duration_s": float(duration),
+        "sample_hz": float(sample_hz),
+        "num_samples": len(trace),
+        "trace": trace,
     }
 
 
@@ -872,6 +1086,24 @@ def save_results(results: dict, output_dir: str) -> Path:
     return path
 
 
+def load_latest_results(output_dir: str) -> dict[str, Any]:
+    """Load existing calibration_latest.json for incremental update.
+
+    If the file does not exist (or is invalid), returns an empty dict.
+    """
+    latest = Path(output_dir) / "calibration_latest.json"
+    if not latest.is_file():
+        return {}
+    try:
+        with open(latest, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except Exception as exc:  # noqa: BLE001
+        print(f"  warning: failed to read existing latest calibration: {exc}")
+    return {}
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -883,14 +1115,23 @@ def main():
         "--mode",
         type=str,
         default="all",
-        choices=["all", "wheel_radius", "base_radius", "joint_range", "rest_position", "record_trajectory", "arm_sysid"],
+        choices=[
+            "all",
+            "wheel_radius",
+            "base_radius",
+            "joint_range",
+            "joint_range_single",
+            "rest_position",
+            "record_trajectory",
+            "arm_sysid",
+        ],
     )
     parser.add_argument("--remote_ip", type=str, default="192.168.1.42")
     parser.add_argument("--client_id", type=str, default="calibration")
     parser.add_argument("--connection_mode", type=str, default="client", choices=["client", "direct"])
     parser.add_argument("--robot_port", type=str, default="/dev/ttyACM0")
     parser.add_argument("--output_dir", type=str, default="calibration")
-    parser.add_argument("--encoder_unit", type=str, default="auto", choices=["auto", "rad", "deg"])
+    parser.add_argument("--encoder_unit", type=str, default="auto", choices=["auto", "rad", "deg", "m100"])
 
     parser.add_argument("--vx_cmd", type=float, default=0.15)
     # LeKiwi API의 theta.vel는 deg/s
@@ -899,6 +1140,12 @@ def main():
     parser.add_argument("--sample_hz", type=float, default=20.0)
 
     parser.add_argument("--joint_range_duration", type=float, default=10.0)
+    parser.add_argument(
+        "--joint_key",
+        type=str,
+        default="arm_gripper.pos",
+        help="target joint key for --mode joint_range_single",
+    )
     parser.add_argument("--rest_samples", type=int, default=20)
 
     parser.add_argument("--record_duration", type=float, default=30.0)
@@ -909,6 +1156,12 @@ def main():
     parser.add_argument("--arm_chirp_amp_deg", type=float, default=8.0)
     parser.add_argument("--arm_chirp_f0_hz", type=float, default=0.2)
     parser.add_argument("--arm_chirp_f1_hz", type=float, default=2.0)
+    parser.add_argument(
+        "--arm_sysid_sample_hz",
+        type=float,
+        default=50.0,
+        help="sample rate for arm_sysid mode (default: 50Hz)",
+    )
 
     args = parser.parse_args()
 
@@ -920,11 +1173,13 @@ def main():
     )
     robot.connect()
 
-    results: dict[str, Any] = {
+    # Incremental update: preserve previous calibration blocks unless overwritten in this run.
+    results: dict[str, Any] = load_latest_results(args.output_dir)
+    results.update({
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "remote_ip": args.remote_ip,
         "connection_mode": args.connection_mode,
-    }
+    })
 
     try:
         if args.mode in ("all", "rest_position"):
@@ -967,6 +1222,32 @@ def main():
                 sample_hz=args.sample_hz,
             )
 
+        if args.mode == "joint_range_single":
+            single = measure_single_joint_range(
+                robot,
+                joint_key=args.joint_key,
+                duration=args.joint_range_duration,
+                sample_hz=args.sample_hz,
+            )
+            if single is not None:
+                joint_ranges_block = results.get("joint_ranges")
+                if not isinstance(joint_ranges_block, dict):
+                    joint_ranges_block = {}
+
+                ranges_map = joint_ranges_block.get("joint_ranges")
+                if not isinstance(ranges_map, dict):
+                    ranges_map = {}
+                ranges_map[args.joint_key] = single["range"]
+                joint_ranges_block["joint_ranges"] = ranges_map
+
+                single_runs = joint_ranges_block.get("single_joint_runs")
+                if not isinstance(single_runs, list):
+                    single_runs = []
+                single_runs.append(single)
+                joint_ranges_block["single_joint_runs"] = single_runs
+
+                results["joint_ranges"] = joint_ranges_block
+
         if args.mode == "record_trajectory":
             results["trajectory"] = record_trajectory(
                 robot,
@@ -974,7 +1255,7 @@ def main():
                 fps=args.record_fps,
             )
 
-        if args.mode == "arm_sysid":
+        if args.mode in ("all", "arm_sysid"):
             step_values_deg = []
             for tok in args.arm_step_values_deg.split(","):
                 tok = tok.strip()
@@ -986,7 +1267,7 @@ def main():
             results["arm_sysid"] = measure_arm_sysid(
                 robot,
                 encoder_unit=args.encoder_unit,
-                sample_hz=args.sample_hz,
+                sample_hz=args.arm_sysid_sample_hz,
                 step_hold_s=args.arm_step_hold_s,
                 step_values_deg=step_values_deg,
                 chirp_duration_s=args.arm_chirp_duration_s,

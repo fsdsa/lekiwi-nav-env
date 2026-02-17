@@ -49,6 +49,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse
 
 from lekiwi_robot_cfg import (
+    ARM_LIMITS_BAKED_RAD,
     ARM_JOINT_NAMES,
     BASE_RADIUS,
     GRIPPER_JOINT_NAME,
@@ -101,6 +102,12 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
     max_lin_vel: float = 0.5
     max_ang_vel: float = 3.0
     arm_action_scale: float = 1.5
+    # Optional: calibration JSON with measured geometry.
+    # Keep empty for baked constants in lekiwi_robot_cfg.py.
+    # Expected keys:
+    #   wheel_radius.wheel_radius_m
+    #   base_radius.base_radius_m
+    calibration_json: str | None = None
     # Optional: tune_sim_dynamics.py output JSON path
     dynamics_json: str | None = None
     # If true, apply lin_cmd_scale / ang_cmd_scale to max_lin_vel / max_ang_vel
@@ -213,6 +220,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         # Kiwi IK matrix
         self.base_radius = float(BASE_RADIUS)
         self.wheel_radius = float(WHEEL_RADIUS)
+        self._maybe_apply_calibration_geometry_from_cfg()
         angles = torch.tensor(WHEEL_ANGLES_RAD, dtype=torch.float32, device=self.device)
         self.kiwi_M = torch.stack(
             [
@@ -300,6 +308,7 @@ class LeKiwiNavEnv(DirectRLEnv):
             self.object_category_id[:] = 0.0
 
         self._maybe_apply_tuned_dynamics_from_cfg()
+        self._apply_baked_arm_limits()
         self._maybe_apply_arm_limits_from_cfg()
 
         print(f"  [LeKiwiFetchEnv] obs={self.cfg.observation_space} act={self.cfg.action_space}")
@@ -428,7 +437,57 @@ class LeKiwiNavEnv(DirectRLEnv):
         if self.contact_sensor is not None:
             self.scene.sensors["gripper_contact"] = self.contact_sensor
 
-    # Tuned dynamics
+    def _maybe_apply_calibration_geometry_from_cfg(self):
+        raw_path = str(getattr(self.cfg, "calibration_json", "") or "").strip()
+        if not raw_path:
+            return
+
+        path = os.path.expanduser(raw_path)
+        if not os.path.isabs(path) and not os.path.isfile(path):
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            alt = os.path.join(repo_root, raw_path)
+            if os.path.isfile(alt):
+                path = alt
+
+        if not os.path.isfile(path):
+            print(f"  [Calibration] geometry JSON not found: {raw_path} (keep defaults)")
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [Calibration] failed to load {path}: {exc} (keep defaults)")
+            return
+
+        wr = payload.get("wheel_radius", {}).get("wheel_radius_m")
+        br = payload.get("base_radius", {}).get("base_radius_m")
+
+        applied = False
+        try:
+            wr_f = float(wr)
+            if math.isfinite(wr_f) and wr_f > 1e-8:
+                self.wheel_radius = wr_f
+                applied = True
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            br_f = float(br)
+            if math.isfinite(br_f) and br_f > 1e-8:
+                self.base_radius = br_f
+                applied = True
+        except (TypeError, ValueError):
+            pass
+
+        if applied:
+            print(
+                f"  [Calibration] geometry applied from {path}: "
+                f"wheel_radius={self.wheel_radius:.6f}, base_radius={self.base_radius:.6f}"
+            )
+        else:
+            print(f"  [Calibration] no valid geometry fields in {path} (keep defaults)")
+
     def _maybe_apply_tuned_dynamics_from_cfg(self):
         if not self.cfg.dynamics_json:
             return
@@ -477,6 +536,40 @@ class LeKiwiNavEnv(DirectRLEnv):
             out[str(sim_joint)] = (lo_f, hi_f)
         return out
 
+    def _apply_arm_limits(self, limits_by_joint: dict[str, tuple[float, float]], source: str, margin: float = 0.0):
+        margin = float(margin)
+        joint_ids = []
+        limits_rows = []
+        min_limit = -2.0 * math.pi + 1e-6
+        max_limit = 2.0 * math.pi - 1e-6
+        for sim_joint, (lo, hi) in limits_by_joint.items():
+            idxs, _ = self.robot.find_joints([sim_joint])
+            if len(idxs) != 1:
+                continue
+            lo_c = max(float(lo - margin), min_limit)
+            hi_c = min(float(hi + margin), max_limit)
+            if not math.isfinite(lo_c) or not math.isfinite(hi_c) or abs(hi_c - lo_c) < 1e-8:
+                continue
+            joint_ids.append(int(idxs[0]))
+            limits_rows.append([lo_c, hi_c])
+
+        if not joint_ids:
+            raise ValueError(f"No valid sim joints found from arm limits source: {source}")
+
+        limits = torch.tensor(limits_rows, dtype=torch.float32, device=self.device).unsqueeze(0)
+        limits = limits.repeat(self.num_envs, 1, 1)
+        self.robot.write_joint_position_limit_to_sim(limits, joint_ids=joint_ids, warn_limit_violation=False)
+        print(f"  [ArmLimits] applied from {source}: {len(joint_ids)} joints (margin={margin:.4f} rad)")
+
+    def _apply_baked_arm_limits(self):
+        if not ARM_LIMITS_BAKED_RAD:
+            return
+        self._apply_arm_limits(
+            limits_by_joint={str(k): (float(v[0]), float(v[1])) for k, v in ARM_LIMITS_BAKED_RAD.items()},
+            source="lekiwi_robot_cfg.ARM_LIMITS_BAKED_RAD",
+            margin=0.0,
+        )
+
     def _maybe_apply_arm_limits_from_cfg(self):
         if not self.cfg.arm_limit_json:
             return
@@ -494,24 +587,11 @@ class LeKiwiNavEnv(DirectRLEnv):
                 f"arm_limit_json has no valid limits: {path}. "
                 "Expected {'joint_limits_rad': {'<joint>': {'min': ..., 'max': ...}}}."
             )
-
-        margin = float(self.cfg.arm_limit_margin_rad)
-        joint_ids = []
-        limits_rows = []
-        for sim_joint, (lo, hi) in limits_by_joint.items():
-            idxs, _ = self.robot.find_joints([sim_joint])
-            if len(idxs) != 1:
-                continue
-            joint_ids.append(int(idxs[0]))
-            limits_rows.append([lo - margin, hi + margin])
-
-        if not joint_ids:
-            raise ValueError(f"No valid sim joints found from arm_limit_json: {path}")
-
-        limits = torch.tensor(limits_rows, dtype=torch.float32, device=self.device).unsqueeze(0)
-        limits = limits.repeat(self.num_envs, 1, 1)
-        self.robot.write_joint_position_limit_to_sim(limits, joint_ids=joint_ids, warn_limit_violation=False)
-        print(f"  [ArmLimits] applied from {path}: {len(joint_ids)} joints (margin={margin:.4f} rad)")
+        self._apply_arm_limits(
+            limits_by_joint=limits_by_joint,
+            source=path,
+            margin=float(self.cfg.arm_limit_margin_rad),
+        )
 
     @staticmethod
     def _safe_float(params: dict, key: str, default: float) -> float:

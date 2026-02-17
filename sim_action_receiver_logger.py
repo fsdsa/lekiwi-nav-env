@@ -673,6 +673,55 @@ def _to_float_dict(payload: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+def _extract_live_packet_fields(
+    packet: dict[str, Any],
+    arm_name_to_idx: dict[str, int],
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], str]:
+    """Parse both legacy `action` packets and `name/position/base` packets."""
+    action: dict[str, float] = {}
+    real_obs: dict[str, float] = {}
+    direct_arm_target_rad: dict[str, float] = {}
+    packet_format = "unknown"
+
+    raw_action = packet.get("action")
+    if isinstance(raw_action, dict):
+        action = _to_float_dict(raw_action)
+        packet_format = "action"
+
+    raw_observation = packet.get("observation")
+    if isinstance(raw_observation, dict):
+        real_obs = _to_float_dict(raw_observation)
+
+    names = packet.get("name")
+    positions = packet.get("position")
+    if isinstance(names, list) and isinstance(positions, list):
+        count = min(len(names), len(positions))
+        for i in range(count):
+            joint_name = names[i]
+            value = positions[i]
+            if not isinstance(joint_name, str):
+                continue
+            if joint_name not in arm_name_to_idx:
+                continue
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                direct_arm_target_rad[joint_name] = float(value)
+        if direct_arm_target_rad:
+            packet_format = "name_position"
+
+    base = packet.get("base")
+    if isinstance(base, dict):
+        base_cmd = _to_float_dict(base)
+        if "vx" in base_cmd:
+            action.setdefault("base.vx", base_cmd["vx"])
+        if "vy" in base_cmd:
+            action.setdefault("base.vy", base_cmd["vy"])
+        if "wz" in base_cmd:
+            # explicit rad/s channel used by the custom sender script
+            action.setdefault("base.wz_rad", base_cmd["wz"])
+
+    return action, real_obs, direct_arm_target_rad, packet_format
+
+
 def _compute_arm_series(series_acc: dict[tuple[str, str], dict[str, list[float]]], out_path: Path) -> None:
     sequences = []
     for (real_key, sim_joint), data in sorted(series_acc.items()):
@@ -840,16 +889,21 @@ def main() -> None:
                         except json.JSONDecodeError:
                             continue
 
-                        action = _to_float_dict(packet.get("action", {}))
-                        real_obs = _to_float_dict(packet.get("observation", {}))
+                        action, real_obs, direct_arm_target_rad, packet_format = _extract_live_packet_fields(
+                            packet=packet,
+                            arm_name_to_idx=arm_name_to_idx,
+                        )
 
                         vx = _pick(action, "x.vel", "base.linear_velocity_x.pos", "base.vx", default=0.0)
                         vy = _pick(action, "y.vel", "base.linear_velocity_y.pos", "base.vy", default=0.0)
-                        wz_deg = _pick(action, "theta.vel", "base.angular_velocity_z.pos", "base.wz", default=0.0)
                         vx *= lin_scale
                         vy *= lin_scale
-                        wz_deg *= ang_scale
-                        wz_rad = np.deg2rad(wz_deg)
+                        if "base.wz_rad" in action:
+                            wz_rad = float(action["base.wz_rad"]) * ang_scale
+                        else:
+                            wz_deg = _pick(action, "theta.vel", "base.angular_velocity_z.pos", "base.wz", default=0.0)
+                            wz_deg *= ang_scale
+                            wz_rad = np.deg2rad(wz_deg)
 
                         wheel_radps = _kiwi_ik(vx, vy, wz_rad, wheel_radius=wheel_radius, base_radius=base_radius)
                         vel_target.zero_()
@@ -869,6 +923,11 @@ def main() -> None:
                                 arm_action_scale=args.arm_action_scale,
                                 encoder_mapper=encoder_mapper,
                             )
+                        for sim_joint, target_rad in direct_arm_target_rad.items():
+                            idx = arm_name_to_idx.get(sim_joint)
+                            if idx is None:
+                                continue
+                            arm_target[:, idx] = float(target_rad)
 
                         robot.set_joint_velocity_target(vel_target)
                         robot.set_joint_position_target(arm_target)
@@ -918,11 +977,23 @@ def main() -> None:
                             series_acc[key]["t"].append(float(t_rel))
                             series_acc[key]["real"].append(float(real_rad))
                             series_acc[key]["sim"].append(float(sim_rad))
+                        for sim_joint, target_rad in direct_arm_target_rad.items():
+                            sim_rad = sim_arm_pos.get(sim_joint)
+                            if sim_rad is None:
+                                continue
+                            key = (f"direct::{sim_joint}", sim_joint)
+                            if key not in series_acc:
+                                series_acc[key] = {"t": [], "real": [], "sim": []}
+                            series_acc[key]["t"].append(float(t_rel))
+                            series_acc[key]["real"].append(float(target_rad))
+                            series_acc[key]["sim"].append(float(sim_rad))
 
                         record = {
                             "seq": int(packet.get("seq", packet_count)),
                             "t_wall_recv_s": time.time(),
                             "t_mono_ns": t_mono_ns,
+                            "packet_format": packet_format,
+                            "packet_src": packet.get("src"),
                             "action": action,
                             "real_observation": real_obs,
                             "sim": {

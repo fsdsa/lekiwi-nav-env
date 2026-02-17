@@ -74,6 +74,8 @@ parser.add_argument("--listen_host", type=str, default="0.0.0.0",
                     help="TCP 직접 수신 모드 listen host")
 parser.add_argument("--listen_port", type=int, default=15002,
                     help="TCP 직접 수신 모드 listen port")
+parser.add_argument("--calibration_json", type=str, default=None,
+                    help="calibration JSON 경로 (wheel/base geometry override)")
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -102,7 +104,7 @@ except Exception as ex:  # noqa: BLE001 - ABI mismatch 등도 잡아 fallback한
 from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
 from lekiwi_robot_cfg import (
     ARM_JOINT_NAMES, WHEEL_JOINT_NAMES,
-    WHEEL_RADIUS, BASE_RADIUS, WHEEL_ANGLES_RAD,
+    WHEEL_ANGLES_RAD,
 )
 
 
@@ -124,11 +126,12 @@ if ROS2_AVAILABLE:
     class Ros2TeleopSubscriber(Node, TeleopInputBase):
         """ROS2에서 텔레옵 명령 수신."""
 
-        def __init__(self, arm_topic: str, wheel_topic: str, M_inv: np.ndarray):
+        def __init__(self, arm_topic: str, wheel_topic: str, M_inv: np.ndarray, wheel_radius: float):
             super().__init__("teleop_recorder")
 
             self._lock = threading.Lock()
             self._M_inv = M_inv
+            self._wheel_radius = float(wheel_radius)
 
             # 최신 데이터
             self._arm_positions = np.zeros(6)   # rad
@@ -169,7 +172,7 @@ if ROS2_AVAILABLE:
                 wheel = self._wheel_velocities.copy()
                 now = time.time()
                 active = (now - self._arm_stamp < 1.0) or (now - self._wheel_stamp < 1.0)
-            body_cmd = wheel_to_body_vel(wheel, self._M_inv)
+            body_cmd = wheel_to_body_vel(wheel, self._M_inv, self._wheel_radius)
             return arm, body_cmd, active
 
 
@@ -282,19 +285,19 @@ class TcpTeleopSubscriber(TeleopInputBase):
 #  Kiwi 역 IK (wheel rad/s → body velocity, ROS2 path 전용)
 # ═══════════════════════════════════════════════════════════════════════
 
-def build_kiwi_M_inv():
+def build_kiwi_M_inv(base_radius: float):
     """역 Kiwi IK 행렬: [vx, vy, wz] = r * M_inv @ wheel_radps"""
     angles = np.array(WHEEL_ANGLES_RAD)
     M = np.array([
-        [math.cos(a), math.sin(a), BASE_RADIUS] for a in angles
+        [math.cos(a), math.sin(a), float(base_radius)] for a in angles
     ])
     M_inv = np.linalg.inv(M)
     return M_inv
 
 
-def wheel_to_body_vel(wheel_radps: np.ndarray, M_inv: np.ndarray) -> np.ndarray:
+def wheel_to_body_vel(wheel_radps: np.ndarray, M_inv: np.ndarray, wheel_radius: float) -> np.ndarray:
     """바퀴 각속도 → 몸체 속도 (vx, vy, wz)."""
-    return WHEEL_RADIUS * M_inv @ wheel_radps
+    return float(wheel_radius) * M_inv @ wheel_radps
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -359,10 +362,17 @@ def main():
     # —— Isaac Lab 환경 ——
     env_cfg = LeKiwiNavEnvCfg()
     env_cfg.scene.num_envs = 1
+    if args.calibration_json is not None:
+        raw = str(args.calibration_json).strip()
+        env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
     env = LeKiwiNavEnv(cfg=env_cfg)
 
+    base_radius = float(env.base_radius)
+    wheel_radius = float(env.wheel_radius)
+    print(f"  geometry: wheel_radius={wheel_radius:.6f}, base_radius={base_radius:.6f}")
+
     # Kiwi 역 IK (ROS2 wheel->body path에서 사용)
-    M_inv = build_kiwi_M_inv()
+    M_inv = build_kiwi_M_inv(base_radius)
 
     # —— 텔레옵 입력 소스 초기화 ——
     selected_source = args.teleop_source
@@ -380,7 +390,7 @@ def main():
                 "해결: --teleop_source tcp 로 실행하거나, Python/ROS ABI를 맞추세요."
             )
         rclpy.init()
-        teleop_sub = Ros2TeleopSubscriber(args.arm_topic, args.wheel_topic, M_inv)
+        teleop_sub = Ros2TeleopSubscriber(args.arm_topic, args.wheel_topic, M_inv, wheel_radius)
         ros_executor = SingleThreadedExecutor()
         ros_executor.add_node(teleop_sub)
 

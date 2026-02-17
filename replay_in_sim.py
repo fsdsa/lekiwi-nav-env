@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -36,11 +37,18 @@ parser.add_argument("--calibration", type=str, required=True, help="calibration 
 parser.add_argument("--mode", type=str, default="position", choices=["position", "command", "arm_command"])
 parser.add_argument("--mapping_json", type=str, default=None, help="real_key -> sim_joint_name mapping JSON")
 parser.add_argument("--joint_unit", type=str, default="auto", choices=["auto", "rad", "deg"])
-parser.add_argument("--encoder_unit", type=str, default="auto", choices=["auto", "rad", "deg"])
+parser.add_argument("--encoder_unit", type=str, default="auto", choices=["auto", "rad", "deg", "m100"])
 parser.add_argument("--report_path", type=str, default=None)
 parser.add_argument("--series_path", type=str, default=None, help="save aligned real/sim time-series JSON")
 parser.add_argument("--wheel_radius", type=float, default=None)
 parser.add_argument("--base_radius", type=float, default=None)
+parser.add_argument(
+    "--geometry_source",
+    type=str,
+    default="config",
+    choices=["config", "calibration"],
+    help="wheel/base radius source when --wheel_radius/--base_radius are not set",
+)
 parser.add_argument("--fallback_vx", type=float, default=0.15, help="used if command metadata is missing")
 parser.add_argument("--fallback_wz", type=float, default=1.0, help="used if command metadata is missing")
 parser.add_argument("--lin_cmd_scale", type=float, default=1.0)
@@ -104,6 +112,58 @@ def load_json(path: str) -> dict:
         data = json.load(f)
     data["_resolved_path"] = str(target)
     return data
+
+
+def _pick_positive_finite(*vals: object) -> float | None:
+    for v in vals:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(f) and f > 1e-8:
+            return f
+    return None
+
+
+def resolve_motion_geometry(cal: dict) -> tuple[float, float, dict]:
+    wr_cfg = float(WHEEL_RADIUS)
+    br_cfg = float(BASE_RADIUS)
+    wr_cal = _pick_positive_finite(cal.get("wheel_radius", {}).get("wheel_radius_m"))
+    br_cal = _pick_positive_finite(cal.get("base_radius", {}).get("base_radius_m"))
+
+    wr_arg = _pick_positive_finite(args.wheel_radius)
+    br_arg = _pick_positive_finite(args.base_radius)
+
+    if wr_arg is not None:
+        wr = wr_arg
+        wr_src = "arg"
+    elif args.geometry_source == "calibration" and wr_cal is not None:
+        wr = wr_cal
+        wr_src = "calibration"
+    else:
+        wr = wr_cfg
+        wr_src = "config"
+
+    if br_arg is not None:
+        br = br_arg
+        br_src = "arg"
+    elif args.geometry_source == "calibration" and br_cal is not None:
+        br = br_cal
+        br_src = "calibration"
+    else:
+        br = br_cfg
+        br_src = "config"
+
+    meta = {
+        "geometry_source_arg": str(args.geometry_source),
+        "wheel_radius_config": wr_cfg,
+        "base_radius_config": br_cfg,
+        "wheel_radius_calibration": wr_cal,
+        "base_radius_calibration": br_cal,
+        "wheel_radius_source": wr_src,
+        "base_radius_source": br_src,
+    }
+    return float(wr), float(br), meta
 
 
 def _extract_arm_limits_payload(payload: dict) -> dict[str, tuple[float, float]]:
@@ -276,7 +336,7 @@ def load_mapping_override(path: str | None) -> dict[str, str]:
 
 
 def infer_joint_unit(frames: list[dict], mapped_real_keys: list[str], user_choice: str) -> str:
-    if user_choice in ("rad", "deg"):
+    if user_choice in ("rad", "deg", "m100"):
         return user_choice
     deltas = []
     for i in range(1, len(frames)):
@@ -289,32 +349,106 @@ def infer_joint_unit(frames: list[dict], mapped_real_keys: list[str], user_choic
                     deltas.append(d)
     if not deltas:
         return "rad"
-    return "deg" if float(np.percentile(deltas, 95)) > 10.0 else "rad"
+    p95 = float(np.percentile(deltas, 95))
+    if 2.0 <= p95 <= 15.0:
+        return "m100"
+    return "deg" if p95 > 10.0 else "rad"
 
 
 def infer_encoder_unit(series: dict[str, np.ndarray], user_choice: str) -> str:
-    if user_choice in ("rad", "deg"):
+    if user_choice in ("rad", "deg", "m100"):
         return user_choice
-    deltas = []
+    vals_all = []
     for vals in series.values():
-        if len(vals) < 2:
-            continue
-        d = np.abs(np.diff(vals.astype(np.float64)))
-        d = d[np.isfinite(d)]
-        if d.size > 0:
-            deltas.append(d)
-    if not deltas:
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size > 0:
+            vals_all.append(arr)
+    if not vals_all:
         return "rad"
-    all_d = np.concatenate(deltas)
-    return "deg" if float(np.percentile(all_d, 95)) > 10.0 else "rad"
+    all_v = np.concatenate(vals_all)
+    # Wrapped encoder streams that live in [-100, 100] typically use m100.
+    if _has_m100_wrap_signature(series):
+        return "m100"
+    p95_abs = float(np.percentile(np.abs(all_v), 95))
+    if 60.0 <= p95_abs <= 110.0:
+        return "m100"
+    if p95_abs > 20.0:
+        return "deg"
+    return "rad"
 
 
 def to_rad(v: float, unit: str) -> float:
-    return float(np.deg2rad(v)) if unit == "deg" else float(v)
+    if unit == "deg":
+        return float(np.deg2rad(v))
+    if unit == "m100":
+        return float(v * (np.pi / 100.0))
+    return float(v)
 
 
 def to_rad_array(v: np.ndarray, unit: str) -> np.ndarray:
-    return np.deg2rad(v) if unit == "deg" else v
+    if unit == "deg":
+        return np.deg2rad(v)
+    if unit == "m100":
+        return v * (np.pi / 100.0)
+    return v
+
+
+def to_unwrapped_rad_array(v: np.ndarray, unit: str) -> np.ndarray:
+    return np.unwrap(to_rad_array(v.astype(np.float64), unit))
+
+
+def resolve_encoder_unit(declared_unit: str, series: dict[str, np.ndarray], user_choice: str) -> str:
+    if user_choice in ("rad", "deg", "m100"):
+        return user_choice
+
+    unit = str(declared_unit or "auto").strip().lower()
+    if unit not in ("rad", "deg", "m100"):
+        unit = "auto"
+
+    inferred = infer_encoder_unit(series, "auto")
+    if unit == "auto":
+        return inferred
+
+    vals_all = []
+    for vals in series.values():
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size > 0:
+            vals_all.append(arr)
+    if not vals_all:
+        return unit
+    p95_abs = float(np.percentile(np.abs(np.concatenate(vals_all)), 95))
+    has_m100_wrap = _has_m100_wrap_signature(series)
+
+    if unit == "rad" and p95_abs > 20.0:
+        return inferred
+    if unit == "deg" and p95_abs < 5.0:
+        return inferred
+    # Some historical files labeled wrapped [-100, 100] streams as deg.
+    if unit == "deg" and has_m100_wrap:
+        return "m100"
+    if unit == "m100" and not (60.0 <= p95_abs <= 110.0):
+        return inferred
+    return unit
+
+
+def _has_m100_wrap_signature(series: dict[str, np.ndarray]) -> bool:
+    jumps = []
+    p95_abs = []
+    for vals in series.values():
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size < 3:
+            continue
+        p95_abs.append(float(np.percentile(np.abs(arr), 95)))
+        jumps.append(float(np.percentile(np.abs(np.diff(arr)), 95)))
+    if not jumps or not p95_abs:
+        return False
+    max_p95 = float(np.max(p95_abs))
+    max_jump = float(np.max(jumps))
+    # m100 wrapped streams: values close to +/-100 with occasional ~200 jumps.
+    return (60.0 <= max_p95 <= 110.0) and (120.0 <= max_jump <= 260.0)
 
 
 def kiwi_ik(vx: float, vy: float, wz: float, wheel_radius: float, base_radius: float) -> np.ndarray:
@@ -392,13 +526,17 @@ def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float)
             "sample_hz": float(cmd.get("sample_hz", 1.0 / max(np.median(np.diff(t_arr)), 1e-6))),
         }
 
+        # LeKiwi real logger uses theta.vel in deg/s. Convert to rad/s for kinematics.
+        if abs(command["wz"]) > 8.0:
+            command["wz"] = float(math.radians(command["wz"]))
+
         sequences.append(
             {
                 "name": block_name,
                 "time_s": t_arr,
                 "wheel_series": ws,
                 "wheel_keys": wheel_keys,
-                "encoder_unit": str(block.get("encoder_unit", "auto")),
+                "encoder_unit": resolve_encoder_unit(str(block.get("encoder_unit", "auto")), ws, args.encoder_unit),
                 "command": command,
             }
         )
@@ -427,7 +565,7 @@ def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict
     order_map = build_arm_order_mapping(raw_joint_keys)
 
     tests: list[dict] = []
-    for item in tests_raw:
+    for test_idx, item in enumerate(tests_raw):
         if not isinstance(item, dict):
             continue
         joint_key = str(item.get("joint_key", ""))
@@ -442,6 +580,7 @@ def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict
         pos = np.asarray(item.get("pos", []), dtype=np.float64)
         if t.size < 5 or cmd.size != t.size or pos.size != t.size:
             continue
+        unit_local = unit
         order = np.argsort(t)
         t = t[order]
         cmd = cmd[order]
@@ -449,14 +588,14 @@ def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict
 
         tests.append(
             {
-                "name": f"arm_{item.get('type', 'unknown')}_{joint_key}",
+                "name": f"arm_{item.get('type', 'unknown')}_{joint_key}_{test_idx:02d}",
                 "joint_key": joint_key,
                 "sim_joint": sim_joint,
                 "type": str(item.get("type", "unknown")),
                 "time_s": t,
-                "cmd_rad": to_rad_array(cmd, unit),
-                "pos_rad": to_rad_array(pos, unit),
-                "unit": unit,
+                "cmd_rad": to_unwrapped_rad_array(cmd, unit_local),
+                "pos_rad": to_unwrapped_rad_array(pos, unit_local),
+                "unit": unit_local,
             }
         )
 
@@ -519,12 +658,16 @@ class ArticulationCommandRunner:
     def _apply_arm_limits(self, arm_limits: dict[str, tuple[float, float]], margin_rad: float):
         joint_ids = []
         limits_rows = []
+        min_limit = -2.0 * np.pi + 1e-6
+        max_limit = 2.0 * np.pi - 1e-6
         for sim_joint, (lo, hi) in arm_limits.items():
             idx = self.arm_name_to_idx.get(sim_joint)
             if idx is None:
                 continue
             l = float(min(lo, hi) - margin_rad)
             h = float(max(lo, hi) + margin_rad)
+            l = max(l, min_limit)
+            h = min(h, max_limit)
             if (not np.isfinite(l)) or (not np.isfinite(h)) or abs(h - l) < 1e-8:
                 continue
             joint_ids.append(int(idx))
@@ -653,13 +796,18 @@ class ArticulationCommandRunner:
         if steps < 2:
             raise RuntimeError(f"arm test '{test['name']}' is too short")
 
+        # Real arm sysid commands are recorded around the real robot's rest pose.
+        # Replay in sim should apply the same *delta* around sim default joint pose.
+        cmd0 = float(cmd[0])
+        sim_base = float(self.default_joint_pos[0, idx].item())
+
         t = []
         pos = []
         wheel_zero = torch.zeros((1, self.robot.num_joints), device=self.robot.device)
 
         for i in range(steps):
             arm_target = self.default_joint_pos.clone()
-            arm_target[:, idx] = float(cmd[i])
+            arm_target[:, idx] = sim_base + float(cmd[i] - cmd0)
             self.robot.set_joint_velocity_target(wheel_zero)
             self.robot.set_joint_position_target(arm_target)
             self.robot.write_data_to_sim()
@@ -689,6 +837,9 @@ def align_and_compare(
     rr = np.interp(t_common, real_t, real_series)
     ss = np.interp(t_common, sim_t, sim_series)
 
+    rr = np.unwrap(rr)
+    ss = np.unwrap(ss)
+
     rr = rr - rr[0]
     ss = ss - ss[0]
 
@@ -701,6 +852,19 @@ def align_and_compare(
         "rmse_rad": float(np.sqrt(np.mean(err**2))),
         "max_err_rad": float(np.max(np.abs(err))),
     }
+
+
+def align_and_compare_best_polarity(
+    real_t: np.ndarray,
+    real_series: np.ndarray,
+    sim_t: np.ndarray,
+    sim_series: np.ndarray,
+) -> dict:
+    aligned = align_and_compare(real_t=real_t, real_series=real_series, sim_t=sim_t, sim_series=sim_series)
+    aligned["sim_polarity"] = 1
+    flipped = align_and_compare(real_t=real_t, real_series=real_series, sim_t=sim_t, sim_series=-sim_series)
+    flipped["sim_polarity"] = -1
+    return flipped if flipped["rmse_rad"] < aligned["rmse_rad"] else aligned
 
 
 def run_position_mode(cal: dict, wr: float, br: float) -> tuple[dict, dict | None]:
@@ -854,21 +1018,17 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
         mapping.update(load_mapping_override(args.mapping_json))
         valid_mapping = {rk: sj for rk, sj in mapping.items() if sj in WHEEL_JOINT_NAMES}
 
-        enc_unit = seq.get("encoder_unit", "auto")
-        if enc_unit == "auto":
-            enc_unit = infer_encoder_unit(seq["wheel_series"], args.encoder_unit)
-        elif args.encoder_unit in ("rad", "deg"):
-            enc_unit = args.encoder_unit
+        enc_unit = resolve_encoder_unit(seq.get("encoder_unit", "auto"), seq["wheel_series"], args.encoder_unit)
 
         seq_pairs = []
         seq_abs_err = []
         seq_sq_err = []
 
         for real_key, sim_joint in sorted(valid_mapping.items()):
-            real_vals = to_rad_array(np.asarray(seq["wheel_series"][real_key], dtype=np.float64), enc_unit)
-            sim_vals = np.asarray(sim_trace["wheel_pos_rad"][sim_joint], dtype=np.float64)
+            real_vals = to_unwrapped_rad_array(np.asarray(seq["wheel_series"][real_key], dtype=np.float64), enc_unit)
+            sim_vals = np.unwrap(np.asarray(sim_trace["wheel_pos_rad"][sim_joint], dtype=np.float64))
 
-            aligned = align_and_compare(
+            aligned = align_and_compare_best_polarity(
                 real_t=np.asarray(seq["time_s"], dtype=np.float64),
                 real_series=real_vals,
                 sim_t=np.asarray(sim_trace["time_s"], dtype=np.float64),
@@ -882,6 +1042,7 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
                     "mae_rad": aligned["mae_rad"],
                     "rmse_rad": aligned["rmse_rad"],
                     "max_err_rad": aligned["max_err_rad"],
+                    "sim_polarity": int(aligned["sim_polarity"]),
                 }
             )
 
@@ -903,6 +1064,7 @@ def run_command_mode(cal: dict, wr: float, br: float, dynamics_params: dict | No
                     "mae_rad": aligned["mae_rad"],
                     "rmse_rad": aligned["rmse_rad"],
                     "max_err_rad": aligned["max_err_rad"],
+                    "sim_polarity": int(aligned["sim_polarity"]),
                 }
             )
 
@@ -1019,18 +1181,21 @@ def main():
     print(f"\n  calibration: {cal.get('_resolved_path', args.calibration)}")
     print(f"  timestamp:   {cal.get('timestamp', 'unknown')}")
 
-    wr = args.wheel_radius
-    br = args.base_radius
-    if wr is None:
-        wr = cal.get("wheel_radius", {}).get("wheel_radius_m", WHEEL_RADIUS)
-    if br is None:
-        br = cal.get("base_radius", {}).get("base_radius_m", BASE_RADIUS)
+    wr, br, geom_meta = resolve_motion_geometry(cal)
 
     print("\n  parameter compare")
-    print(f"    measured wheel_radius = {wr:.6f} m")
-    print(f"    config   wheel_radius = {WHEEL_RADIUS:.6f} m")
-    print(f"    measured base_radius  = {br:.6f} m")
-    print(f"    config   base_radius  = {BASE_RADIUS:.6f} m")
+    print(
+        f"    wheel_radius used  = {wr:.6f} m "
+        f"(source={geom_meta['wheel_radius_source']}, "
+        f"config={geom_meta['wheel_radius_config']:.6f}, "
+        f"cal={geom_meta['wheel_radius_calibration']})"
+    )
+    print(
+        f"    base_radius used   = {br:.6f} m "
+        f"(source={geom_meta['base_radius_source']}, "
+        f"config={geom_meta['base_radius_config']:.6f}, "
+        f"cal={geom_meta['base_radius_calibration']})"
+    )
     if args.arm_limit_json:
         print(
             f"    arm_limit_json       = {Path(args.arm_limit_json).expanduser()} "
@@ -1052,6 +1217,9 @@ def main():
         report, series = run_command_mode(cal, wr=wr, br=br, dynamics_params=dynamics_params)
     else:
         report, series = run_arm_command_mode(cal, wr=wr, br=br, dynamics_params=dynamics_params)
+
+    if isinstance(report, dict):
+        report["geometry"] = geom_meta
 
     if args.report_path:
         rp = Path(args.report_path).expanduser()

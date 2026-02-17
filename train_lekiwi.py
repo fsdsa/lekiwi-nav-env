@@ -49,6 +49,8 @@ parser.add_argument("--allow_bc_norm_mismatch", action="store_true",
                     help="BC obs 정규화 파일이 있어도 강제 진행 (권장하지 않음)")
 parser.add_argument("--dynamics_json", type=str, default=None,
                     help="tune_sim_dynamics.py 출력 JSON (best_params) 경로")
+parser.add_argument("--calibration_json", type=str, default=None,
+                    help="calibration JSON 경로 (wheel/base geometry override)")
 parser.add_argument("--arm_limit_json", type=str, default=None,
                     help="optional arm joint limit JSON (real2sim calibration)")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0,
@@ -191,6 +193,9 @@ def main():
     # —— 환경 생성 ————————————————————————————————————————————
     env_cfg = LeKiwiNavEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
+    if args.calibration_json is not None:
+        raw = str(args.calibration_json).strip()
+        env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
     if args.dynamics_json:
         env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
     if args.arm_limit_json:
@@ -226,6 +231,14 @@ def main():
     print(f"  Envs: {args.num_envs} | Device: {device}")
     print(f"  Obs: {env.observation_space.shape} | Act: {env.action_space.shape}")
     print(f"  Max iterations: {args.max_iterations}")
+    if env_cfg.calibration_json:
+        print(f"  Calibration JSON: {env_cfg.calibration_json}")
+    else:
+        print("  Calibration JSON: (disabled)")
+    print(
+        f"  Geometry in env: wheel={raw_env.wheel_radius:.6f}, "
+        f"base={raw_env.base_radius:.6f}"
+    )
     if args.dynamics_json:
         print(f"  Dynamics JSON: {os.path.expanduser(args.dynamics_json)}")
         print(f"  Scaled cmd limits: lin={raw_env.cfg.max_lin_vel:.4f}, ang={raw_env.cfg.max_ang_vel:.4f}")

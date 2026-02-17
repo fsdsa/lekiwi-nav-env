@@ -40,9 +40,12 @@ NUM_ARM_JOINTS = len(ARM_JOINT_NAMES)    # 6
 NUM_WHEEL_JOINTS = len(WHEEL_JOINT_NAMES)  # 3
 NUM_DOF = NUM_ARM_JOINTS + NUM_WHEEL_JOINTS  # 9 (제어 대상)
 
-# ── Kiwi IK 파라미터 (tcp_joint_state_reader.py에서 검증) ──────────────
-WHEEL_RADIUS = 0.0437      # m
-BASE_RADIUS = 0.1214315    # m (center → wheel)
+# ── Kiwi IK 파라미터 (시뮬레이터 실측 기하 상수) ────────────────────────────
+# measured in simulator:
+#   center -> wheel distance = 10.85 cm
+#   wheel radius             = 4.90 cm
+WHEEL_RADIUS = 0.049000000000      # m
+BASE_RADIUS = 0.108500000000    # m (center -> wheel)
 WHEEL_ANGLES_DEG = [-30.0, -150.0, 90.0]  # FL, FR, Back
 WHEEL_ANGLES_RAD = [a * math.pi / 180.0 for a in WHEEL_ANGLES_DEG]
 
@@ -53,6 +56,17 @@ KIWI_M = [
     [math.cos(WHEEL_ANGLES_RAD[1]), math.sin(WHEEL_ANGLES_RAD[1]), BASE_RADIUS],
     [math.cos(WHEEL_ANGLES_RAD[2]), math.sin(WHEEL_ANGLES_RAD[2]), BASE_RADIUS],
 ]
+
+# ── Arm soft limits (REAL 측정값 베이크, rad) ────────────────────────────
+# source: calibration/arm_limits_real2sim.json
+ARM_LIMITS_BAKED_RAD = {
+    "STS3215_03a_v1_Revolute_45": (-1.7453292519943295, 1.7208288783054544),
+    "STS3215_03a_v1_1_Revolute_49": (-1.7453292519943295, 1.7453292519943295),
+    "STS3215_03a_v1_2_Revolute_51": (-1.7173293174703563, 1.73444038856834),
+    "STS3215_03a_v1_3_Revolute_53": (-1.7423760722109212, 1.7069379148100212),
+    "STS3215_03a_Wrist_Roll_v1_Revolute_55": (-1.680545357903209, 1.5680259629028417),
+    "STS3215_03a_v1_4_Revolute_57": (0.006566325252047892, 1.7453292519943295),
+}
 
 # ── 로봇 설정 ──────────────────────────────────────────────────────────
 LEKIWI_CFG = ArticulationCfg(
