@@ -90,6 +90,7 @@ def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
     obs_list, act_list = [], []
 
     for fpath in hdf5_files:
+        file_episode_count = 0
         with h5py.File(fpath, "r") as f:
             episode_keys = sorted([k for k in f.keys() if k.startswith("episode")])
 
@@ -98,11 +99,13 @@ def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
                     grp = f[key]
                     obs_list.append(grp["obs"][:])
                     act_list.append(grp["actions"][:])
+                    file_episode_count += 1
             elif "obs" in f and "actions" in f:
                 obs_list.append(f["obs"][:])
                 act_list.append(f["actions"][:])
+                file_episode_count = 1
 
-        print(f"  Loaded: {fpath.name} ({len(episode_keys) if episode_keys else 1} episodes)")
+        print(f"  Loaded: {fpath.name} ({file_episode_count} episodes)")
 
     if not obs_list:
         raise ValueError(f"No valid episodes found in {demo_dir}")

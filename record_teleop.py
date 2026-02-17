@@ -82,6 +82,13 @@ parser.add_argument("--arm_limit_json", type=str, default=None,
                     help="arm limit JSON 경로")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0,
                     help="arm limit margin (rad)")
+parser.add_argument(
+    "--arm_input_unit",
+    type=str,
+    default="auto",
+    choices=["auto", "rad", "deg", "m100"],
+    help="teleop arm position unit (auto/rad/deg/m100)",
+)
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -368,6 +375,31 @@ def teleop_to_action(
     return action
 
 
+def _infer_arm_unit(arm_pos: np.ndarray) -> str:
+    arr = np.asarray(arm_pos, dtype=np.float64)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return "rad"
+    p95_abs = float(np.percentile(np.abs(finite), 95))
+    if 20.0 <= p95_abs <= 120.0:
+        return "m100"
+    if p95_abs > 7.0:
+        return "deg"
+    return "rad"
+
+
+def normalize_arm_positions_to_rad(arm_pos: np.ndarray, unit: str) -> tuple[np.ndarray, str]:
+    unit_l = str(unit).strip().lower()
+    arr = np.asarray(arm_pos, dtype=np.float64)
+    if unit_l == "auto":
+        unit_l = _infer_arm_unit(arr)
+    if unit_l == "deg":
+        return np.deg2rad(arr), unit_l
+    if unit_l == "m100":
+        return arr * (np.pi / 100.0), unit_l
+    return arr, "rad"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════════════════════════════
@@ -387,6 +419,7 @@ def main():
     print(f"  목표: {args.num_demos} 에피소드")
     print(f"  저장: {output_path}")
     print(f"  teleop source: {args.teleop_source}")
+    print(f"  arm input unit: {args.arm_input_unit}")
     print(f"  ROS2 토픽: {args.arm_topic}, {args.wheel_topic}")
     print(f"  TCP 수신: {args.listen_host}:{args.listen_port}")
     print()
@@ -467,7 +500,7 @@ def main():
         print("  arm mapping: action [-1,1] -> joint limits (center/half-range)")
     else:
         print(f"  arm mapping: action * arm_action_scale ({arm_action_scale:.4f})")
-    goal_thresh = env_cfg.goal_reached_thresh
+    goal_thresh = float(getattr(env.cfg, "goal_reached_thresh", 0.30))
 
     # —— 녹화 루프 ——
     obs, info = env.reset()
@@ -492,16 +525,21 @@ def main():
         hdf5_file.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
 
     print("  ⏳ 텔레옵 입력 연결 대기 중...")
+    resolved_arm_unit: str | None = None
 
     try:
         while sim_app.is_running() and saved_count < args.num_demos:
             # 텔레옵 입력 읽기
             arm_pos, body_cmd, is_active = teleop_input.get_latest()
+            arm_pos_rad, unit_used = normalize_arm_positions_to_rad(arm_pos, args.arm_input_unit)
+            if resolved_arm_unit is None and is_active:
+                resolved_arm_unit = unit_used
+                print(f"  arm unit resolved: {resolved_arm_unit}")
 
             # 텔레옵 → action 변환
             if is_active:
                 action_np = teleop_to_action(
-                    arm_pos, body_cmd,
+                    arm_pos_rad, body_cmd,
                     max_lin_vel, max_ang_vel, arm_action_scale,
                     arm_action_to_limits=arm_action_to_limits,
                     arm_center=arm_center,

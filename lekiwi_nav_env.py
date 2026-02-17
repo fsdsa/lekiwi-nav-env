@@ -216,6 +216,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         self._base_max_lin_vel = float(self.cfg.max_lin_vel)
         self._base_max_ang_vel = float(self.cfg.max_ang_vel)
         self._applied_dynamics_params: dict[str, float] | None = None
+        self._dynamics_command_transform: dict[str, float | str] | None = None
 
         # Kiwi IK matrix
         self.base_radius = float(BASE_RADIUS)
@@ -266,6 +267,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         self.reached_count = 0
         self._cached_metrics: Dict[str, torch.Tensor] | None = None
         self._phase_before_update = self.phase.clone()
+        self._contact_shape_warned = False
 
         if self._multi_object:
             if self._num_object_types <= 0 or len(self._object_catalog) == 0:
@@ -612,6 +614,18 @@ class LeKiwiNavEnv(DirectRLEnv):
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
+        cmd_tf_raw = payload.get("command_transform") if isinstance(payload, dict) else None
+        if isinstance(cmd_tf_raw, dict):
+            self._dynamics_command_transform = {
+                "mode": str(cmd_tf_raw.get("mode", "none")),
+                "linear_map": str(cmd_tf_raw.get("linear_map", "identity")),
+                "lin_scale": self._safe_float(cmd_tf_raw, "lin_scale", 1.0),
+                "ang_scale": self._safe_float(cmd_tf_raw, "ang_scale", 1.0),
+                "wz_sign": self._safe_float(cmd_tf_raw, "wz_sign", 1.0),
+            }
+        else:
+            self._dynamics_command_transform = None
+
         raw_params = self._extract_tuned_params(payload)
         if not isinstance(raw_params, dict):
             raise ValueError("Invalid dynamics JSON: expected dict or {'best_params': dict}")
@@ -713,6 +727,12 @@ class LeKiwiNavEnv(DirectRLEnv):
             f"  [Dynamics] wheel_radius={self.wheel_radius:.6f} "
             f"base_radius={self.base_radius:.6f}"
         )
+        if self._dynamics_command_transform is not None:
+            print(f"  [Dynamics] command_transform(meta)={self._dynamics_command_transform}")
+            print(
+                "  [Dynamics] note: command_transform is for real<->sim log conversion; "
+                "RL env action path stays in sim space."
+            )
 
     # Action pipeline
     def _pre_physics_step(self, actions: torch.Tensor):
@@ -787,6 +807,16 @@ class LeKiwiNavEnv(DirectRLEnv):
         if not self._physics_grasp or self.contact_sensor is None:
             return force
 
+        def _warn_shape_once(name: str, tensor: torch.Tensor):
+            if self._contact_shape_warned:
+                return
+            self._contact_shape_warned = True
+            print(
+                "  [WARN] contact tensor shape mismatch: "
+                f"{name}.shape={tuple(tensor.shape)}, num_envs={self.num_envs}. "
+                "Using fallback contact source (or zero if unavailable)."
+            )
+
         # Preferred: filtered force matrix (sensor body vs filtered object bodies).
         force_matrix = self.contact_sensor.data.force_matrix_w
         if force_matrix is not None:
@@ -796,6 +826,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                 return mag
             if mag.numel() % self.num_envs == 0:
                 return mag.reshape(self.num_envs, -1).sum(dim=-1)
+            _warn_shape_once("force_matrix_w", force_matrix)
 
         # Fallback: net contact force on sensor body/bodies.
         net = self.contact_sensor.data.net_forces_w
@@ -806,6 +837,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                 return mag
             if mag.numel() % self.num_envs == 0:
                 return mag.reshape(self.num_envs, -1).sum(dim=-1)
+            _warn_shape_once("net_forces_w", net)
         return force
 
     # Task metric helpers

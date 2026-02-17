@@ -123,12 +123,24 @@ def load_bc_into_policy(policy_model: PolicyNet, bc_checkpoint: str) -> bool:
 
     loaded = 0
     skipped = 0
+    loaded_keys: set[str] = set()
+    required_keys = (
+        "net.0.weight",
+        "net.0.bias",
+        "net.2.weight",
+        "net.2.bias",
+        "net.4.weight",
+        "net.4.bias",
+        "mean_layer.weight",
+        "mean_layer.bias",
+    )
 
     for bc_key, bc_val in bc_state.items():
         if bc_key in policy_state:
             if bc_val.shape == policy_state[bc_key].shape:
                 policy_state[bc_key] = bc_val
                 loaded += 1
+                loaded_keys.add(bc_key)
             else:
                 print(f"  ⚠ Shape 불일치: {bc_key} "
                       f"BC={bc_val.shape} vs Policy={policy_state[bc_key].shape}")
@@ -136,6 +148,13 @@ def load_bc_into_policy(policy_model: PolicyNet, bc_checkpoint: str) -> bool:
         else:
             print(f"  ⚠ Key 없음 (skip): {bc_key}")
             skipped += 1
+
+    missing_required = [k for k in required_keys if k not in loaded_keys]
+    if missing_required:
+        print("  ❌ BC 핵심 레이어를 모두 로드하지 못했습니다. warm-start를 중단합니다.")
+        for k in missing_required:
+            print(f"    - missing: {k}")
+        return False
 
     policy_model.load_state_dict(policy_state)
 
@@ -246,7 +265,14 @@ def main():
     if mode == "bc_finetune":
         bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
         env_obs_dim = int(env.observation_space.shape[0])
-        if bc_obs_dim is not None and bc_obs_dim != env_obs_dim:
+        if bc_obs_dim is None:
+            print(
+                "  ⚠ BC checkpoint에서 obs_dim을 추론할 수 없습니다. "
+                "부분 로드를 방지하기 위해 BC warm-start를 비활성화하고 PPO from scratch로 전환합니다."
+            )
+            mode = "scratch"
+            mode_label = _mode_label(mode)
+        elif bc_obs_dim != env_obs_dim:
             print(
                 f"  ⚠ BC obs_dim({bc_obs_dim}) != env obs_dim({env_obs_dim}) "
                 "-> BC warm-start를 비활성화하고 PPO from scratch로 전환합니다."

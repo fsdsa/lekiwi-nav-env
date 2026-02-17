@@ -32,6 +32,7 @@ scripts/lekiwi_nav_env/
 ├── compare_real_sim.py
 ├── check_calibration_gate.py   # ★ 캘리브레이션 품질 게이트 (RMSE 임계값 pass/fail)
 ├── sim_real_calibration_test.py # ★ Isaac Sim Script Editor용 sim-real 이동/회전 정합 테스트
+├── sim_real_command_transform.py # ★ sim<->real base command 변환 유틸 (배포 전/중 검증)
 ├── build_arm_limits_real2sim.py
 ├── record_teleop.py
 ├── teleop_dual_logger.py
@@ -262,6 +263,8 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
 - 필요 시 아래 인자로 override 가능:
   - `--lin_cmd_scale`, `--ang_cmd_scale`
   - `--cmd_transform_mode`, `--cmd_linear_map`, `--cmd_lin_scale`, `--cmd_ang_scale`, `--cmd_wz_sign`
+- RL 학습 환경(`lekiwi_nav_env.py`)은 sim action space를 직접 학습하므로 `command_transform.wz_sign`을 action 경로에 직접 적용하지 않는다.
+  - 대신 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`를 통해 sim 내부 command range를 보정한다(`dynamics_apply_cmd_scale=True`).
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
 
@@ -357,6 +360,11 @@ headless CLI가 아니라 Isaac Sim UI에서 실행한다.
   - 이 경우 수집 시점에 추가 역변환을 넣지 않는다.
 - 실배포(real):
   - 모델 출력(sim 기준 base 명령)을 실로봇 전송 직전에 `sim -> real` 역변환 1회 적용한다.
+  - 빠른 검증/적용용 유틸:
+    ```bash
+    python sim_real_command_transform.py \
+      --mode sim_to_real --vx 0.20 --vy 0.00 --wz -1.00
+    ```
 - PRE-3/4 (SysID/replay):
   - 실측 command 로그를 sim에서 재생해야 하므로 `real -> sim` 변환을 적용한 상태로 튜닝/검증한다.
   - 현재 파이프라인은 `tune_sim_dynamics.py` 인자와 `tuned_dynamics.json.command_transform`으로 이를 고정한다.
@@ -365,6 +373,7 @@ headless CLI가 아니라 Isaac Sim UI에서 실행한다.
   - 같은 신호 경로에 `dynamics_json` 명령 스케일과 위 보정을 중복 적용하지 않는다.
   - 어느 단계에서 적용했는지(run config/로그)에 명시한다.
   - 실배포 송신 경로에는 `sim -> real` 역변환이 실제 코드로 구현되어 있어야 한다(문서 수식만 두고 누락하지 않음).
+  - 본 저장소에서는 `sim_real_command_transform.py`로 동일 변환을 재현/검증할 수 있다.
 
 #### 2-8. VLA 파인튜닝/실배포 Go-NoGo 기준
 
