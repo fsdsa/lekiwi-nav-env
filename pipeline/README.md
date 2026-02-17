@@ -551,5 +551,8 @@ VLA 파인튜닝
 - `build_object_catalog.py`는 pxr(Isaac Sim Python) 환경에서만 실행 가능
 - **USD 경로**: `lekiwi_robot_cfg.py`는 환경변수 `LEKIWI_USD_PATH`를 우선 참조. 미설정 시 기본 경로 사용.
   다른 머신에서 실행 시: `export LEKIWI_USD_PATH=/path/to/lekiwi_robot.usd`
+- **텔레옵 기본값**: `leader_to_home_tcp_rest_matched_with_keyboard_base.py`는 연구실 기본값(`host=100.91.14.65`, `port=15002`, `leader_port=COM8`)을 그대로 사용한다. 필요 시 `--host`, `--port`, `--leader_port`로 override.
+- **ROS2 텔레옵 구독 초기화**: `record_teleop.py`는 ROS2 다중 상속 초기화를 명시적으로 수행하도록 정리되어, 향후 `TeleopInputBase` 초기화 로직 추가 시에도 안전하게 동작한다.
+- **replay 정렬 입력 검증**: `calibration_common.align_and_compare`는 실측/시뮬레이션 시계열에 대해 최소 2개 샘플, finite 값, 고유 timestamp 조건을 확인한다. 조건을 만족하지 않으면 즉시 에러를 반환하므로 캘리브레이션 로그 품질을 먼저 확인해야 한다.
 - **모델 공유**: `PolicyNet`/`ValueNet`은 `models.py`에 단일 정의. `train_lekiwi.py`와 `collect_demos.py`가 공통 import하므로 모델 구조 변경 시 `models.py`만 수정
 - **GRASP timeout**: `grasp_timeout_steps=75` (기본 ~3초@25Hz). GRASP phase에서 지정 step 내 grasp 미성공 시 APPROACH로 복귀하여 재시도. 0으로 설정하면 무제한
