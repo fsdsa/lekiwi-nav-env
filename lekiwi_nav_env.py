@@ -120,6 +120,11 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
     #   {"<sim_joint_name>": [min_rad, max_rad], ...}
     arm_limit_json: str | None = None
     arm_limit_margin_rad: float = 0.0
+    # If true, also write arm limits to PhysX joint limits.
+    # Default is False because the current USD contains many unlimited revolute joints
+    # (lower/upper = +/-inf), and PhysX emits repeated limit-angle errors when any
+    # limit update triggers articulation-wide validation.
+    arm_limit_write_to_sim: bool = False
     # Map arm action [-1,1] to joint soft limits when finite.
     arm_action_to_limits: bool = True
 
@@ -307,6 +312,7 @@ class LeKiwiNavEnv(DirectRLEnv):
         self._dr_curr_wheel_dynamic_friction: torch.Tensor | None = None
         self._dr_curr_wheel_viscous_friction: torch.Tensor | None = None
         self._dr_object_material_base: dict[str, tuple[float, float]] = {}
+        self._arm_action_limits_override: torch.Tensor | None = None
 
         if self._multi_object:
             if self._num_object_types <= 0 or len(self._object_catalog) == 0:
@@ -594,6 +600,9 @@ class LeKiwiNavEnv(DirectRLEnv):
         limits_rows = []
         min_limit = -2.0 * math.pi + 1e-6
         max_limit = 2.0 * math.pi - 1e-6
+        arm_limits = self.robot.data.soft_joint_pos_limits[:, self.arm_idx].clone()
+        arm_name_to_offset = {str(name): i for i, name in enumerate(ARM_JOINT_NAMES)}
+        applied_count = 0
         for sim_joint, (lo, hi) in limits_by_joint.items():
             idxs, _ = self.robot.find_joints([sim_joint])
             if len(idxs) != 1:
@@ -604,14 +613,30 @@ class LeKiwiNavEnv(DirectRLEnv):
                 continue
             joint_ids.append(int(idxs[0]))
             limits_rows.append([lo_c, hi_c])
+            off = arm_name_to_offset.get(str(sim_joint))
+            if off is not None:
+                arm_limits[:, off, 0] = lo_c
+                arm_limits[:, off, 1] = hi_c
+                applied_count += 1
 
         if not joint_ids:
             raise ValueError(f"No valid sim joints found from arm limits source: {source}")
 
-        limits = torch.tensor(limits_rows, dtype=torch.float32, device=self.device).unsqueeze(0)
-        limits = limits.repeat(self.num_envs, 1, 1)
-        self.robot.write_joint_position_limit_to_sim(limits, joint_ids=joint_ids, warn_limit_violation=False)
-        print(f"  [ArmLimits] applied from {source}: {len(joint_ids)} joints (margin={margin:.4f} rad)")
+        self._arm_action_limits_override = arm_limits
+
+        if bool(getattr(self.cfg, "arm_limit_write_to_sim", False)):
+            limits = torch.tensor(limits_rows, dtype=torch.float32, device=self.device).unsqueeze(0)
+            limits = limits.repeat(self.num_envs, 1, 1)
+            self.robot.write_joint_position_limit_to_sim(limits, joint_ids=joint_ids, warn_limit_violation=False)
+            print(
+                f"  [ArmLimits] applied from {source}: {len(joint_ids)} joints "
+                f"(margin={margin:.4f} rad, write_to_sim=True)"
+            )
+        else:
+            print(
+                f"  [ArmLimits] loaded from {source}: {applied_count} arm joints "
+                f"(margin={margin:.4f} rad, write_to_sim=False)"
+            )
 
     def _apply_baked_arm_limits(self):
         if not ARM_LIMITS_BAKED_RAD:
@@ -1130,7 +1155,10 @@ class LeKiwiNavEnv(DirectRLEnv):
 
         arm_action = self.actions[:, 3:9]
         if self.cfg.arm_action_to_limits:
-            arm_limits = self.robot.data.soft_joint_pos_limits[:, self.arm_idx]
+            if self._arm_action_limits_override is not None:
+                arm_limits = self._arm_action_limits_override
+            else:
+                arm_limits = self.robot.data.soft_joint_pos_limits[:, self.arm_idx]
             arm_lo = arm_limits[..., 0]
             arm_hi = arm_limits[..., 1]
             finite = torch.isfinite(arm_lo) & torch.isfinite(arm_hi) & ((arm_hi - arm_lo) > 1e-6)

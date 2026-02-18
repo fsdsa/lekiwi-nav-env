@@ -301,6 +301,8 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
 - RL 학습 환경(`lekiwi_nav_env.py`)은 sim action space를 직접 학습하므로 `command_transform.wz_sign`을 action 경로에 직접 적용하지 않는다.
   - 대신 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`를 통해 sim 내부 command range를 보정한다(`dynamics_apply_cmd_scale=True`).
   - arm stiffness/damping은 전역 스케일과 관절별 스케일을 곱한 값으로 적용한다.
+  - arm limit는 기본적으로 제어 target 매핑에만 적용되고(`arm_limit_write_to_sim=False`), PhysX joint limit로 직접 쓰지 않는다.
+    (현재 LeKiwi USD의 다수 revolute가 `(-inf, +inf)`라 PhysX `setLimitParams` 경고 spam을 유발할 수 있기 때문)
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
 
