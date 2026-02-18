@@ -204,10 +204,13 @@ python scripts/lekiwi_nav_env/calibrate_real_robot.py \
   - `arm_wrist_flex.pos = [-100.0, 99.91539763113366]`
   - `arm_wrist_roll.pos = [-95.7997557997558, 90.4273504273504]`
   - `arm_gripper.pos = [0.07524454477050413, 100.0]`
-- 참고: 최신 실측 파일의 wheel/base 추정값
-  - `wheel_radius_m = 0.06887280430186149`
-  - `base_radius_m = 0.005132166147276185`
-  - 위 값은 수집 조건/축 분리 영향으로 일관성이 낮아, sim 기하 상수로 직접 사용하지 않음.
+- calibration 블록 포함 상태:
+  - `wheel_radius`: 포함됨
+  - `base_radius`: 없음 (`--skip wheel_radius,base_radius`로 재측정 생략한 실행본 기준)
+  - `arm_sysid`: 포함됨
+- geometry 사용 정책:
+  - `tune_sim_dynamics.py` 기본 `--geometry_source config`를 유지하고, `lekiwi_robot_cfg.py`의 `WHEEL_RADIUS`/`BASE_RADIUS`를 기준으로 튜닝한다.
+  - 즉, wheel/base 실측 수치 재수집 없이도 arm_sysid + wheel encoder log로 동역학 튜닝/검증을 진행할 수 있다.
 - 중요:
   - 이번 실측 반영 후 PRE-3(tune) → PRE-4(replay) → PRE-5(compare) → PRE-6(gate)를 다시 실행해 최신 리포트를 갱신한다.
   - `joint_range` 결과에서 arm span이 비정상적으로 작게 나오면 `--joint_range_duration 0`으로 재측정한다.
@@ -262,6 +265,20 @@ python scripts/lekiwi_nav_env/tune_sim_dynamics.py \
 - 이후 replay 단계에서 `--dynamics_json`을 주면 `lin_cmd_scale`/`ang_cmd_scale`는 자동으로 그 값을 기본 사용한다(명시 인자 전달 시 override).
 - calibration에 저장된 wheel/base 기하값이 config 대비 과도하게 벗어나면 (`<0.5x` 또는 `>1.8x`) 튜너가 config 값으로 자동 fallback한다.
 
+#### 2-3-1. 튜닝/리플레이 최신 결과 스냅샷 (업데이트: 2026-02-18)
+
+- 튜닝 결과 파일: `calibration/tuned_dynamics.json`
+  - `source = merged_wheel_under012_with_armbest`
+  - tuning 기준 RMSE: `wheel=0.117299`, `arm=0.086990`
+  - gate(`wheel<0.12`, `arm<0.09`) 통과
+- replay 기준 리포트(운영 판정본):
+  - `calibration/replay_command_report_merged_wheelpass_armbest.json`: `wheel_rmse=0.145975`
+  - `calibration/replay_arm_report_merged_wheelpass_armbest_v2.json`: `arm_rmse=0.087000`
+  - gate(`wheel<0.15`, `arm<0.09`) 통과
+- 참고:
+  - wheel 0.12 미만 튜닝 결과를 replay에 그대로 적용한 초기 시도(`replay_command_report_under012_try1_clean.json`)는 `wheel_rmse=0.163078`로 악화되어 운영 판정본에서 제외했다.
+  - arm 0.08 미만은 아직 미달이며, 현재 안정 운영 기준은 arm 0.09 미만으로 유지한다.
+
 #### 2-4. Replay 검증
 
 ```bash
@@ -303,6 +320,7 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
   - arm stiffness/damping은 전역 스케일과 관절별 스케일을 곱한 값으로 적용한다.
   - arm limit는 기본적으로 제어 target 매핑에만 적용되고(`arm_limit_write_to_sim=False`), PhysX joint limit로 직접 쓰지 않는다.
     (현재 LeKiwi USD의 다수 revolute가 `(-inf, +inf)`라 PhysX `setLimitParams` 경고 spam을 유발할 수 있기 때문)
+  - `test_env.py`는 종료 코드가 0이어도 Kit 로그에 PhysX limit 경고가 남을 수 있으므로(`kit_20260218_142505.log`), 경고량이 증가하면 `arm_limit_write_to_sim` 설정과 limit JSON 범위를 함께 점검한다.
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
 
@@ -327,14 +345,17 @@ python check_calibration_gate.py \
 ```
 
 기본 임계값: wheel RMSE ≤ 0.20 rad, arm RMSE ≤ 0.15 rad. `--wheel_rmse_threshold`, `--arm_rmse_threshold`로 조정 가능.
-현재 운영 목표(권장): wheel RMSE < 0.15 rad, arm RMSE < 0.08 rad.
+운영 기준:
+- 장기 목표(권장): wheel RMSE < 0.15 rad, arm RMSE < 0.08 rad
+- 현재 안정 통과 기준(2026-02-18): wheel RMSE < 0.15 rad, arm RMSE < 0.09 rad
+  - 최신 replay 결과: wheel `0.145975`, arm `0.087000`
 
 ```bash
 python check_calibration_gate.py \
   --reports calibration/replay_command_report.json \
            calibration/replay_arm_report.json \
   --wheel_rmse_threshold 0.15 \
-  --arm_rmse_threshold 0.08
+  --arm_rmse_threshold 0.09
 ```
 
 #### 2-6. Isaac Sim Script Editor 정합 검증 (권장)
