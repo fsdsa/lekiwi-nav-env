@@ -19,6 +19,9 @@ Isaac Lab `DirectRLEnv` 기반 LeKiwi Fetch task 파이프라인.
   - obs[33:37]은 privileged info로 VLA에 전달하지 않음
 - **Physics multi-object instruction 개선**: SpawnManager 없이도 활성 물체 이름 기반으로
   `find the <object> and bring it back` 문장을 episode별로 저장
+- **BC warm-start 확장**: multi-object(37D)에서도 BC→RL 실행 가능
+  - 33D BC 체크포인트를 37D RL에 로드할 때 `net.0.weight` 입력 차원 공통 부분을 자동 어댑트
+  - 37D BC 체크포인트는 동일 차원으로 그대로 로드
 - **배포 변환 체인 유틸 추가**: `deploy_vla_action_bridge.py`
   - VLA action(9D) → sim denorm → `sim_to_real` → arm limits 매핑을 1회 실행
 - **기존 33D 호환**: `--multi_object_json` 미지정 시 기존 33D proximity 모드 동작
@@ -476,7 +479,24 @@ python test_env.py --num_envs 4 \
 ### Step 4. RL 학습
 
 ```bash
-# Multi-object physics grasp (37D, 권장)
+# [메인] BC -> RL (37D, multi-object)
+# 1) 37D 텔레옵 데모 수집:
+#    python record_teleop.py --num_demos 20 \
+#      --multi_object_json object_catalog.json \
+#      --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
+# 2) BC 학습:
+#    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37
+# 3) BC warm-start PPO:
+python train_lekiwi.py \
+  --num_envs 2048 \
+  --bc_checkpoint checkpoints/bc_nav.pt \
+  --multi_object_json object_catalog.json \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
+  --dynamics_json calibration/tuned_dynamics.json \
+  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --headless
+
+# [baseline] RL scratch (37D, multi-object)
 python train_lekiwi.py \
   --num_envs 2048 \
   --multi_object_json object_catalog.json \
@@ -493,27 +513,32 @@ python train_lekiwi.py \
   --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_real2sim.json \
   --headless
-
-# 기존 proximity 모드 (33D, BC warm-start 가능)
-python train_lekiwi.py \
-  --num_envs 2048 \
-  --bc_checkpoint checkpoints/bc_nav.pt \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --headless
 ```
 
 참고:
-- multi-object(37D)는 기존 33D BC 체크포인트와 호환 안 됨 → 자동으로 from scratch 전환
+- multi-object(37D)에서도 BC warm-start 지원
+- 33D BC 체크포인트를 37D RL에 로드하면 첫 레이어 입력 차원 공통 부분만 어댑트됨
 - `train_bc.py`의 기본값은 `--normalize` OFF이다(권장 기본 경로).
 - `--normalize`로 BC를 학습하면 `checkpoints/bc_nav_norm.npz`가 생성되며,
   `train_lekiwi.py`에서 BC warm-start 시 정규화 mismatch 보호 로직이 동작한다.
-- 학습 완료 후: `logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt`
+- 학습 완료 후:
+  - BC->RL(37D): `logs/ppo_lekiwi/ppo_lekiwi_bc_finetune/checkpoints/best_agent.pt`
+  - scratch(37D): `logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt`
 
 ### Step 5. RL Expert 데모 수집
 
 ```bash
 # camera + multi-object physics grasp + v6 annotation (권장)
+python collect_demos.py \
+  --checkpoint logs/ppo_lekiwi/ppo_lekiwi_bc_finetune/checkpoints/best_agent.pt \
+  --multi_object_json object_catalog.json \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
+  --dynamics_json calibration/tuned_dynamics.json \
+  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --num_envs 4 --num_demos 200 --headless \
+  --annotate_subtasks
+
+# (baseline) scratch 37D 체크포인트로 동일 수집
 python collect_demos.py \
   --checkpoint logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt \
   --multi_object_json object_catalog.json \
@@ -617,7 +642,7 @@ VLA 파인튜닝
 |------|----------------|-------------------|
 | `--multi_object_json` 미지정 | 기존 동작 | N/A |
 | `--multi_object_json` 지정 | N/A | 37D 활성 |
-| 기존 BC/RL 체크포인트 | 호환 | 비호환 (재학습 필요) |
+| BC 체크포인트 warm-start | 동일 차원 직접 로드, 37D↔33D 입력층 어댑트 | 동일 차원 직접 로드, 33D↔37D 입력층 어댑트 |
 | robot_state 추출 | obs[18:24]+obs[30:33] | 동일 |
 | VLA 학습 입력 | 9D | 9D (동일) |
 | SpawnManager | 사용 가능 | 자동 비활성 |
@@ -626,7 +651,7 @@ VLA 파인튜닝
 
 - **★ `--dynamics_json`은 Step 2(캘리브레이션) 완료 후 생성됨** — Step 3~5의 학습/수집 전에 반드시 캘리브레이션을 완료하고, `check_calibration_gate.py`로 품질 게이트 통과를 확인할 것
 - `--dynamics_json`은 학습/수집 모두 동일한 파일을 사용해야 Sim2Real 정합 유지
-- 37D 체크포인트는 33D 환경에서 로드 불가 (역도 마찬가지)
+- BC warm-start에서 obs 차원이 다르면 `net.0.weight` 입력 차원 공통 부분만 사용해 자동 어댑트
 - camera 수집 시 VRAM에 따라 `num_envs`를 1~8로 제한
 - `--gripper_contact_prim_path`는 Isaac Sim에서 gripper finger body prim을 직접 확인해서 설정
 - `build_object_catalog.py`는 pxr(Isaac Sim Python) 환경에서만 실행 가능

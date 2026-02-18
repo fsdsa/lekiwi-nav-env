@@ -9,11 +9,11 @@ BC 가중치를 PPO Actor에 그대로 로드할 수 있음.
 Usage:
     cd ~/IsaacLab/scripts/lekiwi_nav_env
 
-    # 학습
-    python train_bc.py --demo_dir demos/ --epochs 200
+    # 37D 텔레옵 데모(BC->RL 37D 메인 실험용) 학습
+    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37
 
     # 검증 포함
-    python train_bc.py --demo_dir demos/ --epochs 200 --eval
+    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37 --eval
 
 결과:
     checkpoints/bc_nav.pt          — BC 가중치 (net + mean_layer)

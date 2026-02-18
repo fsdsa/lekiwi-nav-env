@@ -11,16 +11,24 @@ Usage:
     cd /home/yubin11/IsaacLab/scripts/lekiwi_nav_env
     conda activate env_isaaclab && source ~/isaacsim/setup_conda_env.sh
 
-    # ── BC → RL Fine-tune (권장) ──
-    python train_lekiwi.py --num_envs 2048 --bc_checkpoint checkpoints/bc_nav.pt \
+    # ── BC → RL Fine-tune (37D 메인 실험) ──
+    python train_lekiwi.py --num_envs 2048 \
+        --bc_checkpoint checkpoints/bc_nav.pt \
+        --multi_object_json object_catalog.json \
+        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
         --dynamics_json calibration/tuned_dynamics.json --headless
 
-    # ── BC 없이 from scratch (비교용) ──
+    # ── RL from scratch (37D baseline) ──
     python train_lekiwi.py --num_envs 2048 \
+        --multi_object_json object_catalog.json \
+        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
         --dynamics_json calibration/tuned_dynamics.json --headless
 
     # ── 소규모 테스트 ──
-    python train_lekiwi.py --num_envs 64 --max_iterations 100 --bc_checkpoint checkpoints/bc_nav.pt
+    python train_lekiwi.py --num_envs 64 --max_iterations 100 \
+        --bc_checkpoint checkpoints/bc_nav.pt \
+        --multi_object_json object_catalog.json \
+        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
 
     # ── 학습 재개 ──
     python train_lekiwi.py --num_envs 2048 --resume --checkpoint logs/ppo_lekiwi/best_agent.pt --headless
@@ -137,6 +145,28 @@ def load_bc_into_policy(policy_model: PolicyNet, bc_checkpoint: str) -> bool:
 
     for bc_key, bc_val in bc_state.items():
         if bc_key in policy_state:
+            if (
+                bc_key == "net.0.weight"
+                and bc_val.ndim == 2
+                and policy_state[bc_key].ndim == 2
+                and bc_val.shape[0] == policy_state[bc_key].shape[0]
+            ):
+                # obs_dim mismatch(예: BC 33D -> RL 37D) 시 입력 차원 공통 부분만 복사.
+                dst = policy_state[bc_key]
+                src = bc_val.to(device=dst.device, dtype=dst.dtype)
+                shared_in = min(src.shape[1], dst.shape[1])
+                merged = dst.clone()
+                merged[:, :shared_in] = src[:, :shared_in]
+                policy_state[bc_key] = merged
+                loaded += 1
+                loaded_keys.add(bc_key)
+                if src.shape[1] != dst.shape[1]:
+                    print(
+                        "  ⚠ net.0.weight 입력 차원 불일치 어댑트: "
+                        f"BC in={src.shape[1]}, RL in={dst.shape[1]}, "
+                        f"shared={shared_in}"
+                    )
+                continue
             if bc_val.shape == policy_state[bc_key].shape:
                 policy_state[bc_key] = bc_val
                 loaded += 1
@@ -251,12 +281,6 @@ def main():
         env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
         env_cfg.grasp_attach_height = float(args.grasp_attach_height)
 
-    if mode == "bc_finetune" and multi_object_mode:
-        print("  ⚠ multi-object(37D) 모드는 기존 33D BC 체크포인트와 호환되지 않습니다.")
-        print("  ⚠ BC warm-start를 비활성화하고 PPO from scratch로 전환합니다.")
-        mode = "scratch"
-        mode_label = _mode_label(mode)
-
     raw_env = LeKiwiNavEnv(cfg=env_cfg)
     env = wrap_env(raw_env, wrapper="isaaclab")
 
@@ -266,19 +290,15 @@ def main():
         bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
         env_obs_dim = int(env.observation_space.shape[0])
         if bc_obs_dim is None:
-            print(
-                "  ⚠ BC checkpoint에서 obs_dim을 추론할 수 없습니다. "
-                "부분 로드를 방지하기 위해 BC warm-start를 비활성화하고 PPO from scratch로 전환합니다."
+            raise RuntimeError(
+                "BC checkpoint에서 obs_dim을 추론할 수 없습니다. "
+                "유효한 BC 체크포인트를 지정하세요."
             )
-            mode = "scratch"
-            mode_label = _mode_label(mode)
         elif bc_obs_dim != env_obs_dim:
             print(
                 f"  ⚠ BC obs_dim({bc_obs_dim}) != env obs_dim({env_obs_dim}) "
-                "-> BC warm-start를 비활성화하고 PPO from scratch로 전환합니다."
+                "-> net.0.weight 입력 차원 어댑트로 BC warm-start를 계속 진행합니다."
             )
-            mode = "scratch"
-            mode_label = _mode_label(mode)
 
     print("\n" + "=" * 60)
     print(f"  LeKiwi Nav PPO Training — {mode_label}")
@@ -339,9 +359,7 @@ def main():
             print(f"  ⚠ BC norm mismatch 허용: {bc_norm_path}")
         success = load_bc_into_policy(models["policy"], args.bc_checkpoint)
         if not success:
-            print("  ⚠ BC 로드 실패 — from scratch로 진행")
-            mode = "scratch"
-            mode_label = _mode_label(mode)
+            raise RuntimeError("BC 로드 실패: BC->RL warm-start를 계속할 수 없습니다.")
 
     # —— Memory ————————————————————————————————————————————————
     memory = RandomMemory(

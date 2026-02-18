@@ -37,6 +37,12 @@ Usage:
     # 기본 (10 에피소드, ROS2 가능하면 ROS2 우선, 아니면 TCP fallback)
     python record_teleop.py --num_demos 10
 
+    # 37D multi-object 텔레옵 데모 (BC->RL 37D용)
+    python record_teleop.py \
+      --num_demos 20 \
+      --multi_object_json object_catalog.json \
+      --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
+
     # TCP 직접 수신 강제 (Windows sender를 이 스크립트 포트로 직접 연결)
     python record_teleop.py --teleop_source tcp --listen_port 15002
 
@@ -82,6 +88,24 @@ parser.add_argument("--arm_limit_json", type=str, default=None,
                     help="arm limit JSON 경로")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0,
                     help="arm limit margin (rad)")
+parser.add_argument("--object_usd", type=str, default="",
+                    help="physics grasp object USD path (empty = legacy proximity grasp)")
+parser.add_argument("--multi_object_json", type=str, default="",
+                    help="multi-object catalog JSON path (37D obs)")
+parser.add_argument("--object_mass", type=float, default=0.3,
+                    help="physics grasp object mass (kg)")
+parser.add_argument("--object_scale_phys", type=float, default=1.0,
+                    help="physics grasp object uniform scale")
+parser.add_argument("--gripper_contact_prim_path", type=str, default="",
+                    help="contact sensor prim path for gripper body (required in multi-object mode)")
+parser.add_argument("--grasp_gripper_threshold", type=float, default=-0.3,
+                    help="gripper joint position threshold for closed state")
+parser.add_argument("--grasp_contact_threshold", type=float, default=0.5,
+                    help="minimum contact force magnitude for grasp success")
+parser.add_argument("--grasp_max_object_dist", type=float, default=0.25,
+                    help="max object distance for contact-based grasp success")
+parser.add_argument("--grasp_attach_height", type=float, default=0.15,
+                    help="attached object z-height after grasp success")
 parser.add_argument(
     "--arm_input_unit",
     type=str,
@@ -448,11 +472,33 @@ def main():
     if args.arm_limit_json:
         env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
         env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
+    physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
+    multi_object_mode = bool(str(args.multi_object_json).strip())
+    if multi_object_mode:
+        env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+    if physics_grasp_mode:
+        env_cfg.object_usd = os.path.expanduser(args.object_usd)
+        env_cfg.object_mass = float(args.object_mass)
+        env_cfg.object_scale = float(args.object_scale_phys)
+        env_cfg.gripper_contact_prim_path = str(args.gripper_contact_prim_path)
+        env_cfg.grasp_gripper_threshold = float(args.grasp_gripper_threshold)
+        env_cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
+        env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
+        env_cfg.grasp_attach_height = float(args.grasp_attach_height)
+    if multi_object_mode and not str(args.gripper_contact_prim_path).strip():
+        raise ValueError(
+            "multi-object(37D) 텔레옵 데모에는 --gripper_contact_prim_path가 필요합니다."
+        )
     env = LeKiwiNavEnv(cfg=env_cfg)
 
     base_radius = float(env.base_radius)
     wheel_radius = float(env.wheel_radius)
     print(f"  geometry: wheel_radius={wheel_radius:.6f}, base_radius={base_radius:.6f}")
+    print(f"  obs_dim: {int(env.observation_space.shape[0])}")
+    if multi_object_mode:
+        print(f"  multi_object_json: {os.path.expanduser(args.multi_object_json)}")
+    if physics_grasp_mode:
+        print(f"  gripper_contact_prim_path: {args.gripper_contact_prim_path}")
 
     # Kiwi 역 IK (ROS2 wheel->body path에서 사용)
     M_inv = build_kiwi_M_inv(base_radius)
@@ -529,6 +575,16 @@ def main():
     if args.arm_limit_json:
         hdf5_file.attrs["arm_limit_json"] = str(os.path.expanduser(args.arm_limit_json))
         hdf5_file.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
+    hdf5_file.attrs["physics_grasp_mode"] = bool(physics_grasp_mode)
+    hdf5_file.attrs["multi_object_mode"] = bool(multi_object_mode)
+    if args.object_usd:
+        hdf5_file.attrs["object_usd"] = str(os.path.expanduser(args.object_usd))
+    if args.multi_object_json:
+        hdf5_file.attrs["multi_object_json"] = str(os.path.expanduser(args.multi_object_json))
+    hdf5_file.attrs["object_mass"] = float(args.object_mass)
+    hdf5_file.attrs["object_scale_phys"] = float(args.object_scale_phys)
+    if args.gripper_contact_prim_path:
+        hdf5_file.attrs["gripper_contact_prim_path"] = str(args.gripper_contact_prim_path)
 
     print("  ⏳ 텔레옵 입력 연결 대기 중...")
     resolved_arm_unit: str | None = None
