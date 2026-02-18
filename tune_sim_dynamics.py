@@ -188,6 +188,15 @@ parser.add_argument(
     help="allow optimizer to tune lin_cmd_scale/ang_cmd_scale",
 )
 
+parser.add_argument(
+    "--sequences",
+    type=str,
+    default="all",
+    help="comma-separated list of calibration sequences to use for wheel tuning "
+    "(e.g. 'wheel_radius', 'base_radius', or 'all' for both). "
+    "Use this to exclude sequences with bad encoder data.",
+)
+
 parser.add_argument("--arm_damping_min", type=float, default=0.4)
 parser.add_argument("--arm_damping_max", type=float, default=2.5)
 parser.add_argument("--arm_stiffness_min", type=float, default=0.5)
@@ -439,10 +448,19 @@ def _wz_to_rad_per_s(cmd: dict, default_wz: float) -> float:
     return float(math.radians(wz_raw) if abs(wz_raw) > 8.0 else wz_raw)
 
 
-def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float) -> list[dict]:
+def extract_command_sequences(
+    cal: dict, fallback_vx: float, fallback_wz: float, include: str = "all"
+) -> list[dict]:
     sequences: list[dict] = []
 
-    for block_name in ("wheel_radius", "base_radius"):
+    all_blocks = ("wheel_radius", "base_radius")
+    if include == "all":
+        block_names = all_blocks
+    else:
+        requested = {s.strip() for s in include.split(",") if s.strip()}
+        block_names = tuple(b for b in all_blocks if b in requested)
+
+    for block_name in block_names:
         block = cal.get(block_name)
         if not isinstance(block, dict):
             continue
@@ -1275,7 +1293,9 @@ def main():
     bounds = parameter_bounds()
     fixed_params, free_keys = _split_fixed_and_free(bounds)
 
-    sequences = extract_command_sequences(cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz)
+    sequences = extract_command_sequences(
+        cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz, include=args.sequences
+    )
     arm_tests = extract_arm_sysid_tests(cal, fallback_unit=args.encoder_unit)
     if not sequences and not arm_tests:
         raise RuntimeError(

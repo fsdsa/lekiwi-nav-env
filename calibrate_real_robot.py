@@ -1189,6 +1189,13 @@ def main():
     parser.add_argument("--robot_port", type=str, default="/dev/ttyACM0")
     parser.add_argument("--output_dir", type=str, default="calibration")
     parser.add_argument("--encoder_unit", type=str, default="auto", choices=["auto", "rad", "deg", "m100"])
+    parser.add_argument(
+        "--skip",
+        type=str,
+        default="",
+        help="comma-separated list of sub-modes to skip when --mode all "
+        "(e.g. 'wheel_radius,base_radius' to skip geometry measurement)",
+    )
 
     parser.add_argument("--vx_cmd", type=float, default=0.15)
     # LeKiwi API의 theta.vel는 deg/s
@@ -1221,6 +1228,7 @@ def main():
     )
 
     args = parser.parse_args()
+    skip_modes = {s.strip() for s in args.skip.split(",") if s.strip()}
 
     robot = RobotAdapter(
         remote_ip=args.remote_ip,
@@ -1240,15 +1248,26 @@ def main():
         "client_id": args.client_id,
     })
 
+    if skip_modes and args.mode == "all":
+        print(f"  --skip: {skip_modes} (these sub-modes will be skipped)")
+
+    def _should_run(mode_name: str) -> bool:
+        """Check if a sub-mode should run, respecting --skip for --mode all."""
+        if args.mode == mode_name:
+            return True
+        if args.mode == "all" and mode_name not in skip_modes:
+            return True
+        return False
+
     try:
-        if args.mode in ("all", "rest_position"):
+        if _should_run("rest_position"):
             results["rest_position"] = measure_rest_position(
                 robot,
                 samples=args.rest_samples,
                 sample_hz=args.sample_hz,
             )
 
-        if args.mode in ("all", "wheel_radius"):
+        if _should_run("wheel_radius"):
             results["wheel_radius"] = measure_wheel_radius(
                 robot,
                 encoder_unit=args.encoder_unit,
@@ -1257,7 +1276,7 @@ def main():
                 sample_hz=args.sample_hz,
             )
 
-        if args.mode in ("all", "base_radius"):
+        if _should_run("base_radius"):
             wr = None
             if isinstance(results.get("wheel_radius"), dict):
                 wr = results["wheel_radius"].get("wheel_radius_m")
@@ -1274,7 +1293,7 @@ def main():
                 sample_hz=args.sample_hz,
             )
 
-        if args.mode in ("all", "joint_range"):
+        if _should_run("joint_range"):
             results["joint_ranges"] = measure_joint_ranges(
                 robot,
                 duration=args.joint_range_duration,
@@ -1314,7 +1333,7 @@ def main():
                 fps=args.record_fps,
             )
 
-        if args.mode in ("all", "arm_sysid"):
+        if _should_run("arm_sysid"):
             step_values_deg = []
             for tok in args.arm_step_values_deg.split(","):
                 tok = tok.strip()
