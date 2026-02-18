@@ -158,6 +158,12 @@ python scripts/lekiwi_nav_env/calibrate_real_robot.py \
   --mode all --connection_mode direct --robot_port /dev/ttyACM0 \
   --client_id my_awesome_kiwi --sample_hz 20 --encoder_unit m100
 
+# geometry는 config 값을 유지하고 arm/rest/sysid만 갱신
+python scripts/lekiwi_nav_env/calibrate_real_robot.py \
+  --mode all --skip wheel_radius,base_radius \
+  --connection_mode direct --robot_port /dev/ttyACM0 \
+  --client_id my_awesome_kiwi --sample_hz 20 --encoder_unit m100
+
 # arm 6축 range만 재측정 (권장: 수동 시작/종료)
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
   --mode joint_range --connection_mode direct --robot_port /dev/ttyACM0 \
@@ -181,6 +187,7 @@ python scripts/lekiwi_nav_env/calibrate_real_robot.py \
 - `joint_range`/`joint_range_single` 측정 중에는 arm torque가 자동으로 OFF되고, 종료 시 ON으로 복구된다.
 - `joint_range_single`은 기존 `wheel_radius`/`base_radius`를 유지한 채 지정 관절 range만 갱신한다.
 - direct 모드에서 모터 캘리브레이션 파일을 쓰려면 현재 로봇 ID에 맞게 `--client_id`를 지정한다(예: `my_awesome_kiwi`).
+- `tune_sim_dynamics.py` 기본 `--geometry_source`는 `config`이므로, `lekiwi_robot_cfg.py`의 `WHEEL_RADIUS`/`BASE_RADIUS`를 그대로 사용할 때는 wheel/base 재측정을 생략해도 된다.
 
 #### 2-1-1. 현재 진행 현황 (업데이트: 2026-02-18)
 
@@ -245,7 +252,12 @@ python scripts/lekiwi_nav_env/tune_sim_dynamics.py \
   - `--no_analytical_init`
   - `--no_refine`
   - `--no_freeze_cmd_scales`
+- 속도/목적별 옵션:
+  - `--sequences wheel_radius` 또는 `--sequences base_radius`로 wheel replay 시퀀스를 제한할 수 있다.
+  - `--no_arm_tests`로 arm_sysid 항목을 제외한 wheel 중심 튜닝을 실행할 수 있다.
+  - `--max_arm_tests N`으로 arm_sysid 테스트 개수를 제한해 튜닝 시간을 줄일 수 있다.
 - `tuned_dynamics.json`에는 `best_params`(wheel/arm dynamics + `lin_cmd_scale`/`ang_cmd_scale`)와 함께 `command_transform`이 저장된다.
+  - arm 파라미터는 전역 스케일(`arm_stiffness_scale`, `arm_damping_scale`)뿐 아니라 관절별 스케일(`arm_stiffness_scale_j0..j5`, `arm_damping_scale_j0..j5`)도 포함한다.
 - `tuned_dynamics.json.optimizer`에 탐색 메타(`analytical_init`, `refine`, 평가 횟수)가 함께 저장된다.
 - 이후 replay 단계에서 `--dynamics_json`을 주면 `lin_cmd_scale`/`ang_cmd_scale`는 자동으로 그 값을 기본 사용한다(명시 인자 전달 시 override).
 - calibration에 저장된 wheel/base 기하값이 config 대비 과도하게 벗어나면 (`<0.5x` 또는 `>1.8x`) 튜너가 config 값으로 자동 fallback한다.
@@ -282,11 +294,13 @@ python scripts/lekiwi_nav_env/compare_real_sim.py \
 
 메모:
 - `replay_in_sim.py`는 기본적으로 `--dynamics_json`에서 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`, `command_transform`을 읽어 적용한다.
+- `replay_in_sim.py`는 `arm_stiffness_scale_j0..j5`, `arm_damping_scale_j0..j5`가 있으면 관절별 arm stiffness/damping도 함께 적용한다.
 - 필요 시 아래 인자로 override 가능:
   - `--lin_cmd_scale`, `--ang_cmd_scale`
   - `--cmd_transform_mode`, `--cmd_linear_map`, `--cmd_lin_scale`, `--cmd_ang_scale`, `--cmd_wz_sign`
 - RL 학습 환경(`lekiwi_nav_env.py`)은 sim action space를 직접 학습하므로 `command_transform.wz_sign`을 action 경로에 직접 적용하지 않는다.
   - 대신 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`를 통해 sim 내부 command range를 보정한다(`dynamics_apply_cmd_scale=True`).
+  - arm stiffness/damping은 전역 스케일과 관절별 스케일을 곱한 값으로 적용한다.
 
 이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
 
@@ -311,6 +325,15 @@ python check_calibration_gate.py \
 ```
 
 기본 임계값: wheel RMSE ≤ 0.20 rad, arm RMSE ≤ 0.15 rad. `--wheel_rmse_threshold`, `--arm_rmse_threshold`로 조정 가능.
+현재 운영 목표(권장): wheel RMSE < 0.15 rad, arm RMSE < 0.08 rad.
+
+```bash
+python check_calibration_gate.py \
+  --reports calibration/replay_command_report.json \
+           calibration/replay_arm_report.json \
+  --wheel_rmse_threshold 0.15 \
+  --arm_rmse_threshold 0.08
+```
 
 #### 2-6. Isaac Sim Script Editor 정합 검증 (권장)
 

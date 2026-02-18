@@ -689,6 +689,9 @@ class LeKiwiNavEnv(DirectRLEnv):
             "lin_cmd_scale": self._safe_float(raw_params, "lin_cmd_scale", 1.0),
             "ang_cmd_scale": self._safe_float(raw_params, "ang_cmd_scale", 1.0),
         }
+        for ji in range(len(ARM_JOINT_NAMES)):
+            params[f"arm_stiffness_scale_j{ji}"] = self._safe_float(raw_params, f"arm_stiffness_scale_j{ji}", 1.0)
+            params[f"arm_damping_scale_j{ji}"] = self._safe_float(raw_params, f"arm_damping_scale_j{ji}", 1.0)
 
         def _pick_positive_finite(*vals: object) -> float | None:
             for v in vals:
@@ -754,8 +757,19 @@ class LeKiwiNavEnv(DirectRLEnv):
                 torch.full_like(base_wheel_damping, params["wheel_viscous_friction_coeff"]), joint_ids=wheel_ids
             )
 
-        self.robot.write_joint_stiffness_to_sim(base_arm_stiff * params["arm_stiffness_scale"], joint_ids=arm_ids)
-        self.robot.write_joint_damping_to_sim(base_arm_damping * params["arm_damping_scale"], joint_ids=arm_ids)
+        arm_stiff_joint_scale = torch.ones_like(base_arm_stiff)
+        arm_damp_joint_scale = torch.ones_like(base_arm_damping)
+        for ji in range(len(ARM_JOINT_NAMES)):
+            arm_stiff_joint_scale[:, ji] = float(params.get(f"arm_stiffness_scale_j{ji}", 1.0))
+            arm_damp_joint_scale[:, ji] = float(params.get(f"arm_damping_scale_j{ji}", 1.0))
+        self.robot.write_joint_stiffness_to_sim(
+            base_arm_stiff * params["arm_stiffness_scale"] * arm_stiff_joint_scale,
+            joint_ids=arm_ids,
+        )
+        self.robot.write_joint_damping_to_sim(
+            base_arm_damping * params["arm_damping_scale"] * arm_damp_joint_scale,
+            joint_ids=arm_ids,
+        )
         self.robot.write_joint_armature_to_sim(base_arm_armature * params["arm_armature_scale"], joint_ids=arm_ids)
 
         if self.cfg.dynamics_apply_cmd_scale:

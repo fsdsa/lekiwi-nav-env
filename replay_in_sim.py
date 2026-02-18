@@ -782,11 +782,19 @@ class ArticulationCommandRunner:
 
         if "arm_stiffness_scale" in params:
             scale = float(params["arm_stiffness_scale"])
-            self.robot.write_joint_stiffness_to_sim(self.base_arm_stiffness * scale, joint_ids=arm_ids)
+            per_joint = torch.ones_like(self.base_arm_stiffness)
+            for ji in range(len(ARM_JOINT_NAMES)):
+                key = f"arm_stiffness_scale_j{ji}"
+                per_joint[:, ji] = float(params.get(key, 1.0))
+            self.robot.write_joint_stiffness_to_sim(self.base_arm_stiffness * scale * per_joint, joint_ids=arm_ids)
 
         if "arm_damping_scale" in params:
             scale = float(params["arm_damping_scale"])
-            self.robot.write_joint_damping_to_sim(self.base_arm_damping * scale, joint_ids=arm_ids)
+            per_joint = torch.ones_like(self.base_arm_damping)
+            for ji in range(len(ARM_JOINT_NAMES)):
+                key = f"arm_damping_scale_j{ji}"
+                per_joint[:, ji] = float(params.get(key, 1.0))
+            self.robot.write_joint_damping_to_sim(self.base_arm_damping * scale * per_joint, joint_ids=arm_ids)
 
         if "arm_armature_scale" in params:
             scale = float(params["arm_armature_scale"])

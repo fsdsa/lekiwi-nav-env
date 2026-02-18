@@ -84,6 +84,18 @@ parser.add_argument("--ang_scale_max", type=float, default=1.3)
 parser.add_argument("--top_k", type=int, default=10)
 parser.add_argument("--arm_weight", type=float, default=1.0, help="weight of arm RMSE term in objective")
 parser.add_argument(
+    "--no_arm_tests",
+    dest="use_arm_tests",
+    action="store_false",
+    help="disable arm_sysid tests during tuning (faster wheel-focused tuning)",
+)
+parser.add_argument(
+    "--max_arm_tests",
+    type=int,
+    default=-1,
+    help="limit arm_sysid test count (<=0 keeps all when arm tests enabled)",
+)
+parser.add_argument(
     "--optimizer",
     type=str,
     default="cem",
@@ -142,6 +154,7 @@ parser.add_argument(
     help="max iterations for local L-BFGS-B refinement",
 )
 parser.set_defaults(analytical_init=True, refine=True)
+parser.set_defaults(use_arm_tests=True)
 
 parser.add_argument(
     "--cmd_transform_mode",
@@ -186,6 +199,14 @@ parser.add_argument(
     dest="freeze_cmd_scales",
     action="store_false",
     help="allow optimizer to tune lin_cmd_scale/ang_cmd_scale",
+)
+parser.add_argument(
+    "--sequences",
+    type=str,
+    default="all",
+    help="comma-separated list of calibration sequences to use for wheel tuning "
+    "(e.g. 'wheel_radius', 'base_radius', or 'all' for both). "
+    "Use this to exclude sequences with bad encoder data.",
 )
 
 parser.add_argument("--arm_damping_min", type=float, default=0.4)
@@ -439,10 +460,19 @@ def _wz_to_rad_per_s(cmd: dict, default_wz: float) -> float:
     return float(math.radians(wz_raw) if abs(wz_raw) > 8.0 else wz_raw)
 
 
-def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float) -> list[dict]:
+def extract_command_sequences(
+    cal: dict, fallback_vx: float, fallback_wz: float, include: str = "all"
+) -> list[dict]:
     sequences: list[dict] = []
 
-    for block_name in ("wheel_radius", "base_radius"):
+    all_blocks = ("wheel_radius", "base_radius")
+    if include == "all":
+        block_names = all_blocks
+    else:
+        requested = {s.strip() for s in include.split(",") if s.strip()}
+        block_names = tuple(b for b in all_blocks if b in requested)
+
+    for block_name in block_names:
         block = cal.get(block_name)
         if not isinstance(block, dict):
             continue
@@ -525,6 +555,24 @@ def extract_command_sequences(cal: dict, fallback_vx: float, fallback_wz: float)
     return sequences
 
 
+def analyze_command_excitation(sequences: list[dict]) -> dict[str, int]:
+    linear_excited = 0
+    angular_excited = 0
+    for seq in sequences:
+        cmd = seq.get("command", {})
+        vx = float(cmd.get("vx", 0.0))
+        vy = float(cmd.get("vy", 0.0))
+        wz = float(cmd.get("wz", 0.0))
+        if math.hypot(vx, vy) > 1e-6:
+            linear_excited += 1
+        if abs(wz) > 1e-6:
+            angular_excited += 1
+    return {
+        "linear_excited_count": int(linear_excited),
+        "angular_excited_count": int(angular_excited),
+    }
+
+
 def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict]:
     block = cal.get("arm_sysid")
     if not isinstance(block, dict):
@@ -585,6 +633,18 @@ def extract_arm_sysid_tests(cal: dict, fallback_unit: str = "auto") -> list[dict
         )
 
     return tests
+
+
+def select_arm_tests_subset(arm_tests: list[dict], max_arm_tests: int) -> list[dict]:
+    if max_arm_tests <= 0 or len(arm_tests) <= max_arm_tests:
+        return arm_tests
+    if max_arm_tests == 1:
+        return [arm_tests[0]]
+
+    # Evenly pick indices to preserve joint/type diversity across the list.
+    idx = np.linspace(0, len(arm_tests) - 1, num=max_arm_tests, dtype=int)
+    keep = sorted({int(i) for i in idx})
+    return [arm_tests[i] for i in keep]
 
 
 def _command_transform_meta() -> dict:
@@ -745,6 +805,13 @@ class CommandRunner:
         arm_stiff = float(params.get("arm_stiffness_scale", 1.0))
         arm_damp = float(params.get("arm_damping_scale", 1.0))
         arm_arm = float(params.get("arm_armature_scale", 1.0))
+        arm_stiff_joint_scale = torch.ones_like(self.base_arm_stiffness)
+        arm_damp_joint_scale = torch.ones_like(self.base_arm_damping)
+        for ji in range(len(ARM_JOINT_NAMES)):
+            stiff_key = f"arm_stiffness_scale_j{ji}"
+            damp_key = f"arm_damping_scale_j{ji}"
+            arm_stiff_joint_scale[:, ji] = float(params.get(stiff_key, 1.0))
+            arm_damp_joint_scale[:, ji] = float(params.get(damp_key, 1.0))
 
         self.robot.write_joint_stiffness_to_sim(
             self.base_wheel_stiffness * wheel_stiff,
@@ -771,11 +838,11 @@ class CommandRunner:
             joint_ids=wheel_ids,
         )
         self.robot.write_joint_stiffness_to_sim(
-            self.base_arm_stiffness * arm_stiff,
+            self.base_arm_stiffness * arm_stiff * arm_stiff_joint_scale,
             joint_ids=arm_ids,
         )
         self.robot.write_joint_damping_to_sim(
-            self.base_arm_damping * arm_damp,
+            self.base_arm_damping * arm_damp * arm_damp_joint_scale,
             joint_ids=arm_ids,
         )
         # Armature typically smaller impact for position loops, but keep parity with wheel tuning.
@@ -871,9 +938,14 @@ PARAM_KEYS = [
     "arm_armature_scale",
 ]
 
+ARM_STIFFNESS_PER_JOINT_KEYS = [f"arm_stiffness_scale_j{i}" for i in range(len(ARM_JOINT_NAMES))]
+ARM_DAMPING_PER_JOINT_KEYS = [f"arm_damping_scale_j{i}" for i in range(len(ARM_JOINT_NAMES))]
+PARAM_KEYS.extend(ARM_STIFFNESS_PER_JOINT_KEYS)
+PARAM_KEYS.extend(ARM_DAMPING_PER_JOINT_KEYS)
+
 
 def default_params() -> dict[str, float]:
-    return {
+    out = {
         "wheel_stiffness_scale": 1.0,
         "wheel_damping_scale": 1.0,
         "wheel_armature_scale": 1.0,
@@ -886,17 +958,33 @@ def default_params() -> dict[str, float]:
         "arm_damping_scale": 1.0,
         "arm_armature_scale": 1.0,
     }
+    for key in ARM_STIFFNESS_PER_JOINT_KEYS:
+        out[key] = 1.0
+    for key in ARM_DAMPING_PER_JOINT_KEYS:
+        out[key] = 1.0
+    return out
 
 
-def parameter_bounds() -> dict[str, tuple[float, float]]:
+def parameter_bounds(
+    has_linear_excitation: bool = True,
+    has_angular_excitation: bool = True,
+    has_wheel_objective: bool = True,
+    has_arm_objective: bool = True,
+) -> dict[str, tuple[float, float]]:
     if bool(args.freeze_cmd_scales):
         lin_cmd_bounds = (1.0, 1.0)
         ang_cmd_bounds = (1.0, 1.0)
     else:
         lin_cmd_bounds = (float(args.lin_scale_min), float(args.lin_scale_max))
         ang_cmd_bounds = (float(args.ang_scale_min), float(args.ang_scale_max))
+        # Unexcited command axes are unidentifiable from the provided wheel sequences.
+        # Keep them fixed to avoid wasting search budget on unconstrained parameters.
+        if not bool(has_linear_excitation):
+            lin_cmd_bounds = (1.0, 1.0)
+        if not bool(has_angular_excitation):
+            ang_cmd_bounds = (1.0, 1.0)
 
-    return {
+    b = {
         # Keep compatibility with current pipeline: wheel stiffness scale fixed at 1.0.
         "wheel_stiffness_scale": (1.0, 1.0),
         "wheel_damping_scale": (float(args.damping_min), float(args.damping_max)),
@@ -910,6 +998,32 @@ def parameter_bounds() -> dict[str, tuple[float, float]]:
         "arm_damping_scale": (float(args.arm_damping_min), float(args.arm_damping_max)),
         "arm_armature_scale": (float(args.armature_min), float(args.armature_max)),
     }
+    for key in ARM_STIFFNESS_PER_JOINT_KEYS:
+        b[key] = (float(args.arm_stiffness_min), float(args.arm_stiffness_max))
+    for key in ARM_DAMPING_PER_JOINT_KEYS:
+        b[key] = (float(args.arm_damping_min), float(args.arm_damping_max))
+
+    # If objective does not contain wheel terms, freeze wheel-related params.
+    if not bool(has_wheel_objective):
+        b["wheel_damping_scale"] = (1.0, 1.0)
+        b["wheel_armature_scale"] = (1.0, 1.0)
+        b["wheel_friction_coeff"] = (0.0, 0.0)
+        b["wheel_dynamic_friction_coeff"] = (0.0, 0.0)
+        b["wheel_viscous_friction_coeff"] = (0.0, 0.0)
+        b["lin_cmd_scale"] = (1.0, 1.0)
+        b["ang_cmd_scale"] = (1.0, 1.0)
+
+    # If objective does not contain arm terms, freeze arm-related params.
+    if not bool(has_arm_objective):
+        b["arm_stiffness_scale"] = (1.0, 1.0)
+        b["arm_damping_scale"] = (1.0, 1.0)
+        b["arm_armature_scale"] = (1.0, 1.0)
+        for key in ARM_STIFFNESS_PER_JOINT_KEYS:
+            b[key] = (1.0, 1.0)
+        for key in ARM_DAMPING_PER_JOINT_KEYS:
+            b[key] = (1.0, 1.0)
+
+    return b
 
 
 def sample_params_uniform(
@@ -1272,28 +1386,64 @@ def run_local_refinement(
 def main():
     cal = load_json(args.calibration)
     wr, br, geom_meta = resolve_motion_geometry(cal)
-    bounds = parameter_bounds()
-    fixed_params, free_keys = _split_fixed_and_free(bounds)
-
-    sequences = extract_command_sequences(cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz)
-    arm_tests = extract_arm_sysid_tests(cal, fallback_unit=args.encoder_unit)
+    sequences = extract_command_sequences(
+        cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz, include=args.sequences
+    )
+    excitation = analyze_command_excitation(sequences)
+    has_linear_excitation = bool(excitation["linear_excited_count"] > 0)
+    has_angular_excitation = bool(excitation["angular_excited_count"] > 0)
+    arm_tests_loaded = extract_arm_sysid_tests(cal, fallback_unit=args.encoder_unit)
+    if bool(args.use_arm_tests):
+        arm_tests = select_arm_tests_subset(arm_tests_loaded, int(args.max_arm_tests))
+    else:
+        arm_tests = []
     if not sequences and not arm_tests:
         raise RuntimeError(
             "No usable wheel/arm sysid data found. "
             "Run calibrate_real_robot.py --mode wheel_radius/base_radius and/or --mode arm_sysid first."
         )
 
+    has_wheel_objective = len(sequences) > 0
+    has_arm_objective = len(arm_tests) > 0
+    bounds = parameter_bounds(
+        has_linear_excitation=has_linear_excitation,
+        has_angular_excitation=has_angular_excitation,
+        has_wheel_objective=has_wheel_objective,
+        has_arm_objective=has_arm_objective,
+    )
+    fixed_params, free_keys = _split_fixed_and_free(bounds)
+
     print("=" * 72)
     print("LeKiwi sim dynamics tuning")
     print(f"calibration: {cal.get('_resolved_path', args.calibration)}")
     print(f"sequences: {[s['name'] for s in sequences]}")
-    print(f"arm_tests: {len(arm_tests)}")
+    print(
+        f"arm_tests: {len(arm_tests)} "
+        f"(loaded={len(arm_tests_loaded)}, enabled={bool(args.use_arm_tests)}, max={int(args.max_arm_tests)})"
+    )
     print(f"iterations: {args.iterations}")
     print(f"optimizer: {args.optimizer} (free_params={len(free_keys)}/{len(PARAM_KEYS)})")
     print(
         f"analytical_init={bool(args.analytical_init)} "
         f"refine={bool(args.refine)} "
         f"freeze_cmd_scales={bool(args.freeze_cmd_scales)}"
+    )
+    auto_fixed_scales: list[str] = []
+    if not bool(args.freeze_cmd_scales):
+        if not has_linear_excitation:
+            auto_fixed_scales.append("lin_cmd_scale")
+        if not has_angular_excitation:
+            auto_fixed_scales.append("ang_cmd_scale")
+    print(
+        "identifiability: "
+        f"linear_excited={excitation['linear_excited_count']} "
+        f"angular_excited={excitation['angular_excited_count']} "
+        f"auto_fixed={auto_fixed_scales}"
+    )
+    print(
+        "objective_terms: "
+        f"wheel={has_wheel_objective} "
+        f"arm={has_arm_objective}"
     )
     if args.optimizer == "cem":
         print(
@@ -1478,6 +1628,12 @@ def main():
         "analytical_init": analytical_meta,
         "refine": refine_meta,
         "freeze_cmd_scales": bool(args.freeze_cmd_scales),
+        "use_arm_tests": bool(args.use_arm_tests),
+        "max_arm_tests": int(args.max_arm_tests),
+        "arm_tests_loaded": int(len(arm_tests_loaded)),
+        "arm_tests_used": int(len(arm_tests)),
+        "sequence_excitation": dict(excitation),
+        "auto_fixed_cmd_scales": list(auto_fixed_scales),
     }
     if args.optimizer == "cem":
         optimizer_meta["cem"] = {
