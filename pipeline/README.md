@@ -155,7 +155,8 @@ pxr 환경(Isaac Sim Python)에서 실행해야 함.
 ```bash
 # 전체 측정 (wheel/base/arm/rest/sysid)
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode all --connection_mode direct --robot_port /dev/ttyACM0 --sample_hz 20
+  --mode all --connection_mode direct --robot_port /dev/ttyACM0 \
+  --client_id my_awesome_kiwi --sample_hz 20 --encoder_unit m100
 
 # arm 6축 range만 재측정 (권장: 수동 시작/종료)
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
@@ -170,50 +171,46 @@ python scripts/lekiwi_nav_env/calibrate_real_robot.py \
 
 # arm sysid만 별도 측정
 python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode arm_sysid --sample_hz 50
+  --mode arm_sysid --connection_mode direct --robot_port /dev/ttyACM0 \
+  --client_id my_awesome_kiwi --sample_hz 50 --encoder_unit m100
 ```
 
 메모:
+- direct 모드는 로봇 USB가 연결된 머신(예: `192.168.0.104`)에서 실행해야 한다.
 - `--joint_range_duration 0` 또는 음수면 고정 시간 대신 Enter로 시작/종료한다.
 - `joint_range`/`joint_range_single` 측정 중에는 arm torque가 자동으로 OFF되고, 종료 시 ON으로 복구된다.
 - `joint_range_single`은 기존 `wheel_radius`/`base_radius`를 유지한 채 지정 관절 range만 갱신한다.
 - direct 모드에서 모터 캘리브레이션 파일을 쓰려면 현재 로봇 ID에 맞게 `--client_id`를 지정한다(예: `my_awesome_kiwi`).
 
-#### 2-1-1. 현재 진행 현황 (업데이트: 2026-02-17)
+#### 2-1-1. 현재 진행 현황 (업데이트: 2026-02-18)
 
-- 상태: arm 6축 joint range 재측정 완료, sim-real 이동/회전 정합용 보정값 확정.
-- 기준 파일: `calibration/calibration_latest.json` (`timestamp`: `2026-02-15 16:51:18`, `connection_mode`: `direct`)
+- 상태: 원격 로봇 호스트(`192.168.0.104`)에서 `mode all` 실행 후, `joint_range --joint_range_duration 0` 재측정 완료.
+- 기준 파일: `calibration/calibration_latest.json`
+  - `timestamp`: `2026-02-18 10:12:18`
+  - `connection_mode`: `direct`
+  - `robot_port`: `/dev/ttyACM0`
+  - `client_id`: `my_awesome_kiwi`
 - arm joint ranges (실측 반영 완료):
-  - `arm_shoulder_pan.pos = [-100.0, 98.59623199113409]`
+  - `arm_shoulder_pan.pos = [-99.48282231252308, 100.0]`
   - `arm_shoulder_lift.pos = [-100.0, 100.0]`
-  - `arm_elbow_flex.pos = [-98.39572192513369, 99.37611408199643]`
-  - `arm_wrist_flex.pos = [-99.83079526226734, 97.80033840947547]`
-  - `arm_wrist_roll.pos = [-96.28815628815629, 89.84126984126982]`
-  - `arm_gripper.pos = [0.3762227238525207, 100.0]`
-- 참고: `calibration_latest.json`의 1회 추정 wheel/base 값
-  - `wheel_radius_m = 0.06550005957508184`
-  - `base_radius_m = 0.01620267362424141`
+  - `arm_elbow_flex.pos = [-100.0, 98.93048128342247]`
+  - `arm_wrist_flex.pos = [-100.0, 99.91539763113366]`
+  - `arm_wrist_roll.pos = [-95.7997557997558, 90.4273504273504]`
+  - `arm_gripper.pos = [0.07524454477050413, 100.0]`
+- 참고: 최신 실측 파일의 wheel/base 추정값
+  - `wheel_radius_m = 0.06887280430186149`
+  - `base_radius_m = 0.005132166147276185`
   - 위 값은 수집 조건/축 분리 영향으로 일관성이 낮아, sim 기하 상수로 직접 사용하지 않음.
-- sim-real 정합에 사용 중인 확정값:
-  - 기하 상수: `WHEEL_RADIUS = 0.049m`, `BASE_RADIUS = 0.1085m`
-  - 보정 상수 (`scripts/lekiwi_nav_env/sim_real_calibration_test.py`):
-    - `LIN_SCALE = 1.0166`
-    - `ANG_SCALE = 1.2360`
-    - `WZ_SIGN = -1.0` (real `+CCW`, sim `+CW` 부호 차이 보정)
-    - `SIM_FORWARD_AXIS = "y"`, `SIM_FORWARD_SIGN = +1.0`
-    - `AUTO_SELECT_LINEAR_MAP = True` (최근 실행 자동 선택: `identity`)
-- 최근 Script Editor 검증 결과 (2026-02-17 실행 로그):
-  - linear: `SIM 75.03 cm` vs `REAL 75.00 cm` (`R/S = 0.9996`)
-  - angular magnitude: `SIM 295.39 deg` vs `REAL 298.00 deg` (`R/S = 1.0088`)
 - 중요:
-  - 위 보정 상수를 변경했으면 PRE-3(tune) → PRE-4(replay) → PRE-5(compare) → PRE-6(gate)를 다시 실행해 최신 리포트를 갱신한다.
+  - 이번 실측 반영 후 PRE-3(tune) → PRE-4(replay) → PRE-5(compare) → PRE-6(gate)를 다시 실행해 최신 리포트를 갱신한다.
+  - `joint_range` 결과에서 arm span이 비정상적으로 작게 나오면 `--joint_range_duration 0`으로 재측정한다.
 
 #### 2-2. Arm Joint Limit JSON 생성
 
 ```bash
 python scripts/lekiwi_nav_env/build_arm_limits_real2sim.py \
   --calibration_json calibration/calibration_latest.json \
-  --encoder_calibration_json ~/.cache/huggingface/lerobot/calibration/robots/lekiwi/my_lekiwi.json \
+  --encoder_calibration_json ~/.cache/huggingface/lerobot/calibration/robots/lekiwi/my_awesome_kiwi.json \
   --output calibration/arm_limits_real2sim.json
 ```
 
@@ -222,18 +219,36 @@ python scripts/lekiwi_nav_env/build_arm_limits_real2sim.py \
 ```bash
 python scripts/lekiwi_nav_env/tune_sim_dynamics.py \
   --calibration calibration/calibration_latest.json \
+  --encoder_unit m100 \
+  --optimizer cem \
   --iterations 60 \
+  --analytical_init \
+  --refine \
+  --refine_iters 30 \
   --cmd_transform_mode real_to_sim \
-  --cmd_linear_map identity \
+  --cmd_linear_map auto \
   --cmd_lin_scale 1.0166 \
   --cmd_ang_scale 1.2360 \
   --cmd_wz_sign -1.0 \
+  --freeze_cmd_scales \
   --output calibration/tuned_dynamics.json --headless
 ```
 
 메모:
+- 기본값:
+  - `--optimizer cem`
+  - `--analytical_init` 활성 (실측 encoder 정상상태 rate 기반으로 `lin_cmd_scale`/`ang_cmd_scale` 초기값 추정)
+  - `--refine` 활성 (global search 이후 L-BFGS-B 로컬 정밀화)
+  - `--cmd_linear_map auto` 활성 (wheel RMSE 기준으로 `identity/flip_180/rot_cw_90/rot_ccw_90` 자동 선택)
+  - `--freeze_cmd_scales` 활성 (`lin_cmd_scale`, `ang_cmd_scale`를 1.0 고정해 동역학 파라미터에 집중)
+- 필요 시 비활성:
+  - `--no_analytical_init`
+  - `--no_refine`
+  - `--no_freeze_cmd_scales`
 - `tuned_dynamics.json`에는 `best_params`(wheel/arm dynamics + `lin_cmd_scale`/`ang_cmd_scale`)와 함께 `command_transform`이 저장된다.
+- `tuned_dynamics.json.optimizer`에 탐색 메타(`analytical_init`, `refine`, 평가 횟수)가 함께 저장된다.
 - 이후 replay 단계에서 `--dynamics_json`을 주면 `lin_cmd_scale`/`ang_cmd_scale`는 자동으로 그 값을 기본 사용한다(명시 인자 전달 시 override).
+- calibration에 저장된 wheel/base 기하값이 config 대비 과도하게 벗어나면 (`<0.5x` 또는 `>1.8x`) 튜너가 config 값으로 자동 fallback한다.
 
 #### 2-4. Replay 검증
 

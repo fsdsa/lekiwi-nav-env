@@ -15,10 +15,12 @@ LeKiwi 실측 캘리브레이션 스크립트.
 
 Usage:
   # client 모드(원격 host 연결): arm/rest 위주 (all은 arm_sysid 포함)
-  python calibrate_real_robot.py --mode all --connection_mode client --remote_ip 192.168.1.46
+  python calibrate_real_robot.py --mode all --connection_mode client \
+    --remote_ip 192.168.0.104 --client_id my_awesome_kiwi
 
   # direct 모드(라즈베리파이 로컬): wheel/base 포함 전체 권장 (all은 arm_sysid 포함)
-  python calibrate_real_robot.py --mode all --connection_mode direct --robot_port /dev/ttyACM0
+  python calibrate_real_robot.py --mode all --connection_mode direct \
+    --robot_port /dev/ttyACM0 --client_id my_awesome_kiwi
 
   # arm 6축 range만 측정 (duration<=0 이면 Enter로 시작/종료)
   python calibrate_real_robot.py --mode joint_range --connection_mode direct \
@@ -28,16 +30,19 @@ Usage:
   python calibrate_real_robot.py --mode joint_range_single --connection_mode direct \
     --robot_port /dev/ttyACM0 --joint_key arm_gripper.pos --joint_range_duration 0
 
-  python calibrate_real_robot.py --mode wheel_radius
-  python calibrate_real_robot.py --mode base_radius --encoder_unit rad
+  python calibrate_real_robot.py --mode wheel_radius --encoder_unit m100
+  python calibrate_real_robot.py --mode base_radius --encoder_unit m100
   python calibrate_real_robot.py --mode record_trajectory --record_duration 30
   python calibrate_real_robot.py --mode arm_sysid
 
 Notes:
   - calibration_latest.json은 모드별 실행 시 누적 업데이트된다.
     (예: wheel_radius 후 arm_sysid 실행 시 기존 값 유지 + arm_sysid 추가)
+  - STS3215 wheel encoder는 m100 스케일인 경우가 많다.
+    단위를 잘못 지정해도 m100 wrap signature가 감지되면 자동 교정한다.
   - arm_sysid는 --arm_sysid_sample_hz (기본 50Hz)를 사용한다.
   - joint_range / joint_range_single은 측정 중 arm torque를 자동으로 OFF/ON 처리한다.
+  - joint_range 결과에서 arm span이 비정상적으로 작으면 경고를 출력한다.
 """
 
 from __future__ import annotations
@@ -345,6 +350,62 @@ def _select_arm_keys(obs: dict[str, float]) -> list[str]:
     return sorted(set(out), key=_arm_key_sort_key)
 
 
+def _summarize_joint_range_quality(
+    ranges: dict[str, dict[str, float]],
+    arm_keys: list[str],
+) -> dict[str, Any]:
+    """Estimate whether arm range recording looks valid.
+
+    The function detects the numeric scale (rad vs deg/m100) heuristically and
+    flags keys whose observed span is too small to be useful for limit fitting.
+    """
+    arm_spans: dict[str, float] = {}
+    scale_vals: list[float] = []
+    for key in arm_keys:
+        row = ranges.get(key)
+        if not isinstance(row, dict):
+            continue
+        try:
+            lo = float(row["min"])
+            hi = float(row["max"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            continue
+        span = float(abs(hi - lo))
+        arm_spans[key] = span
+        scale_vals.extend([abs(lo), abs(hi), span])
+
+    if not arm_spans:
+        return {
+            "status": "no_arm_spans",
+            "warning": True,
+            "small_span_keys": [],
+            "arm_spans": {},
+        }
+
+    p95_abs = float(np.percentile(np.asarray(scale_vals, dtype=np.float64), 95))
+    if p95_abs <= 6.0:
+        unit_hint = "rad"
+        small_span_threshold = 0.35  # ~20 deg
+    else:
+        unit_hint = "deg_or_m100"
+        small_span_threshold = 20.0
+
+    small_span_keys = [k for k, span in arm_spans.items() if span < small_span_threshold]
+    spans = np.asarray(list(arm_spans.values()), dtype=np.float64)
+    return {
+        "status": "ok",
+        "warning": len(small_span_keys) > 0,
+        "unit_hint": unit_hint,
+        "small_span_threshold": float(small_span_threshold),
+        "small_span_keys": small_span_keys,
+        "min_span": float(np.min(spans)),
+        "median_span": float(np.median(spans)),
+        "arm_spans": arm_spans,
+    }
+
+
 # =============================================================================
 # Unit handling
 # =============================================================================
@@ -362,9 +423,24 @@ def infer_angle_unit(deltas: list[float], user_choice: str) -> str:
     return "deg" if p95_abs > 20.0 else "rad"
 
 
+def _has_m100_wrap_signature(series: dict[str, np.ndarray]) -> bool:
+    jumps = []
+    p95_abs = []
+    for vals in series.values():
+        arr = np.asarray(vals, dtype=np.float64)
+        arr = arr[np.isfinite(arr)]
+        if arr.size < 3:
+            continue
+        p95_abs.append(float(np.percentile(np.abs(arr), 95)))
+        jumps.append(float(np.percentile(np.abs(np.diff(arr)), 95)))
+    if not jumps or not p95_abs:
+        return False
+    max_p95 = float(np.max(p95_abs))
+    max_jump = float(np.max(jumps))
+    return (60.0 <= max_p95 <= 110.0) and (120.0 <= max_jump <= 260.0)
+
+
 def infer_encoder_unit_from_series(series: dict[str, np.ndarray], user_choice: str) -> str:
-    if user_choice in ("rad", "deg", "m100"):
-        return user_choice
     vals_all = []
     for vals in series.values():
         arr = np.asarray(vals, dtype=np.float64)
@@ -372,9 +448,24 @@ def infer_encoder_unit_from_series(series: dict[str, np.ndarray], user_choice: s
         if arr.size > 0:
             vals_all.append(arr)
     if not vals_all:
-        return "rad"
+        return user_choice if user_choice in ("rad", "deg", "m100") else "rad"
+
     all_v = np.concatenate(vals_all)
     p95_abs = float(np.percentile(np.abs(all_v), 95))
+    has_m100_wrap = _has_m100_wrap_signature(series)
+
+    if user_choice in ("rad", "deg", "m100"):
+        if user_choice in ("rad", "deg") and has_m100_wrap:
+            print(
+                "  [WARN] encoder_unit={} 이지만 m100 wrap signature 감지됨. "
+                "m100으로 자동 교정합니다.".format(user_choice)
+            )
+            return "m100"
+        return user_choice
+
+    if has_m100_wrap:
+        return "m100"
+
     if 60.0 <= p95_abs <= 110.0:
         return "m100"
     return "deg" if p95_abs > 20.0 else "rad"
@@ -747,9 +838,23 @@ def measure_joint_ranges(robot: RobotAdapter, duration: float, sample_hz: float)
 
     arm_keys = _select_arm_keys(frames[0]["positions"])
     print(f"  arm-like keys: {arm_keys[:12]}")
+    quality = _summarize_joint_range_quality(ranges=ranges, arm_keys=arm_keys)
+    arm_spans = quality.get("arm_spans", {})
+    if isinstance(arm_spans, dict) and arm_spans:
+        print("  arm span summary:")
+        for key in arm_keys:
+            if key in arm_spans:
+                print(f"    - {key}: span={float(arm_spans[key]):.4f}")
+    if quality.get("warning"):
+        print(
+            "  [WARN] arm joint range span이 작습니다. "
+            "관절을 끝단까지 충분히 왕복했는지 확인하고 "
+            "--mode joint_range --joint_range_duration 0 으로 재측정하세요."
+        )
 
     return {
         "joint_ranges": ranges,
+        "joint_range_quality": quality,
         "raw_readings": frames,
     }
 
@@ -1028,6 +1133,12 @@ def save_results(results: dict, output_dir: str) -> Path:
     if results.get("arm_sysid"):
         num_tests = len(results["arm_sysid"].get("tests", []))
         print(f"  ARM_SYSID tests = {num_tests}")
+    joint_ranges = results.get("joint_ranges")
+    if isinstance(joint_ranges, dict):
+        quality = joint_ranges.get("joint_range_quality")
+        if isinstance(quality, dict) and bool(quality.get("warning")):
+            small = quality.get("small_span_keys", [])
+            print(f"  [WARN] JOINT_RANGE spans look too small: {small}")
 
     return path
 
@@ -1072,8 +1183,8 @@ def main():
             "arm_sysid",
         ],
     )
-    parser.add_argument("--remote_ip", type=str, default="192.168.1.42")
-    parser.add_argument("--client_id", type=str, default="calibration")
+    parser.add_argument("--remote_ip", type=str, default="192.168.0.104")
+    parser.add_argument("--client_id", type=str, default="my_awesome_kiwi")
     parser.add_argument("--connection_mode", type=str, default="client", choices=["client", "direct"])
     parser.add_argument("--robot_port", type=str, default="/dev/ttyACM0")
     parser.add_argument("--output_dir", type=str, default="calibration")
@@ -1123,8 +1234,10 @@ def main():
     results: dict[str, Any] = load_latest_results(args.output_dir)
     results.update({
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "remote_ip": args.remote_ip,
+        "remote_ip": args.remote_ip if args.connection_mode == "client" else "direct(local)",
         "connection_mode": args.connection_mode,
+        "robot_port": args.robot_port if args.connection_mode == "direct" else "",
+        "client_id": args.client_id,
     })
 
     try:

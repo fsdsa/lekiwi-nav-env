@@ -2,8 +2,12 @@
 """
 Tune sim dynamics to match real command->encoder responses.
 
-This script performs a simple random-search SysID loop:
+This script performs black-box SysID optimization:
   real command + encoder log -> sim command replay -> error -> parameter update
+
+Default optimizer is CEM (Cross-Entropy Method), which is typically much more
+sample-efficient than plain random search under the same evaluation budget.
+Random search is still available via --optimizer random.
 
 Input expected from calibrate_real_robot.py:
   - wheel_radius.encoder_log + wheel_radius.command
@@ -14,9 +18,11 @@ Usage:
   python tune_sim_dynamics.py \
       --calibration calibration/calibration_latest.json \
       --cmd_transform_mode real_to_sim \
-      --cmd_linear_map identity \
+      --cmd_linear_map auto \
       --cmd_lin_scale 1.0166 --cmd_ang_scale 1.2360 --cmd_wz_sign -1.0 \
-      --iterations 60 --output calibration/tuned_dynamics.json --headless
+      --freeze_cmd_scales \
+      --iterations 60 --optimizer cem \
+      --output calibration/tuned_dynamics.json --headless
 """
 
 from __future__ import annotations
@@ -77,6 +83,65 @@ parser.add_argument("--ang_scale_min", type=float, default=0.7)
 parser.add_argument("--ang_scale_max", type=float, default=1.3)
 parser.add_argument("--top_k", type=int, default=10)
 parser.add_argument("--arm_weight", type=float, default=1.0, help="weight of arm RMSE term in objective")
+parser.add_argument(
+    "--optimizer",
+    type=str,
+    default="cem",
+    choices=["cem", "random"],
+    help="search strategy for dynamics parameter tuning",
+)
+parser.add_argument("--cem_population", type=int, default=8, help="candidate count per CEM generation")
+parser.add_argument("--cem_elite_frac", type=float, default=0.25, help="top fraction used to update CEM distribution")
+parser.add_argument("--cem_alpha", type=float, default=0.35, help="EMA update ratio for CEM mean/covariance")
+parser.add_argument(
+    "--cem_init_std_scale",
+    type=float,
+    default=0.30,
+    help="initial std as fraction of each parameter range",
+)
+parser.add_argument(
+    "--cem_min_std_scale",
+    type=float,
+    default=0.03,
+    help="minimum std floor as fraction of each parameter range",
+)
+parser.add_argument(
+    "--cem_patience",
+    type=int,
+    default=8,
+    help="early-stop generations with no improvement (0 disables)",
+)
+parser.add_argument(
+    "--analytical_init",
+    dest="analytical_init",
+    action="store_true",
+    help="initialize lin/ang command scales from real encoder steady-state rates",
+)
+parser.add_argument(
+    "--no_analytical_init",
+    dest="analytical_init",
+    action="store_false",
+    help="disable analytical initialization",
+)
+parser.add_argument(
+    "--refine",
+    dest="refine",
+    action="store_true",
+    help="run local L-BFGS-B refinement after global search",
+)
+parser.add_argument(
+    "--no_refine",
+    dest="refine",
+    action="store_false",
+    help="disable local L-BFGS-B refinement",
+)
+parser.add_argument(
+    "--refine_iters",
+    type=int,
+    default=30,
+    help="max iterations for local L-BFGS-B refinement",
+)
+parser.set_defaults(analytical_init=True, refine=True)
 
 parser.add_argument(
     "--cmd_transform_mode",
@@ -88,8 +153,8 @@ parser.add_argument(
 parser.add_argument(
     "--cmd_linear_map",
     type=str,
-    default="identity",
-    choices=["identity", "flip_180", "rot_cw_90", "rot_ccw_90"],
+    default="auto",
+    choices=["auto", "identity", "flip_180", "rot_cw_90", "rot_ccw_90"],
     help="2D linear map used when --cmd_transform_mode real_to_sim",
 )
 parser.add_argument(
@@ -110,6 +175,18 @@ parser.add_argument(
     default=1.0,
     help="wz sign used when --cmd_transform_mode real_to_sim",
 )
+parser.add_argument(
+    "--freeze_cmd_scales",
+    dest="freeze_cmd_scales",
+    action="store_true",
+    help="fix lin_cmd_scale/ang_cmd_scale to 1.0 so optimizer tunes only dynamics",
+)
+parser.add_argument(
+    "--no_freeze_cmd_scales",
+    dest="freeze_cmd_scales",
+    action="store_false",
+    help="allow optimizer to tune lin_cmd_scale/ang_cmd_scale",
+)
 
 parser.add_argument("--arm_damping_min", type=float, default=0.4)
 parser.add_argument("--arm_damping_max", type=float, default=2.5)
@@ -117,6 +194,7 @@ parser.add_argument("--arm_stiffness_min", type=float, default=0.5)
 parser.add_argument("--arm_stiffness_max", type=float, default=2.0)
 
 AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(freeze_cmd_scales=True)
 args = parser.parse_args()
 
 launcher = AppLauncher(args)
@@ -142,6 +220,12 @@ LINEAR_MAPS = {
     "flip_180": ((-1.0, 0.0), (0.0, -1.0)),
     "rot_cw_90": ((0.0, 1.0), (-1.0, 0.0)),
     "rot_ccw_90": ((0.0, -1.0), (1.0, 0.0)),
+}
+
+CMD_LINEAR_MAP_REQUESTED = str(args.cmd_linear_map)
+CMD_LINEAR_MAP_AUTO_META: dict[str, object] = {
+    "applied": False,
+    "requested": CMD_LINEAR_MAP_REQUESTED,
 }
 
 
@@ -196,6 +280,21 @@ def resolve_motion_geometry(cal: dict) -> tuple[float, float, dict]:
         br = br_cfg
         br_src = "config"
 
+    wheel_ratio_to_cfg = float(wr / wr_cfg) if wr_cfg > 1e-8 else float("inf")
+    base_ratio_to_cfg = float(br / br_cfg) if br_cfg > 1e-8 else float("inf")
+    wheel_sanity_fallback = False
+    base_sanity_fallback = False
+    if wr_src == "calibration" and not (0.5 <= wheel_ratio_to_cfg <= 1.8):
+        wr = wr_cfg
+        wr_src = "config_fallback_sanity"
+        wheel_sanity_fallback = True
+        wheel_ratio_to_cfg = 1.0
+    if br_src == "calibration" and not (0.5 <= base_ratio_to_cfg <= 1.8):
+        br = br_cfg
+        br_src = "config_fallback_sanity"
+        base_sanity_fallback = True
+        base_ratio_to_cfg = 1.0
+
     meta = {
         "geometry_source_arg": str(args.geometry_source),
         "wheel_radius_config": wr_cfg,
@@ -204,6 +303,10 @@ def resolve_motion_geometry(cal: dict) -> tuple[float, float, dict]:
         "base_radius_calibration": br_cal,
         "wheel_radius_source": wr_src,
         "base_radius_source": br_src,
+        "wheel_ratio_to_config": wheel_ratio_to_cfg,
+        "base_ratio_to_config": base_ratio_to_cfg,
+        "wheel_sanity_fallback": wheel_sanity_fallback,
+        "base_sanity_fallback": base_sanity_fallback,
     }
     return float(wr), float(br), meta
 
@@ -488,9 +591,11 @@ def _command_transform_meta() -> dict:
     return {
         "mode": str(args.cmd_transform_mode),
         "linear_map": str(args.cmd_linear_map),
+        "linear_map_requested": str(CMD_LINEAR_MAP_REQUESTED),
         "lin_scale": float(args.cmd_lin_scale),
         "ang_scale": float(args.cmd_ang_scale),
         "wz_sign": float(args.cmd_wz_sign),
+        "auto_linear_map": dict(CMD_LINEAR_MAP_AUTO_META),
     }
 
 
@@ -502,13 +607,77 @@ def apply_command_transform(vx: float, vy: float, wz: float) -> tuple[float, flo
     if args.cmd_transform_mode != "real_to_sim":
         return float(vx), float(vy), float(wz)
 
-    m = LINEAR_MAPS[str(args.cmd_linear_map)]
+    linear_map = str(args.cmd_linear_map)
+    if linear_map == "auto":
+        linear_map = "identity"
+    m = LINEAR_MAPS[linear_map]
     vx_m = m[0][0] * float(vx) + m[0][1] * float(vy)
     vy_m = m[1][0] * float(vx) + m[1][1] * float(vy)
     vx_m *= float(args.cmd_lin_scale)
     vy_m *= float(args.cmd_lin_scale)
     wz_m = float(wz) * float(args.cmd_wz_sign) * float(args.cmd_ang_scale)
     return vx_m, vy_m, wz_m
+
+
+def auto_select_command_linear_map(
+    runner: "CommandRunner",
+    sequences: list[dict],
+) -> dict[str, object]:
+    """Probe wheel-only replay error for each linear map and pick the best one."""
+    global CMD_LINEAR_MAP_AUTO_META
+
+    if args.cmd_transform_mode != "real_to_sim":
+        CMD_LINEAR_MAP_AUTO_META = {
+            "applied": False,
+            "reason": "transform_mode_none",
+            "requested": str(CMD_LINEAR_MAP_REQUESTED),
+        }
+        return CMD_LINEAR_MAP_AUTO_META
+    if str(args.cmd_linear_map) != "auto":
+        CMD_LINEAR_MAP_AUTO_META = {
+            "applied": False,
+            "reason": "not_requested",
+            "requested": str(CMD_LINEAR_MAP_REQUESTED),
+        }
+        return CMD_LINEAR_MAP_AUTO_META
+    if not sequences:
+        args.cmd_linear_map = "identity"
+        CMD_LINEAR_MAP_AUTO_META = {
+            "applied": True,
+            "reason": "no_wheel_sequence_fallback",
+            "requested": str(CMD_LINEAR_MAP_REQUESTED),
+            "selected": "identity",
+            "candidates": [],
+        }
+        return CMD_LINEAR_MAP_AUTO_META
+
+    probe_params = default_params()
+    candidates: list[dict[str, float | str]] = []
+    for linear_map in ("identity", "flip_180", "rot_cw_90", "rot_ccw_90"):
+        args.cmd_linear_map = linear_map
+        eva = evaluate_candidate(runner, sequences, [], probe_params)
+        candidates.append(
+            {
+                "linear_map": linear_map,
+                "wheel_rmse_rad": float(eva["mean_rmse_rad"]),
+            }
+        )
+
+    finite = [c for c in candidates if math.isfinite(float(c["wheel_rmse_rad"]))]
+    if finite:
+        best = min(finite, key=lambda x: float(x["wheel_rmse_rad"]))
+        selected = str(best["linear_map"])
+    else:
+        selected = "identity"
+    args.cmd_linear_map = selected
+
+    CMD_LINEAR_MAP_AUTO_META = {
+        "applied": True,
+        "requested": str(CMD_LINEAR_MAP_REQUESTED),
+        "selected": selected,
+        "candidates": candidates,
+    }
+    return CMD_LINEAR_MAP_AUTO_META
 
 
 class CommandRunner:
@@ -688,20 +857,180 @@ class CommandRunner:
         }
 
 
-def sample_params(rng: np.random.Generator) -> dict:
+PARAM_KEYS = [
+    "wheel_stiffness_scale",
+    "wheel_damping_scale",
+    "wheel_armature_scale",
+    "wheel_friction_coeff",
+    "wheel_dynamic_friction_coeff",
+    "wheel_viscous_friction_coeff",
+    "lin_cmd_scale",
+    "ang_cmd_scale",
+    "arm_stiffness_scale",
+    "arm_damping_scale",
+    "arm_armature_scale",
+]
+
+
+def default_params() -> dict[str, float]:
     return {
         "wheel_stiffness_scale": 1.0,
-        "wheel_damping_scale": float(rng.uniform(args.damping_min, args.damping_max)),
-        "wheel_armature_scale": float(rng.uniform(args.armature_min, args.armature_max)),
-        "wheel_friction_coeff": float(rng.uniform(args.friction_min, args.friction_max)),
-        "wheel_dynamic_friction_coeff": float(rng.uniform(args.dyn_friction_min, args.dyn_friction_max)),
-        "wheel_viscous_friction_coeff": float(rng.uniform(args.viscous_friction_min, args.viscous_friction_max)),
-        "lin_cmd_scale": float(rng.uniform(args.lin_scale_min, args.lin_scale_max)),
-        "ang_cmd_scale": float(rng.uniform(args.ang_scale_min, args.ang_scale_max)),
-        "arm_stiffness_scale": float(rng.uniform(args.arm_stiffness_min, args.arm_stiffness_max)),
-        "arm_damping_scale": float(rng.uniform(args.arm_damping_min, args.arm_damping_max)),
-        "arm_armature_scale": float(rng.uniform(args.armature_min, args.armature_max)),
+        "wheel_damping_scale": 1.0,
+        "wheel_armature_scale": 1.0,
+        "wheel_friction_coeff": 0.0,
+        "wheel_dynamic_friction_coeff": 0.0,
+        "wheel_viscous_friction_coeff": 0.0,
+        "lin_cmd_scale": 1.0,
+        "ang_cmd_scale": 1.0,
+        "arm_stiffness_scale": 1.0,
+        "arm_damping_scale": 1.0,
+        "arm_armature_scale": 1.0,
     }
+
+
+def parameter_bounds() -> dict[str, tuple[float, float]]:
+    if bool(args.freeze_cmd_scales):
+        lin_cmd_bounds = (1.0, 1.0)
+        ang_cmd_bounds = (1.0, 1.0)
+    else:
+        lin_cmd_bounds = (float(args.lin_scale_min), float(args.lin_scale_max))
+        ang_cmd_bounds = (float(args.ang_scale_min), float(args.ang_scale_max))
+
+    return {
+        # Keep compatibility with current pipeline: wheel stiffness scale fixed at 1.0.
+        "wheel_stiffness_scale": (1.0, 1.0),
+        "wheel_damping_scale": (float(args.damping_min), float(args.damping_max)),
+        "wheel_armature_scale": (float(args.armature_min), float(args.armature_max)),
+        "wheel_friction_coeff": (float(args.friction_min), float(args.friction_max)),
+        "wheel_dynamic_friction_coeff": (float(args.dyn_friction_min), float(args.dyn_friction_max)),
+        "wheel_viscous_friction_coeff": (float(args.viscous_friction_min), float(args.viscous_friction_max)),
+        "lin_cmd_scale": lin_cmd_bounds,
+        "ang_cmd_scale": ang_cmd_bounds,
+        "arm_stiffness_scale": (float(args.arm_stiffness_min), float(args.arm_stiffness_max)),
+        "arm_damping_scale": (float(args.arm_damping_min), float(args.arm_damping_max)),
+        "arm_armature_scale": (float(args.armature_min), float(args.armature_max)),
+    }
+
+
+def sample_params_uniform(
+    rng: np.random.Generator,
+    bounds: dict[str, tuple[float, float]],
+) -> dict[str, float]:
+    out = {}
+    for key in PARAM_KEYS:
+        lo, hi = bounds[key]
+        if hi <= lo:
+            out[key] = float(lo)
+        else:
+            out[key] = float(rng.uniform(lo, hi))
+    return out
+
+
+def _split_fixed_and_free(bounds: dict[str, tuple[float, float]]) -> tuple[dict[str, float], list[str]]:
+    fixed: dict[str, float] = {}
+    free: list[str] = []
+    for key in PARAM_KEYS:
+        lo, hi = bounds[key]
+        if (hi - lo) <= 1e-8:
+            fixed[key] = float(lo)
+        else:
+            free.append(key)
+    return fixed, free
+
+
+def _params_to_vector(params: dict[str, float], keys: list[str]) -> np.ndarray:
+    return np.asarray([float(params[k]) for k in keys], dtype=np.float64)
+
+
+def _vector_to_params(
+    vector: np.ndarray,
+    free_keys: list[str],
+    fixed_params: dict[str, float],
+) -> dict[str, float]:
+    out = {k: float(v) for k, v in fixed_params.items()}
+    for i, key in enumerate(free_keys):
+        out[key] = float(vector[i])
+    for key in PARAM_KEYS:
+        out.setdefault(key, float(fixed_params.get(key, 0.0)))
+    return out
+
+
+class CEMSampler:
+    """Cross-Entropy Method sampler with Gaussian mean/covariance adaptation."""
+
+    def __init__(
+        self,
+        rng: np.random.Generator,
+        free_keys: list[str],
+        bounds: dict[str, tuple[float, float]],
+        init_params: dict[str, float],
+    ):
+        self.rng = rng
+        self.free_keys = list(free_keys)
+        self.dim = len(self.free_keys)
+        self.alpha = float(np.clip(float(args.cem_alpha), 1e-3, 1.0))
+        self.elite_frac = float(np.clip(float(args.cem_elite_frac), 1e-3, 1.0))
+
+        self.lo = np.asarray([float(bounds[k][0]) for k in self.free_keys], dtype=np.float64)
+        self.hi = np.asarray([float(bounds[k][1]) for k in self.free_keys], dtype=np.float64)
+        self.mean = _params_to_vector(init_params, self.free_keys)
+        self.mean = np.clip(self.mean, self.lo, self.hi)
+
+        span = np.maximum(self.hi - self.lo, 1e-6)
+        self.min_std = np.maximum(span * float(args.cem_min_std_scale), 1e-4)
+        init_std = np.maximum(span * float(args.cem_init_std_scale), self.min_std)
+        self.cov = np.diag(init_std ** 2)
+
+    def _sanitize_cov(self):
+        self.cov = 0.5 * (self.cov + self.cov.T)
+        diag = np.maximum(np.diag(self.cov), self.min_std ** 2)
+        np.fill_diagonal(self.cov, diag)
+
+    def _sample_gaussian(self, n: int) -> np.ndarray:
+        self._sanitize_cov()
+        jitter = 1e-10
+        eye = np.eye(self.dim, dtype=np.float64)
+        for _ in range(8):
+            try:
+                chol = np.linalg.cholesky(self.cov + eye * jitter)
+                z = self.rng.standard_normal((n, self.dim))
+                return self.mean + z @ chol.T
+            except np.linalg.LinAlgError:
+                jitter *= 10.0
+        # Final robust fallback to diagonal covariance.
+        diag_cov = np.diag(np.maximum(np.diag(self.cov), self.min_std ** 2))
+        chol = np.linalg.cholesky(diag_cov + eye * 1e-8)
+        z = self.rng.standard_normal((n, self.dim))
+        return self.mean + z @ chol.T
+
+    def sample_batch(self, n: int) -> np.ndarray:
+        if self.dim == 0:
+            return np.zeros((n, 0), dtype=np.float64)
+        candidates = self._sample_gaussian(n)
+        return np.clip(candidates, self.lo, self.hi)
+
+    def update(self, candidates: np.ndarray, scores: np.ndarray):
+        if self.dim == 0 or candidates.size == 0:
+            return
+        elite_n = max(1, int(math.ceil(self.elite_frac * len(candidates))))
+        elite_idx = np.argsort(scores)[:elite_n]
+        elite = np.asarray(candidates[elite_idx], dtype=np.float64)
+
+        elite_mean = np.mean(elite, axis=0)
+        if elite.shape[0] >= 2:
+            centered = elite - elite_mean
+            elite_cov = (centered.T @ centered) / float(elite.shape[0] - 1)
+        else:
+            elite_cov = np.diag(self.min_std ** 2)
+
+        elite_cov = 0.5 * (elite_cov + elite_cov.T)
+        diag = np.maximum(np.diag(elite_cov), self.min_std ** 2)
+        np.fill_diagonal(elite_cov, diag)
+
+        self.mean = (1.0 - self.alpha) * self.mean + self.alpha * elite_mean
+        self.mean = np.clip(self.mean, self.lo, self.hi)
+        self.cov = (1.0 - self.alpha) * self.cov + self.alpha * elite_cov
+        self._sanitize_cov()
 
 
 def evaluate_candidate(runner: CommandRunner, sequences: list[dict], arm_tests: list[dict], params: dict) -> dict:
@@ -806,9 +1135,145 @@ def evaluate_candidate(runner: CommandRunner, sequences: list[dict], arm_tests: 
     }
 
 
+def analytical_preestimate_params(
+    sequences: list[dict],
+    wheel_radius: float,
+    base_radius: float,
+    bounds: dict[str, tuple[float, float]],
+) -> tuple[dict[str, float], dict[str, float | int]]:
+    """Estimate a better initial lin/ang command scale from real encoder steady-state rates."""
+    init_params = default_params()
+    lin_ratios: list[float] = []
+    ang_ratios: list[float] = []
+
+    for seq in sequences:
+        cmd = seq["command"]
+        vx_t, vy_t, wz_t = apply_command_transform(
+            float(cmd["vx"]),
+            float(cmd["vy"]),
+            float(cmd["wz"]),
+        )
+        expected_radps = kiwi_ik(vx_t, vy_t, wz_t, wheel_radius, base_radius)
+        t = np.asarray(seq["time_s"], dtype=np.float64)
+        if t.size < 10:
+            continue
+
+        for pair in seq["pairs"]:
+            sim_joint = str(pair["sim_joint"])
+            if sim_joint not in WHEEL_JOINT_NAMES:
+                continue
+            wheel_i = WHEEL_JOINT_NAMES.index(sim_joint)
+            expected_w = float(expected_radps[wheel_i])
+            if abs(expected_w) < 1e-6:
+                continue
+
+            real_pos = np.asarray(pair["real_pos_rad"], dtype=np.float64)
+            if real_pos.size != t.size or real_pos.size < 10:
+                continue
+
+            n = int(real_pos.size)
+            half = n // 2
+            t_seg = t[half:] - t[half]
+            p_seg = real_pos[half:] - real_pos[half]
+            if t_seg.size < 5 or float(t_seg[-1]) < 0.1:
+                continue
+
+            try:
+                actual_rate = float(np.polyfit(t_seg, p_seg, 1)[0])
+            except Exception:
+                continue
+
+            ratio = abs(actual_rate / expected_w)
+            if not math.isfinite(ratio) or ratio <= 1e-5 or ratio > 10.0:
+                continue
+
+            if abs(wz_t) < 1e-3 and (abs(vx_t) > 1e-5 or abs(vy_t) > 1e-5):
+                lin_ratios.append(ratio)
+            elif abs(wz_t) >= 1e-3:
+                ang_ratios.append(ratio)
+
+    if lin_ratios:
+        lo, hi = bounds["lin_cmd_scale"]
+        init_params["lin_cmd_scale"] = float(np.clip(float(np.median(lin_ratios)), lo, hi))
+    if ang_ratios:
+        lo, hi = bounds["ang_cmd_scale"]
+        init_params["ang_cmd_scale"] = float(np.clip(float(np.median(ang_ratios)), lo, hi))
+
+    meta: dict[str, float | int] = {
+        "lin_ratio_count": int(len(lin_ratios)),
+        "ang_ratio_count": int(len(ang_ratios)),
+        "lin_cmd_scale": float(init_params["lin_cmd_scale"]),
+        "ang_cmd_scale": float(init_params["ang_cmd_scale"]),
+    }
+    return init_params, meta
+
+
+def run_local_refinement(
+    runner: CommandRunner,
+    sequences: list[dict],
+    arm_tests: list[dict],
+    start_params: dict[str, float],
+    free_keys: list[str],
+    fixed_params: dict[str, float],
+    bounds: dict[str, tuple[float, float]],
+    max_iter: int,
+) -> tuple[dict[str, float], dict[str, object], int]:
+    """Run local L-BFGS-B refinement on free parameters only."""
+    if len(free_keys) == 0:
+        return start_params, {"applied": False, "reason": "no_free_params"}, 0
+
+    try:
+        from scipy.optimize import minimize
+    except Exception as exc:
+        return start_params, {"applied": False, "reason": f"scipy_unavailable: {exc}"}, 0
+
+    lo = np.asarray([float(bounds[k][0]) for k in free_keys], dtype=np.float64)
+    hi = np.asarray([float(bounds[k][1]) for k in free_keys], dtype=np.float64)
+    x0 = _params_to_vector(start_params, free_keys)
+    x0 = np.clip(x0, lo, hi)
+
+    eval_count = 0
+
+    def objective(x: np.ndarray) -> float:
+        nonlocal eval_count
+        eval_count += 1
+        x_clipped = np.clip(np.asarray(x, dtype=np.float64), lo, hi)
+        params = _vector_to_params(x_clipped, free_keys=free_keys, fixed_params=fixed_params)
+        eva = evaluate_candidate(runner, sequences, arm_tests, params)
+        return float(eva["score"])
+
+    try:
+        result = minimize(
+            objective,
+            x0,
+            method="L-BFGS-B",
+            bounds=list(zip(lo.tolist(), hi.tolist())),
+            options={
+                "maxiter": max(1, int(max_iter)),
+                "ftol": 1e-9,
+                "disp": False,
+            },
+        )
+        x_best = np.clip(np.asarray(result.x, dtype=np.float64), lo, hi)
+        refined_params = _vector_to_params(x_best, free_keys=free_keys, fixed_params=fixed_params)
+        info = {
+            "applied": True,
+            "success": bool(getattr(result, "success", False)),
+            "nit": int(getattr(result, "nit", 0)),
+            "nfev": int(getattr(result, "nfev", eval_count)),
+            "message": str(getattr(result, "message", "")),
+            "score": float(getattr(result, "fun", float("inf"))),
+        }
+        return refined_params, info, int(eval_count)
+    except Exception as exc:
+        return start_params, {"applied": False, "reason": f"refine_failed: {exc}"}, int(eval_count)
+
+
 def main():
     cal = load_json(args.calibration)
     wr, br, geom_meta = resolve_motion_geometry(cal)
+    bounds = parameter_bounds()
+    fixed_params, free_keys = _split_fixed_and_free(bounds)
 
     sequences = extract_command_sequences(cal, fallback_vx=args.fallback_vx, fallback_wz=args.fallback_wz)
     arm_tests = extract_arm_sysid_tests(cal, fallback_unit=args.encoder_unit)
@@ -824,33 +1289,76 @@ def main():
     print(f"sequences: {[s['name'] for s in sequences]}")
     print(f"arm_tests: {len(arm_tests)}")
     print(f"iterations: {args.iterations}")
+    print(f"optimizer: {args.optimizer} (free_params={len(free_keys)}/{len(PARAM_KEYS)})")
+    print(
+        f"analytical_init={bool(args.analytical_init)} "
+        f"refine={bool(args.refine)} "
+        f"freeze_cmd_scales={bool(args.freeze_cmd_scales)}"
+    )
+    if args.optimizer == "cem":
+        print(
+            "cem_config="
+            f"{{population:{int(args.cem_population)}, elite_frac:{float(args.cem_elite_frac):.3f}, "
+            f"alpha:{float(args.cem_alpha):.3f}, patience:{int(args.cem_patience)}}}"
+        )
     print(
         f"wheel_radius={wr:.6f} ({geom_meta['wheel_radius_source']}, "
         f"cfg={geom_meta['wheel_radius_config']:.6f}, cal={geom_meta['wheel_radius_calibration']}), "
         f"base_radius={br:.6f} ({geom_meta['base_radius_source']}, "
         f"cfg={geom_meta['base_radius_config']:.6f}, cal={geom_meta['base_radius_calibration']})"
     )
-    print(f"command_transform={_command_transform_meta()}")
+    if bool(geom_meta.get("wheel_sanity_fallback")) or bool(geom_meta.get("base_sanity_fallback")):
+        print(
+            "geometry_sanity_fallback | "
+            f"wheel={bool(geom_meta.get('wheel_sanity_fallback'))} "
+            f"base={bool(geom_meta.get('base_sanity_fallback'))}"
+        )
+    print(f"command_transform(requested)={_command_transform_meta()}")
     print("=" * 72)
 
     runner = CommandRunner(wheel_radius=wr, base_radius=br)
     rng = np.random.default_rng(args.seed)
 
-    tried = []
+    auto_map_meta = auto_select_command_linear_map(runner=runner, sequences=sequences)
+    if bool(auto_map_meta.get("applied", False)):
+        print(
+            "auto_linear_map | "
+            f"requested={auto_map_meta.get('requested')} "
+            f"selected={auto_map_meta.get('selected')}"
+        )
+        for cand in auto_map_meta.get("candidates", []):
+            if not isinstance(cand, dict):
+                continue
+            print(
+                f"  - {cand.get('linear_map')}: "
+                f"wheel_rmse={float(cand.get('wheel_rmse_rad', float('inf'))):.6f}"
+            )
+    print(f"command_transform(effective)={_command_transform_meta()}")
 
-    baseline_params = {
-        "wheel_stiffness_scale": 1.0,
-        "wheel_damping_scale": 1.0,
-        "wheel_armature_scale": 1.0,
-        "wheel_friction_coeff": 0.0,
-        "wheel_dynamic_friction_coeff": 0.0,
-        "wheel_viscous_friction_coeff": 0.0,
-        "lin_cmd_scale": 1.0,
-        "ang_cmd_scale": 1.0,
-        "arm_stiffness_scale": 1.0,
-        "arm_damping_scale": 1.0,
-        "arm_armature_scale": 1.0,
-    }
+    tried = []
+    search_evals_done = 0
+    refine_evals_done = 0
+
+    baseline_params = default_params()
+    init_params = baseline_params.copy()
+    analytical_meta: dict[str, object] = {"enabled": bool(args.analytical_init), "applied": False}
+    if bool(args.analytical_init):
+        init_params, a_meta = analytical_preestimate_params(
+            sequences=sequences,
+            wheel_radius=wr,
+            base_radius=br,
+            bounds=bounds,
+        )
+        analytical_meta = {
+            "enabled": True,
+            "applied": True,
+            **a_meta,
+        }
+        print(
+            "analytical_init | "
+            f"lin_cmd_scale={init_params['lin_cmd_scale']:.4f} (n={int(a_meta['lin_ratio_count'])}), "
+            f"ang_cmd_scale={init_params['ang_cmd_scale']:.4f} (n={int(a_meta['ang_ratio_count'])})"
+        )
 
     baseline_eval = evaluate_candidate(runner, sequences, arm_tests, baseline_params)
     tried.append({"iter": -1, "params": baseline_params, "eval": baseline_eval})
@@ -860,24 +1368,133 @@ def main():
         f"arm_rmse={baseline_eval['arm_mean_rmse_rad']:.6f} (baseline)"
     )
 
-    for i in range(args.iterations):
-        params = sample_params(rng)
-        eva = evaluate_candidate(runner, sequences, arm_tests, params)
-        tried.append({"iter": i, "params": params, "eval": eva})
-        print(
-            f"iter {i:03d} | score={eva['score']:.6f} "
-            f"wheel_rmse={eva['mean_rmse_rad']:.6f} arm_rmse={eva['arm_mean_rmse_rad']:.6f}"
+    if args.optimizer == "random":
+        for i in range(args.iterations):
+            params = sample_params_uniform(rng=rng, bounds=bounds)
+            eva = evaluate_candidate(runner, sequences, arm_tests, params)
+            tried.append({"iter": i, "params": params, "eval": eva})
+            search_evals_done += 1
+            print(
+                f"iter {i:03d} | score={eva['score']:.6f} "
+                f"wheel_rmse={eva['mean_rmse_rad']:.6f} arm_rmse={eva['arm_mean_rmse_rad']:.6f}"
+            )
+    else:
+        if len(free_keys) == 0:
+            print("No free parameters to tune (all bounds fixed).")
+        else:
+            pop = max(1, int(args.cem_population))
+            sampler = CEMSampler(
+                rng=rng,
+                free_keys=free_keys,
+                bounds=bounds,
+                init_params=init_params,
+            )
+            iter_idx = 0
+            gen_idx = 0
+            best_score_so_far = float(baseline_eval["score"])
+            no_improve_gens = 0
+            while iter_idx < int(args.iterations):
+                batch_n = min(pop, int(args.iterations) - iter_idx)
+                vectors = sampler.sample_batch(batch_n)
+                scores = np.full((batch_n,), np.inf, dtype=np.float64)
+                prev_best = best_score_so_far
+                for bi in range(batch_n):
+                    params = _vector_to_params(vectors[bi], free_keys=free_keys, fixed_params=fixed_params)
+                    eva = evaluate_candidate(runner, sequences, arm_tests, params)
+                    scores[bi] = float(eva["score"])
+                    tried.append(
+                        {
+                            "iter": iter_idx,
+                            "gen": gen_idx,
+                            "cand": bi,
+                            "params": params,
+                            "eval": eva,
+                        }
+                    )
+                    search_evals_done += 1
+                    print(
+                        f"iter {iter_idx:03d} [g{gen_idx:02d}:{bi:02d}] | "
+                        f"score={eva['score']:.6f} "
+                        f"wheel_rmse={eva['mean_rmse_rad']:.6f} arm_rmse={eva['arm_mean_rmse_rad']:.6f}"
+                    )
+                    if scores[bi] < best_score_so_far:
+                        best_score_so_far = scores[bi]
+                    iter_idx += 1
+
+                sampler.update(vectors, scores)
+                if best_score_so_far < prev_best - 1e-12:
+                    no_improve_gens = 0
+                else:
+                    no_improve_gens += 1
+                gen_idx += 1
+                if int(args.cem_patience) > 0 and no_improve_gens >= int(args.cem_patience):
+                    print(
+                        "Early stop: "
+                        f"no improvement for {no_improve_gens} generations (patience={int(args.cem_patience)})."
+                    )
+                    break
+
+    tried.sort(key=lambda x: x["eval"]["score"])
+    best = tried[0]
+
+    refine_meta: dict[str, object] = {"enabled": bool(args.refine), "applied": False}
+    if bool(args.refine):
+        refined_params, refine_info, refine_evals_done = run_local_refinement(
+            runner=runner,
+            sequences=sequences,
+            arm_tests=arm_tests,
+            start_params=best["params"],
+            free_keys=free_keys,
+            fixed_params=fixed_params,
+            bounds=bounds,
+            max_iter=int(args.refine_iters),
         )
+        refine_meta = {"enabled": True, **refine_info}
+        if bool(refine_info.get("applied", False)):
+            refined_eval = evaluate_candidate(runner, sequences, arm_tests, refined_params)
+            tried.append({"iter": "refine", "params": refined_params, "eval": refined_eval})
+            improved = float(refined_eval["score"]) < float(best["eval"]["score"])
+            print(
+                "refine | "
+                f"score={refined_eval['score']:.6f} "
+                f"(improved={improved}, nfev={int(refine_info.get('nfev', 0))})"
+            )
+        else:
+            print(f"refine skipped | reason={refine_info.get('reason', 'unknown')}")
 
     tried.sort(key=lambda x: x["eval"]["score"])
     best = tried[0]
     top_k = tried[: max(1, args.top_k)]
+
+    optimizer_meta = {
+        "name": str(args.optimizer),
+        "requested_iterations": int(args.iterations),
+        "search_evaluations_done": int(search_evals_done),
+        "refine_objective_evaluations": int(refine_evals_done),
+        "objective_evaluations_excluding_baseline": int(search_evals_done + refine_evals_done),
+        "total_evaluations_including_baseline": int(len(tried)),
+        "free_keys": list(free_keys),
+        "fixed_params": {k: float(v) for k, v in fixed_params.items()},
+        "analytical_init": analytical_meta,
+        "refine": refine_meta,
+        "freeze_cmd_scales": bool(args.freeze_cmd_scales),
+    }
+    if args.optimizer == "cem":
+        optimizer_meta["cem"] = {
+            "population": int(args.cem_population),
+            "elite_frac": float(args.cem_elite_frac),
+            "alpha": float(args.cem_alpha),
+            "init_std_scale": float(args.cem_init_std_scale),
+            "min_std_scale": float(args.cem_min_std_scale),
+            "patience": int(args.cem_patience),
+        }
 
     out = {
         "calibration_path": cal.get("_resolved_path", args.calibration),
         "seed": args.seed,
         "iterations": args.iterations,
         "arm_weight": float(args.arm_weight),
+        "optimizer": optimizer_meta,
         "geometry": geom_meta,
         "command_transform": _command_transform_meta(),
         "wheel_radius_used": float(wr),
