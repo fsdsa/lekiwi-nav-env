@@ -132,8 +132,8 @@ def main():
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--train_split", type=float, default=0.9)
     parser.add_argument("--save_dir", type=str, default="checkpoints/")
-    parser.add_argument("--expected_obs_dim", type=int, default=None,
-                        help="관측 차원 강제 검증 (예: 33). None이면 자동 추론.")
+    parser.add_argument("--expected_obs_dim", type=int, required=True,
+                        help="관측 차원 강제 검증 (예: 30=Skill-2, 29=Skill-3)")
     parser.add_argument("--expected_act_dim", type=int, default=9,
                         help="액션 차원 검증")
     norm_group = parser.add_mutually_exclusive_group()
@@ -154,10 +154,9 @@ def main():
     obs_dim = obs_data.shape[-1]
     act_dim = act_data.shape[-1]
 
-    if args.expected_obs_dim is not None:
-        assert obs_dim == args.expected_obs_dim, (
-            f"Expected obs_dim={args.expected_obs_dim}, got {obs_dim}"
-        )
+    assert obs_dim == args.expected_obs_dim, (
+        f"Expected obs_dim={args.expected_obs_dim}, got {obs_dim}"
+    )
     assert act_dim == args.expected_act_dim, (
         f"Expected act_dim={args.expected_act_dim}, got {act_dim}"
     )

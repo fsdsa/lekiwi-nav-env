@@ -92,6 +92,19 @@ parser.add_argument(
     action="store_true",
     help="checkpoint에 state preprocessor가 없을 때 raw obs로 진행 (기본: 에러로 중단)",
 )
+parser.add_argument(
+    "--skill",
+    type=str,
+    default="approach_and_grasp",
+    choices=["approach_and_grasp", "carry_and_place", "legacy"],
+    help="수집할 skill (legacy = v8 monolithic env)",
+)
+parser.add_argument(
+    "--handoff_buffer",
+    type=str,
+    default=None,
+    help="Skill-3용 handoff buffer pickle 경로",
+)
 
 # Camera
 parser.add_argument("--no_camera", action="store_true", help="카메라 없이 수집 (state-only)")
@@ -368,11 +381,26 @@ def resolve_state_preprocessor(agent, allow_missing: bool):
     )
 
 
-def extract_robot_state_9d(env: LeKiwiNavEnv) -> torch.Tensor:
-    """VLA 입력용 robot_state (N, 9): arm_pos(6) + wheel_vel(3)."""
-    arm_pos = env.robot.data.joint_pos[:, env.arm_idx]
-    wheel_vel = env.robot.data.joint_vel[:, env.wheel_idx]
-    return torch.cat([arm_pos, wheel_vel], dim=-1)
+def extract_robot_state_9d(env) -> torch.Tensor:
+    """
+    VLA용 robot_state 9D:
+    [arm_pos(5), gripper_pos(1), base_body_vel_x(1), base_body_vel_y(1), base_body_vel_wz(1)]
+
+    yubinnn11/lekiwi3 (v3.0) 포맷:
+    [arm_shoulder_pan.pos, arm_shoulder_lift.pos, arm_elbow_flex.pos,
+     arm_wrist_flex.pos, arm_wrist_roll.pos, arm_gripper.pos,
+     x.vel, y.vel, theta.vel]
+
+    단위: arm=rad, gripper=rad, base=m/s(x, y), rad/s(theta)
+    단위 변환 불필요: sim과 real 모두 m/s, rad/s
+    """
+    arm_pos = env.robot.data.joint_pos[:, env.arm_idx]   # 6D (arm5 + grip1)
+    # body-frame velocity 직접 읽기 (NOT displacement, NOT wheel_angular_vel)
+    vx_body = env.robot.data.root_lin_vel_b[:, 0:1]   # x.vel (m/s)
+    vy_body = env.robot.data.root_lin_vel_b[:, 1:2]   # y.vel (m/s)
+    wz_body = env.robot.data.root_ang_vel_b[:, 2:3]   # theta.vel (rad/s)
+    base_body_vel = torch.cat([vx_body, vy_body, wz_body], dim=-1)  # (N, 3)
+    return torch.cat([arm_pos, base_body_vel], dim=-1)  # 9D
 
 
 def resolve_checkpoint_path(path: str) -> str:
@@ -497,7 +525,20 @@ def main():
     print(f"  출력       : {output_path}")
     print("=" * 60 + "\n")
 
-    env_cfg = LeKiwiNavEnvCfg()
+    # Skill 분기
+    if args.skill == "approach_and_grasp":
+        from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
+        env_cfg = Skill2EnvCfg()
+    elif args.skill == "carry_and_place":
+        from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
+        if not args.handoff_buffer:
+            raise ValueError("--handoff_buffer required for carry_and_place skill")
+        env_cfg = Skill3EnvCfg()
+        env_cfg.handoff_buffer_path = os.path.expanduser(args.handoff_buffer)
+    else:
+        from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+        env_cfg = LeKiwiNavEnvCfg()
+
     env_cfg.scene.num_envs = args.num_envs
     if args.calibration_json is not None:
         raw = str(args.calibration_json).strip()
@@ -519,16 +560,26 @@ def main():
         env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
         env_cfg.grasp_attach_height = float(args.grasp_attach_height)
 
-    if use_camera:
-        env = LeKiwiNavEnvWithCam(
-            cfg=env_cfg,
-            base_cam_w=args.base_cam_width,
-            base_cam_h=args.base_cam_height,
-            wrist_cam_w=args.wrist_cam_width,
-            wrist_cam_h=args.wrist_cam_height,
-        )
+    if args.skill == "approach_and_grasp":
+        if use_camera:
+            # TODO: Camera subclass for Skill2Env
+            env = Skill2Env(cfg=env_cfg)
+        else:
+            env = Skill2Env(cfg=env_cfg)
+    elif args.skill == "carry_and_place":
+        env = Skill3Env(cfg=env_cfg)
     else:
-        env = LeKiwiNavEnv(cfg=env_cfg)
+        if use_camera:
+            from lekiwi_nav_env import LeKiwiNavEnv  # noqa: ensure import
+            env = LeKiwiNavEnvWithCam(
+                cfg=env_cfg,
+                base_cam_w=args.base_cam_width,
+                base_cam_h=args.base_cam_height,
+                wrist_cam_w=args.wrist_cam_width,
+                wrist_cam_h=args.wrist_cam_height,
+            )
+        else:
+            env = LeKiwiNavEnv(cfg=env_cfg)
 
     print(
         f"  Geometry in env: wheel={env.wheel_radius:.6f}, "
@@ -679,7 +730,10 @@ def main():
 
             for i in range(args.num_envs):
                 ep_obs[i].append(obs["policy"][i].cpu().numpy())
-                ep_act[i].append(action[i].cpu().numpy())
+                # Gripper binary 변환 (VLA 데이터용: continuous -> 0/1)
+                action_to_save = action[i].clone()
+                action_to_save[5] = 1.0 if action_to_save[5].item() > 0.5 else 0.0
+                ep_act[i].append(action_to_save.cpu().numpy())
                 ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
                 if args.annotate_subtasks and step_subtask_ids is not None:
                     ep_subtask_ids[i].append(int(step_subtask_ids[i].item()))
@@ -703,8 +757,8 @@ def main():
                     continue
 
                 root = env.robot.data.root_pos_w[idx, :2].cpu().numpy()
-                goal = env.goal_pos_w[idx, :2].cpu().numpy()
-                dist = float(np.linalg.norm(root - goal))
+                target = env.object_pos_w[idx, :2].cpu().numpy()
+                dist = float(np.linalg.norm(root - target))
 
                 if hasattr(env, "task_success"):
                     success = bool(env.task_success[idx].item())

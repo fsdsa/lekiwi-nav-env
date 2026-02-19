@@ -37,9 +37,15 @@ Usage:
     # 기본 (10 에피소드, ROS2 가능하면 ROS2 우선, 아니면 TCP fallback)
     python record_teleop.py --num_demos 10
 
-    # 37D multi-object 텔레옵 데모 (BC->RL 37D용)
-    python record_teleop.py \
-      --num_demos 20 \
+    # Skill-2 (ApproachAndGrasp) 텔레옵 데모 (30D obs, v6 action)
+    python record_teleop.py --num_demos 20 --skill approach_and_grasp \
+      --multi_object_json object_catalog.json \
+      --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
+      --dynamics_json calibration/tuned_dynamics.json \
+      --arm_limit_json calibration/arm_limits_real2sim.json
+
+    # Legacy (v8 FSM) 텔레옵 데모
+    python record_teleop.py --num_demos 20 \
       --multi_object_json object_catalog.json \
       --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
 
@@ -113,6 +119,13 @@ parser.add_argument(
     choices=["auto", "rad", "deg", "m100"],
     help="teleop arm position unit (auto/rad/deg/m100)",
 )
+parser.add_argument(
+    "--skill",
+    type=str,
+    default="legacy",
+    choices=["approach_and_grasp", "legacy"],
+    help="환경 모드: approach_and_grasp(Skill-2, 30D obs, v6 action), legacy(v8 FSM)",
+)
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -138,7 +151,6 @@ try:
 except Exception as ex:  # noqa: BLE001 - ABI mismatch 등도 잡아 fallback한다.
     ROS2_IMPORT_ERROR = ex
 
-from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
 from lekiwi_robot_cfg import (
     ARM_JOINT_NAMES, WHEEL_JOINT_NAMES,
     WHEEL_ANGLES_RAD,
@@ -382,25 +394,37 @@ def teleop_to_action(
     arm_action_to_limits: bool = False,
     arm_center: np.ndarray | None = None,
     arm_half_range: np.ndarray | None = None,
+    use_v6: bool = False,
 ) -> np.ndarray:
     """
     텔레옵 데이터 → Isaac Lab 환경 action (9D, [-1, 1]).
 
-    action[0:3] = (vx, vy, wz) / (max_lin_vel, max_lin_vel, max_ang_vel)
-    action[3:9] = arm_pos / arm_action_scale
+    legacy: action[0:3] = base(vx,vy,wz), action[3:9] = arm(6)
+    v6:     action[0:6] = arm(5)+grip(1), action[6:9] = base(vx,vy,wz)
     """
-    vx, vy, wz = body_cmd
+    # Base 정규화
+    base_norm = np.array([
+        np.clip(body_cmd[0] / max_lin_vel, -1.0, 1.0),
+        np.clip(body_cmd[1] / max_lin_vel, -1.0, 1.0),
+        np.clip(body_cmd[2] / max_ang_vel, -1.0, 1.0),
+    ])
 
-    # 정규화
-    action = np.zeros(9)
-    action[0] = np.clip(vx / max_lin_vel, -1.0, 1.0)
-    action[1] = np.clip(vy / max_lin_vel, -1.0, 1.0)
-    action[2] = np.clip(wz / max_ang_vel, -1.0, 1.0)
+    # Arm 정규화
     if arm_action_to_limits and arm_center is not None and arm_half_range is not None:
         safe_half = np.where(np.abs(arm_half_range) > 1e-6, arm_half_range, 1.0)
-        action[3:9] = np.clip((arm_pos - arm_center) / safe_half, -1.0, 1.0)
+        arm_norm = np.clip((arm_pos - arm_center) / safe_half, -1.0, 1.0)
     else:
-        action[3:9] = np.clip(arm_pos / arm_action_scale, -1.0, 1.0)
+        arm_norm = np.clip(arm_pos / arm_action_scale, -1.0, 1.0)
+
+    action = np.zeros(9)
+    if use_v6:
+        # v6: [arm5, grip1, base3]
+        action[0:6] = arm_norm
+        action[6:9] = base_norm
+    else:
+        # legacy: [base3, arm6]
+        action[0:3] = base_norm
+        action[3:9] = arm_norm
 
     return action
 
@@ -462,7 +486,15 @@ def main():
     print("=" * 60 + "\n")
 
     # —— Isaac Lab 환경 ——
-    env_cfg = LeKiwiNavEnvCfg()
+    use_v6 = args.skill != "legacy"
+
+    if args.skill == "approach_and_grasp":
+        from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
+        env_cfg = Skill2EnvCfg()
+    else:
+        from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+        env_cfg = LeKiwiNavEnvCfg()
+
     env_cfg.scene.num_envs = 1
     if args.calibration_json is not None:
         raw = str(args.calibration_json).strip()
@@ -489,11 +521,15 @@ def main():
         raise ValueError(
             "multi-object(37D) 텔레옵 데모에는 --gripper_contact_prim_path가 필요합니다."
         )
-    env = LeKiwiNavEnv(cfg=env_cfg)
+    if args.skill == "approach_and_grasp":
+        env = Skill2Env(cfg=env_cfg)
+    else:
+        env = LeKiwiNavEnv(cfg=env_cfg)
 
     base_radius = float(env.base_radius)
     wheel_radius = float(env.wheel_radius)
     print(f"  geometry: wheel_radius={wheel_radius:.6f}, base_radius={base_radius:.6f}")
+    print(f"  skill: {args.skill} (action format: {'v6' if use_v6 else 'legacy'})")
     print(f"  obs_dim: {int(env.observation_space.shape[0])}")
     if multi_object_mode:
         print(f"  multi_object_json: {os.path.expanduser(args.multi_object_json)}")
@@ -560,6 +596,7 @@ def main():
     episode_obs = []
     episode_actions = []
     episode_active = []
+    episode_robot_state = []
     saved_count = 0
     step_count = 0
 
@@ -575,6 +612,8 @@ def main():
     if args.arm_limit_json:
         hdf5_file.attrs["arm_limit_json"] = str(os.path.expanduser(args.arm_limit_json))
         hdf5_file.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
+    hdf5_file.attrs["skill"] = str(args.skill)
+    hdf5_file.attrs["action_format"] = "v6" if use_v6 else "legacy"
     hdf5_file.attrs["physics_grasp_mode"] = bool(physics_grasp_mode)
     hdf5_file.attrs["multi_object_mode"] = bool(multi_object_mode)
     if args.object_usd:
@@ -606,6 +645,7 @@ def main():
                     arm_action_to_limits=arm_action_to_limits,
                     arm_center=arm_center,
                     arm_half_range=arm_half_range,
+                    use_v6=use_v6,
                 )
             else:
                 action_np = np.zeros(9)  # 연결 끊겼으면 정지
@@ -618,19 +658,31 @@ def main():
 
             # 데이터 기록 (항상): 시계열 간격을 일정하게 유지한다.
             episode_obs.append(obs["policy"][0].cpu().numpy())
-            episode_actions.append(action_np)
+            action_save = action_np.copy()
+            if use_v6:
+                # v6: action[5] = gripper → binary (VLA 데이터 호환)
+                action_save[5] = 1.0 if action_save[5] > 0.5 else 0.0
+            episode_actions.append(action_save)
             episode_active.append(bool(is_active))
+
+            # Privileged obs: robot_state 9D 동시 기록 (v3.0: body-frame velocity)
+            arm_pos_state = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy()  # 6D
+            vx_body = env.robot.data.root_lin_vel_b[0, 0].item()   # x.vel (m/s)
+            vy_body = env.robot.data.root_lin_vel_b[0, 1].item()   # y.vel (m/s)
+            wz_body = env.robot.data.root_ang_vel_b[0, 2].item()   # theta.vel (rad/s)
+            base_body_vel = np.array([vx_body, vy_body, wz_body], dtype=np.float32)
+            episode_robot_state.append(np.concatenate([arm_pos_state, base_body_vel]))
 
             # 상태 출력
             if step_count % 25 == 0:  # 25Hz control → 매초
                 root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
-                goal_pos = env.goal_pos_w[0, :2].cpu().numpy()
-                dist = np.linalg.norm(root_pos - goal_pos)
+                target_pos = env.object_pos_w[0, :2].cpu().numpy()
+                dist = np.linalg.norm(root_pos - target_pos)
                 conn_str = "🟢 연결" if is_active else "🔴 끊김"
                 print(
                     f"  {conn_str} | "
                     f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
-                    f"goal=({goal_pos[0]:+.2f},{goal_pos[1]:+.2f}) | "
+                    f"obj=({target_pos[0]:+.2f},{target_pos[1]:+.2f}) | "
                     f"dist={dist:.2f}m | "
                     f"steps={len(episode_obs)} | "
                     f"saved={saved_count}/{args.num_demos}"
@@ -641,8 +693,8 @@ def main():
 
             if done:
                 root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
-                goal_pos = env.goal_pos_w[0, :2].cpu().numpy()
-                final_dist = float(np.linalg.norm(root_pos - goal_pos))
+                target_pos = env.object_pos_w[0, :2].cpu().numpy()
+                final_dist = float(np.linalg.norm(root_pos - target_pos))
 
                 # 성공: task_success가 있으면 그것을 우선 사용, 없으면 기존 distance 기반 fallback
                 active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
@@ -656,6 +708,7 @@ def main():
                     grp = hdf5_file.create_group(ep_name)
                     grp.create_dataset("obs", data=np.array(episode_obs))
                     grp.create_dataset("actions", data=np.array(episode_actions))
+                    grp.create_dataset("robot_state", data=np.array(episode_robot_state, dtype=np.float32))
                     grp.create_dataset("teleop_active", data=np.array(episode_active, dtype=np.int8))
                     grp.attrs["num_steps"] = len(episode_obs)
                     grp.attrs["num_active_steps"] = active_steps
@@ -675,6 +728,7 @@ def main():
                 episode_obs.clear()
                 episode_actions.clear()
                 episode_active.clear()
+                episode_robot_state.clear()
                 obs, info = env.reset()
                 step_count = 0
 

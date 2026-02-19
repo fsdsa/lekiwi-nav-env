@@ -19,7 +19,7 @@ Output (LeRobot v3 local dataset):
     meta/tasks.parquet
     meta/subtasks.parquet             [if --include_subtask_index]
     data/chunk-xxx/file-xxx.parquet
-    videos/observation.images.top/chunk-xxx/file-xxx.mp4
+    videos/observation.images.front/chunk-xxx/file-xxx.mp4
     videos/observation.images.wrist/chunk-xxx/file-xxx.mp4
     meta/tasks.jsonl                  [compatibility helper]
 """
@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repo_id", type=str, default="local/lekiwi_fetch_v6")
     parser.add_argument("--fps", type=int, default=25)
-    parser.add_argument("--robot_type", type=str, default="lekiwi")
+    parser.add_argument("--robot_type", type=str, default="lekiwi_client")
     parser.add_argument("--task_source", type=str, choices=["subtask", "full_task"], default="subtask")
     parser.add_argument("--full_task_text", type=str, default=DEFAULT_FULL_TASK_TEXT)
     parser.add_argument("--no_videos", action="store_true", help="Do not store camera streams as videos")
@@ -207,16 +207,31 @@ def inspect_episode(h5_path: Path, h5f: h5py.File, ep_key: str) -> EpisodeInfo:
     )
 
 
+def convert_to_vla_units(data_9d: np.ndarray) -> np.ndarray:
+    """
+    v3.0: sim velocity(m/s, rad/s) = real velocity(m/s, rad/s) — 단위 변환 불필요.
+    이전 displacement 방식의 m→mm 변환 제거됨.
+    이 함수는 하위 호환성을 위해 유지하되, 데이터를 그대로 반환한다.
+    """
+    return data_9d.copy()
+
+
 def infer_robot_state_from_obs(obs: np.ndarray) -> np.ndarray:
     """Fallback extraction of robot_state(9D) from RL obs."""
     if obs.ndim != 2:
         raise ValueError(f"obs must be 2D, got shape {obs.shape}")
     dim = obs.shape[1]
+    if dim == 30:
+        # Skill-2 obs: arm_pos(0:5) + gripper(5:6) + base_body_vel(6:9)
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
+    if dim == 29:
+        # Skill-3 obs: arm_pos(0:5) + gripper(5:6) + base_body_vel(6:9)
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
     if dim == 37:
-        # privileged obs mode: arm_joint_pos(18:24) + wheel_vel(30:33)
+        # legacy privileged obs: arm_joint_pos(18:24) + wheel_vel(30:33)
         return np.concatenate([obs[:, 18:24], obs[:, 30:33]], axis=1).astype(np.float32)
     if dim == 33:
-        # arm_joint_pos(18:24) + wheel_vel(30:33)
+        # legacy: arm_joint_pos(18:24) + wheel_vel(30:33)
         return np.concatenate([obs[:, 18:24], obs[:, 30:33]], axis=1).astype(np.float32)
     if dim == 24:
         # legacy nav env: arm_joint_pos(9:15) + wheel_vel(21:24)
@@ -288,8 +303,17 @@ def main() -> None:
         ) from exc
 
     # Build features
-    state_names = [f"arm_joint_pos_{i}" for i in range(6)] + [f"wheel_vel_{i}" for i in range(3)]
-    action_names = ["base_vx", "base_vy", "base_wz"] + [f"arm_target_{i}" for i in range(6)]
+    # yubinnn11/lekiwi3 (LeRobot v3.0) 채널 이름
+    state_names = [
+        "arm_shoulder_pan.pos", "arm_shoulder_lift.pos", "arm_elbow_flex.pos",
+        "arm_wrist_flex.pos", "arm_wrist_roll.pos", "arm_gripper.pos",
+        "x.vel", "y.vel", "theta.vel",
+    ]
+    action_names = [
+        "arm_shoulder_pan.pos", "arm_shoulder_lift.pos", "arm_elbow_flex.pos",
+        "arm_wrist_flex.pos", "arm_wrist_roll.pos", "arm_gripper.pos",
+        "x.vel", "y.vel", "theta.vel",
+    ]
 
     features: dict[str, dict] = {
         "observation.state": {"dtype": "float32", "shape": (9,), "names": state_names},
@@ -315,7 +339,7 @@ def main() -> None:
                 break
 
         if base_shape is not None:
-            features["observation.images.top"] = {
+            features["observation.images.front"] = {
                 "dtype": "video",
                 "shape": base_shape,
                 "names": ["height", "width", "channels"],
@@ -371,14 +395,15 @@ def main() -> None:
                 default_full_task_text=args.full_task_text,
             )
 
-            actions = np.asarray(grp["actions"], dtype=np.float32)
+            actions_raw = np.asarray(grp["actions"], dtype=np.float32)
+            actions = convert_to_vla_units(actions_raw)
             n_steps = actions.shape[0]
 
             # robot_state
             if "robot_state" in grp:
-                robot_state = np.asarray(grp["robot_state"], dtype=np.float32)
+                robot_state = convert_to_vla_units(np.asarray(grp["robot_state"], dtype=np.float32))
             elif "obs" in grp:
-                robot_state = infer_robot_state_from_obs(np.asarray(grp["obs"]))
+                robot_state = convert_to_vla_units(infer_robot_state_from_obs(np.asarray(grp["obs"])))
             else:
                 print(f"[SKIP] {ep.h5_path.name}:{ep.episode_key} - no robot_state/obs")
                 skipped += 1
@@ -404,7 +429,7 @@ def main() -> None:
             wrist_rgb = None
             if use_videos and "images" in grp:
                 img_grp = grp["images"]
-                if "observation.images.top" in features:
+                if "observation.images.front" in features:
                     if "base_rgb" in img_grp:
                         base_rgb = img_grp["base_rgb"]
                     elif args.skip_episodes_without_images:
@@ -437,15 +462,15 @@ def main() -> None:
                 if args.include_subtask_index:
                     frame["subtask_index"] = np.array([sid], dtype=np.int64)
 
-                if "observation.images.top" in features:
+                if "observation.images.front" in features:
                     if base_rgb is not None:
-                        frame["observation.images.top"] = np.asarray(base_rgb[t], dtype=np.uint8)
+                        frame["observation.images.front"] = np.asarray(base_rgb[t], dtype=np.uint8)
                     elif args.skip_episodes_without_images:
                         raise RuntimeError("Unexpected: base_rgb missing after episode-level check.")
                     else:
                         # fallback black frame
-                        h, w, c = features["observation.images.top"]["shape"]
-                        frame["observation.images.top"] = np.zeros((h, w, c), dtype=np.uint8)
+                        h, w, c = features["observation.images.front"]["shape"]
+                        frame["observation.images.front"] = np.zeros((h, w, c), dtype=np.uint8)
 
                 if "observation.images.wrist" in features:
                     if wrist_rgb is not None:

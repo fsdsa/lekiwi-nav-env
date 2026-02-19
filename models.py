@@ -71,3 +71,27 @@ class ValueNet(DeterministicMixin, Model):
 
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
+
+
+class CriticNet(DeterministicMixin, Model):
+    """Asymmetric Critic — Actor보다 넓은 observation을 받는다."""
+
+    def __init__(self, observation_space, action_space, device,
+                 critic_obs_dim=None, **kwargs):
+        Model.__init__(self, observation_space, action_space, device, **kwargs)
+        DeterministicMixin.__init__(self, clip_actions=False)
+
+        obs_dim = critic_obs_dim if critic_obs_dim is not None else observation_space.shape[0]
+
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, 256),
+            nn.ELU(),
+            nn.Linear(256, 128),
+            nn.ELU(),
+            nn.Linear(128, 64),
+            nn.ELU(),
+            nn.Linear(64, 1),
+        )
+
+    def compute(self, inputs, role):
+        return self.net(inputs["states"]), {}

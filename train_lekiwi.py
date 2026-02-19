@@ -81,6 +81,11 @@ parser.add_argument("--grasp_max_object_dist", type=float, default=0.25,
                     help="max object distance allowed for contact-based grasp success")
 parser.add_argument("--grasp_attach_height", type=float, default=0.15,
                     help="attached object z-height after grasp success")
+parser.add_argument("--skill", type=str, default="approach_and_grasp",
+                    choices=["approach_and_grasp", "carry_and_place", "legacy"],
+                    help="학습할 skill (legacy = v8 monolithic env)")
+parser.add_argument("--handoff_buffer", type=str, default=None,
+                    help="Skill-3용 handoff buffer pickle 경로")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -90,8 +95,7 @@ sim_app = launcher.app
 # —— 나머지 import ——————————————————————————————————————————————
 import torch
 
-from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
-from models import PolicyNet, ValueNet
+from models import PolicyNet, ValueNet, CriticNet
 
 # skrl imports (1.4.3 — 클래스 직접 참조)
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
@@ -256,8 +260,21 @@ def main():
 
     mode_label = _mode_label(mode)
 
-    # —— 환경 생성 ————————————————————————————————————————————
-    env_cfg = LeKiwiNavEnvCfg()
+    # —— Skill 분기 및 환경 생성 ——————————————————————————————
+    if args.skill == "approach_and_grasp":
+        from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
+        env_cfg = Skill2EnvCfg()
+    elif args.skill == "carry_and_place":
+        from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
+        if not args.handoff_buffer:
+            raise ValueError("--handoff_buffer required for carry_and_place skill")
+        env_cfg = Skill3EnvCfg()
+        env_cfg.handoff_buffer_path = os.path.expanduser(args.handoff_buffer)
+    else:
+        # legacy: v8 monolithic env
+        from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+        env_cfg = LeKiwiNavEnvCfg()
+
     env_cfg.scene.num_envs = args.num_envs
     if args.calibration_json is not None:
         raw = str(args.calibration_json).strip()
@@ -281,7 +298,12 @@ def main():
         env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
         env_cfg.grasp_attach_height = float(args.grasp_attach_height)
 
-    raw_env = LeKiwiNavEnv(cfg=env_cfg)
+    if args.skill == "approach_and_grasp":
+        raw_env = Skill2Env(cfg=env_cfg)
+    elif args.skill == "carry_and_place":
+        raw_env = Skill3Env(cfg=env_cfg)
+    else:
+        raw_env = LeKiwiNavEnv(cfg=env_cfg)
     env = wrap_env(raw_env, wrapper="isaaclab")
 
     device = env.device
@@ -289,6 +311,12 @@ def main():
     if mode == "bc_finetune":
         bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
         env_obs_dim = int(env.observation_space.shape[0])
+        if args.skill == "approach_and_grasp":
+            expected_dim = 30
+        elif args.skill == "carry_and_place":
+            expected_dim = 29
+        else:
+            expected_dim = env_obs_dim
         if bc_obs_dim is None:
             raise RuntimeError(
                 "BC checkpoint에서 obs_dim을 추론할 수 없습니다. "
@@ -298,6 +326,11 @@ def main():
             print(
                 f"  ⚠ BC obs_dim({bc_obs_dim}) != env obs_dim({env_obs_dim}) "
                 "-> net.0.weight 입력 차원 어댑트로 BC warm-start를 계속 진행합니다."
+            )
+        if bc_obs_dim != expected_dim:
+            print(
+                f"  ⚠ BC obs_dim({bc_obs_dim}) != expected({expected_dim}) for skill={args.skill}. "
+                "BC 체크포인트가 현재 skill과 다른 obs_dim으로 학습되었을 수 있습니다."
             )
 
     print("\n" + "=" * 60)
@@ -338,6 +371,12 @@ def main():
     print("=" * 60 + "\n")
 
     # —— Models ————————————————————————————————————————————————
+    # NOTE: AAC (Asymmetric Actor-Critic) — Skill-2/3 env는 "policy"(30D/29D)와
+    # "critic"(37D/36D) observation을 별도 반환하지만, skrl 1.4.3 PPO는 memory에
+    # observation_space만 저장하고 value function에도 동일 텐서를 전달한다.
+    # 따라서 현재는 symmetric ValueNet 사용. CriticNet(critic_obs_dim=state_space)을
+    # 사용하려면 PPO memory에 critic obs를 별도 저장하는 커스텀 로직이 필요하다.
+    # TODO: skrl wrapper 또는 PPO subclass에서 critic obs 별도 저장 → CriticNet 전환
     models = {
         "policy": PolicyNet(env.observation_space, env.action_space, device),
         "value": ValueNet(env.observation_space, env.action_space, device),
@@ -400,8 +439,9 @@ def main():
     cfg_ppo["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 
     # Logging
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "ppo_lekiwi")
-    exp_name = f"ppo_lekiwi_{mode}"
+    skill_tag = args.skill.replace("_", "")
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"ppo_{skill_tag}")
+    exp_name = f"ppo_{skill_tag}_{mode}"
     cfg_ppo["experiment"] = {
         "directory": log_dir,
         "experiment_name": exp_name,
