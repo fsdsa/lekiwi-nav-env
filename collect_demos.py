@@ -142,6 +142,8 @@ import torch
 from isaaclab.sensors import Camera, CameraCfg
 
 from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
+from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
 from models import PolicyNet, ValueNet
 from spawn_manager import SpawnManager, build_subtask_transitions
 
@@ -282,6 +284,92 @@ class LeKiwiNavEnvWithCam(LeKiwiNavEnv):
 
         print(f"  [Camera] base_rgb : {self._base_cam_w}x{self._base_cam_h}")
         print(f"  [Camera] wrist_rgb: {self._wrist_cam_w}x{self._wrist_cam_h}")
+
+    def _extract_rgb(self, camera: Camera) -> torch.Tensor | None:
+        rgb = camera.data.output.get("rgb")
+        if rgb is None:
+            return None
+        if rgb.dtype == torch.float32:
+            rgb = (rgb * 255).clamp(0, 255).to(torch.uint8)
+        return rgb[:, :, :, :3]
+
+    def get_base_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.base_cam)
+
+    def get_wrist_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.wrist_cam)
+
+
+class Skill2EnvWithCam(Skill2Env):
+    """Skill2Env + base_rgb/wrist RGB 카메라 (VLA 데이터 수집용)."""
+
+    def __init__(self, cfg, base_cam_w=1280, base_cam_h=720,
+                 wrist_cam_w=640, wrist_cam_h=480, render_mode=None, **kwargs):
+        self._base_cam_w = base_cam_w
+        self._base_cam_h = base_cam_h
+        self._wrist_cam_w = wrist_cam_w
+        self._wrist_cam_h = wrist_cam_h
+        super().__init__(cfg, render_mode, **kwargs)
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        base_cam_cfg = CameraCfg(
+            prim_path=BASE_RGB_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._base_cam_h, width=self._base_cam_w, data_types=["rgb"],
+        )
+        self.base_cam = Camera(base_cam_cfg)
+        self.scene.sensors["base_cam"] = self.base_cam
+
+        wrist_cam_cfg = CameraCfg(
+            prim_path=WRIST_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._wrist_cam_h, width=self._wrist_cam_w, data_types=["rgb"],
+        )
+        self.wrist_cam = Camera(wrist_cam_cfg)
+        self.scene.sensors["wrist_cam"] = self.wrist_cam
+        print(f"  [Camera] Skill2EnvWithCam: base={self._base_cam_w}x{self._base_cam_h}, wrist={self._wrist_cam_w}x{self._wrist_cam_h}")
+
+    def _extract_rgb(self, camera: Camera) -> torch.Tensor | None:
+        rgb = camera.data.output.get("rgb")
+        if rgb is None:
+            return None
+        if rgb.dtype == torch.float32:
+            rgb = (rgb * 255).clamp(0, 255).to(torch.uint8)
+        return rgb[:, :, :, :3]
+
+    def get_base_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.base_cam)
+
+    def get_wrist_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.wrist_cam)
+
+
+class Skill3EnvWithCam(Skill3Env):
+    """Skill3Env + base_rgb/wrist RGB 카메라 (VLA 데이터 수집용)."""
+
+    def __init__(self, cfg, base_cam_w=1280, base_cam_h=720,
+                 wrist_cam_w=640, wrist_cam_h=480, render_mode=None, **kwargs):
+        self._base_cam_w = base_cam_w
+        self._base_cam_h = base_cam_h
+        self._wrist_cam_w = wrist_cam_w
+        self._wrist_cam_h = wrist_cam_h
+        super().__init__(cfg, render_mode, **kwargs)
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        base_cam_cfg = CameraCfg(
+            prim_path=BASE_RGB_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._base_cam_h, width=self._base_cam_w, data_types=["rgb"],
+        )
+        self.base_cam = Camera(base_cam_cfg)
+        self.scene.sensors["base_cam"] = self.base_cam
+
+        wrist_cam_cfg = CameraCfg(
+            prim_path=WRIST_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._wrist_cam_h, width=self._wrist_cam_w, data_types=["rgb"],
+        )
+        self.wrist_cam = Camera(wrist_cam_cfg)
+        self.scene.sensors["wrist_cam"] = self.wrist_cam
+        print(f"  [Camera] Skill3EnvWithCam: base={self._base_cam_w}x{self._base_cam_h}, wrist={self._wrist_cam_w}x{self._wrist_cam_h}")
 
     def _extract_rgb(self, camera: Camera) -> torch.Tensor | None:
         rgb = camera.data.output.get("rgb")
@@ -562,12 +650,26 @@ def main():
 
     if args.skill == "approach_and_grasp":
         if use_camera:
-            # TODO: Camera subclass for Skill2Env
-            env = Skill2Env(cfg=env_cfg)
+            env = Skill2EnvWithCam(
+                cfg=env_cfg,
+                base_cam_w=args.base_cam_width,
+                base_cam_h=args.base_cam_height,
+                wrist_cam_w=args.wrist_cam_width,
+                wrist_cam_h=args.wrist_cam_height,
+            )
         else:
             env = Skill2Env(cfg=env_cfg)
     elif args.skill == "carry_and_place":
-        env = Skill3Env(cfg=env_cfg)
+        if use_camera:
+            env = Skill3EnvWithCam(
+                cfg=env_cfg,
+                base_cam_w=args.base_cam_width,
+                base_cam_h=args.base_cam_height,
+                wrist_cam_w=args.wrist_cam_width,
+                wrist_cam_h=args.wrist_cam_height,
+            )
+        else:
+            env = Skill3Env(cfg=env_cfg)
     else:
         if use_camera:
             from lekiwi_nav_env import LeKiwiNavEnv  # noqa: ensure import

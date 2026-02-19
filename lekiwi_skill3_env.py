@@ -48,6 +48,7 @@ class Skill3EnvCfg(Skill2EnvCfg):
     # Task
     return_thresh: float = 0.30
     place_dist_thresh: float = 0.05
+    place_gripper_threshold: float = 0.3  # gripper pos > 이 값이면 open 판정
 
     # Handoff
     handoff_buffer_path: str = ""
@@ -85,6 +86,7 @@ class Skill3Env(Skill2Env):
 
         # Skill-3 추가 버퍼
         self.prev_home_dist = torch.zeros(self.num_envs, device=self.device)
+        self.intentional_placed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Handoff buffer에서 읽은 object orientation (identity default)
         self._handoff_object_ori = torch.zeros(self.num_envs, 4, device=self.device)
         self._handoff_object_ori[:, 0] = 1.0  # qw=1 identity
@@ -110,6 +112,42 @@ class Skill3Env(Skill2Env):
         metrics["home_dist"] = home_dist
         metrics["heading_home"] = heading_home
         return metrics
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Grasp state — intentional place 추가
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _update_grasp_state(self, metrics: Dict[str, torch.Tensor]):
+        """Skill-3 grasp state: 부모 로직 + intentional place 메커니즘.
+
+        Home 근처에서 gripper를 열면 FixedJoint를 해제하여 물체를 의도적으로
+        내려놓는다. 이때 just_dropped=False를 유지하여 place_success 조건이
+        충족될 수 있도록 한다 (accidental drop과 구분).
+        """
+        self.intentional_placed[:] = False
+
+        # 부모(Skill2) grasp 로직 실행 (can_grasp, lift, drop detection)
+        super()._update_grasp_state(metrics)
+
+        # Intentional place: 물체를 잡은 상태 + gripper open + home 근처
+        if self.object_grasped.any():
+            gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
+            gripper_open = gripper_pos > float(self.cfg.place_gripper_threshold)
+            home_dist = metrics.get("home_dist", None)
+            if home_dist is None:
+                home_delta_w = self.home_pos_w - self.robot.data.root_pos_w
+                home_pos_b = quat_apply_inverse(self.robot.data.root_quat_w, home_delta_w)
+                home_dist = torch.norm(home_pos_b[:, :2], dim=-1)
+            near_home = home_dist < self.cfg.return_thresh
+
+            intentional_place = self.object_grasped & gripper_open & near_home
+            if intentional_place.any():
+                place_ids = intentional_place.nonzero(as_tuple=False).squeeze(-1)
+                if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+                    self._disable_grasp_fixed_joint_for_envs(place_ids)
+                self.object_grasped[intentional_place] = False
+                self.intentional_placed[intentional_place] = True
+                # just_dropped은 False 유지 → place_success 조건 충족 가능
 
     # ═══════════════════════════════════════════════════════════════════
     #  Observations — 29D Actor
@@ -166,6 +204,7 @@ class Skill3Env(Skill2Env):
             gripper_rel_pos,                             # 3D (gripper-to-object)
         ], dim=-1)  # 7D
         critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 36D
+        self._critic_obs = critic_obs  # AAC wrapper에서 state()로 접근
 
         return {"policy": actor_obs, "critic": critic_obs}
 
@@ -358,6 +397,7 @@ class Skill3Env(Skill2Env):
         self.task_success[env_ids] = False
         self.just_grasped[env_ids] = False
         self.just_dropped[env_ids] = False
+        self.intentional_placed[env_ids] = False
         self.prev_home_dist[env_ids] = 10.0
         self.prev_object_dist[env_ids] = 10.0
         self.grasp_entry_step[env_ids] = 0

@@ -229,7 +229,15 @@ class Skill2Env(DirectRLEnv):
         self.prev_object_dist = torch.zeros(self.num_envs, device=self.device)
 
         # Curriculum 상태 추적 (신규)
-        self._curriculum_dist = float(self.cfg.object_dist_min)
+        # curriculum_current_max_dist가 설정되었으면 해당 값에서 시작 (handoff/navigate 수집 시 사용)
+        if (hasattr(self.cfg, 'curriculum_current_max_dist')
+                and float(self.cfg.curriculum_current_max_dist) > float(self.cfg.object_dist_min)):
+            self._curriculum_dist = min(
+                float(self.cfg.curriculum_current_max_dist),
+                float(self.cfg.object_dist_max),
+            )
+        else:
+            self._curriculum_dist = float(self.cfg.object_dist_min)
         self._curriculum_success_window = torch.zeros(100, device=self.device)
         self._curriculum_idx = 0
 
@@ -1411,6 +1419,7 @@ class Skill2Env(DirectRLEnv):
             metrics["vel_toward_object"].unsqueeze(-1),  # 1D
         ], dim=-1)  # 7D
         critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 37D
+        self._critic_obs = critic_obs  # AAC wrapper에서 state()로 접근
 
         return {"policy": actor_obs, "critic": critic_obs}
 

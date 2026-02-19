@@ -249,7 +249,7 @@ Skill-2(ApproachAndGrasp)와 Skill-3(CarryAndPlace) 각각에 대해 텔레옵 �
 - 물리 grasp (FixedJoint attach/detach) → break_force 조정
 - Dynamics DR (reset-time wheel/arm/object randomization)
 - 캘리브레이션 연동 (`--dynamics_json`, `--arm_limit_json`)
-- `models.py`의 PolicyNet/ValueNet 구조
+- `models.py`의 PolicyNet/ValueNet/CriticNet 구조 + AAC 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)
 - Contact sensor 기반 grasp 판정
 - GRASP timeout 메커니즘 (75 steps)
 
@@ -322,7 +322,7 @@ python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 30
 
 BC checkpoint로 PPO의 Actor를 초기화하고 RL 학습을 시작한다.
 
-**알고리즘**: PPO + Asymmetric Actor-Critic (AAC).
+**알고리즘**: PPO + Asymmetric Actor-Critic (AAC). skrl 1.4.3는 native AAC를 지원하지 않으므로 3개 파일로 구현한다: `aac_wrapper.py`가 IsaacLabWrapper에 `state()` 메서드를 monkey-patch하여 critic obs를 노출, `aac_ppo.py`가 PPO를 상속하여 `critic_states` memory tensor 관리, `aac_trainer.py`가 SequentialTrainer를 상속하여 critic states 매 step 추적. 환경의 `_get_observations()`가 `self._critic_obs`에 critic obs를 저장하고, wrapper의 `state()`가 이를 읽어 agent에 전달한다.
 
 **Actor Observation** (30D, state vector only):
 
@@ -345,7 +345,7 @@ BC checkpoint로 PPO의 Actor를 초기화하고 RL 학습을 시작한다.
 
 obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된 설계다. 12종 다중 물체를 학습할 때, 물체 크기와 형태를 알아야 물체별로 다른 접근 각도, arm trajectory, gripper timing을 학습할 수 있다.
 
-**Critic Observation** (37D): Actor obs 30D + obj_bbox_full(6D, AABB min/max) + obj_mass(1D) = 37D.
+**Critic Observation** (37D): Actor obs 30D + obj_bbox(3D, 비정규화) + obj_mass(1D) + obj_dist(1D) + heading_object(1D) + vel_toward_object(1D) = 37D.
 
 **Action** (9D): arm_target 5D + gripper_cmd 1D(continuous position target) + base_cmd 3D. **순서 주의**: 새 skill 환경에서는 VLA/yubinnn11/lekiwi3 포맷 `[arm5, grip1, base3]`으로 통일한다. 기존 v8의 `[base3, arm6]` 순서와 **반대**이므로, v8 코드 재사용 시 인덱싱을 변경해야 한다. gripper는 RL 학습 시 continuous로 유지하고, VLA 데이터 저장 시에만 0.5 threshold로 binary 변환한다. base_cmd는 sim/real 모두 m/s, rad/s 단위 — 단위 변환 불필요.
 
@@ -397,7 +397,7 @@ python train_lekiwi.py \
 
 ### 3-3. Handoff Buffer 생성
 
-Skill-2 학습이 충분히 진행되면(성공률 80%+), Skill-2 expert를 수백 번 돌려서 성공 에피소드 종료 시점의 전체 상태를 저장:
+Skill-2 학습이 충분히 진행되면(성공률 80%+), Skill-2 expert를 수백 번 돌려서 성공 에피소드 종료 시점의 전체 상태를 저장한다. `generate_handoff_buffer.py`는 AAC 체크포인트를 로드할 수 있도록 `wrap_env_aac` + `CriticNet` + `AAC_PPO`를 사용한다:
 
 ```python
 handoff_entry = {
@@ -493,7 +493,7 @@ python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29
 | drop | -10 | break_force 초과로 물체 낙하 (`just_dropped`) |
 | collision | -1 | 환경 충돌 |
 
-**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place(home 근처, `just_dropped=False`)와 비의도적 drop(`just_dropped=True`)을 구분하여, place는 `truncated`(성공), drop은 `terminated`(실패)로 처리.
+**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place와 비의도적 drop은 Skill-3의 `_update_grasp_state()` 오버라이드로 구분한다: gripper가 `place_gripper_threshold`(-0.3) 이상 열리고 home 근처(`return_thresh` 내)이면 `intentional_placed=True`로 설정하여 FixedJoint를 해제하고 `just_dropped=False`를 유지한다. 반면 break_force 초과로 물체가 떨어진 경우 `just_dropped=True`가 된다. place는 `truncated`(성공, +20 보상), drop은 `terminated`(실패, -10 페널티)로 처리.
 
 **Dynamics DR**: Skill-2와 동일 + **break_force DR** (`dr_grasp_break_force_range: 15~45N`). 주의: `_reset_idx()`에서 `_apply_domain_randomization()`을 `_attach_grasp_fixed_joint_for_envs()` **이전**에 호출.
 
@@ -582,7 +582,7 @@ Skill-2/3 수집 환경(바닥 위 물체 + 로봇)에 추가 배경을 넣어 N
 
 ### 4-4. Skill-2 데이터 수집 (RL Expert Rollout)
 
-학습된 Skill-2 RL Expert를 sim에서 반복 실행한다.
+학습된 Skill-2 RL Expert를 sim에서 반복 실행한다. 카메라 렌더링이 필요하므로 `collect_demos.py` 내부의 `Skill2EnvWithCam`(Skill2Env를 상속하여 TiltedCamera 2대를 추가한 서브클래스)을 사용한다.
 
 ```bash
 python collect_demos.py \
@@ -645,7 +645,7 @@ C1~C5: 1K개, C6~C7: 10K개. Camera 수집 시 VRAM에 따라 num_envs 1~8, stat
 
 ### 4-5. Skill-3 데이터 수집 (RL Expert Rollout)
 
-학습된 Skill-3 RL Expert를 sim에서 반복 실행.
+학습된 Skill-3 RL Expert를 sim에서 반복 실행. 카메라 렌더링이 필요하므로 `collect_demos.py` 내부의 `Skill3EnvWithCam`(Skill3Env를 상속하여 TiltedCamera 2대를 추가한 서브클래스)을 사용한다.
 
 ```bash
 python collect_demos.py \

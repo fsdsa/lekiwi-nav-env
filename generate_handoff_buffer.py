@@ -47,11 +47,13 @@ sim_app = launcher.app
 import numpy as np
 import torch
 from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
-from models import PolicyNet, ValueNet
+from models import PolicyNet, ValueNet, CriticNet
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.resources.preprocessors.torch import RunningStandardScaler
+from aac_wrapper import wrap_env_aac
+from aac_ppo import AAC_PPO
 
 
 def main():
@@ -71,12 +73,16 @@ def main():
     env_cfg.curriculum_current_max_dist = env_cfg.object_dist_max
 
     env = Skill2Env(cfg=env_cfg)
-    wrapped = wrap_env(env, wrapper="isaaclab")
+    wrapped = wrap_env_aac(env)
     device = wrapped.device
 
+    critic_obs_dim = wrapped._aac_state_space.shape[0] if wrapped._aac_state_space is not None else None
     models = {
         "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
-        "value": ValueNet(wrapped.observation_space, wrapped.action_space, device),
+        "value": CriticNet(
+            wrapped.observation_space, wrapped.action_space, device,
+            critic_obs_dim=critic_obs_dim,
+        ) if critic_obs_dim else ValueNet(wrapped.observation_space, wrapped.action_space, device),
     }
     memory = RandomMemory(memory_size=24, num_envs=args.num_envs, device=device)
     cfg_ppo = PPO_DEFAULT_CONFIG.copy()
@@ -84,10 +90,19 @@ def main():
     cfg_ppo["state_preprocessor_kwargs"] = {"size": wrapped.observation_space, "device": device}
     cfg_ppo["value_preprocessor"] = RunningStandardScaler
     cfg_ppo["value_preprocessor_kwargs"] = {"size": 1, "device": device}
+    if critic_obs_dim and wrapped._aac_state_space is not None:
+        cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
+        cfg_ppo["critic_state_preprocessor_kwargs"] = {"size": wrapped._aac_state_space, "device": device}
 
-    agent = PPO(models=models, memory=memory, cfg=cfg_ppo,
-                observation_space=wrapped.observation_space,
-                action_space=wrapped.action_space, device=device)
+    if critic_obs_dim and wrapped._aac_state_space is not None:
+        agent = AAC_PPO(models=models, memory=memory, cfg=cfg_ppo,
+                        observation_space=wrapped.observation_space,
+                        action_space=wrapped.action_space, device=device,
+                        critic_observation_space=wrapped._aac_state_space)
+    else:
+        agent = PPO(models=models, memory=memory, cfg=cfg_ppo,
+                    observation_space=wrapped.observation_space,
+                    action_space=wrapped.action_space, device=device)
     agent.load(args.checkpoint)
     agent.set_running_mode("eval")
 
@@ -143,7 +158,9 @@ def main():
 
                 entries.append(entry)
 
-        if len(entries) % 50 == 0 and len(entries) > 0:
+        prev_milestone = (len(entries) - sids.numel()) // 50
+        curr_milestone = len(entries) // 50
+        if curr_milestone > prev_milestone and len(entries) > 0:
             print(f"    {len(entries)}/{args.num_entries}")
 
     entries = entries[:args.num_entries]

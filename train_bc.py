@@ -263,7 +263,7 @@ def main():
             pred = policy(sample_obs)
 
             mae = (pred - sample_act).abs().mean(dim=0).cpu().numpy()
-            names = ["vx", "vy", "wz", "arm0", "arm1", "arm2", "arm3", "arm4", "arm5"]
+            names = ["arm0", "arm1", "arm2", "arm3", "arm4", "gripper", "vx", "vy", "wz"]
 
             print(f"  Action별 MAE:")
             for name, val in zip(names, mae):

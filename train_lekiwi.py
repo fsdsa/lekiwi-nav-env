@@ -106,6 +106,11 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 from skrl.trainers.torch import SequentialTrainer
 from skrl.utils import set_seed
 
+# AAC (Asymmetric Actor-Critic) components
+from aac_wrapper import wrap_env_aac
+from aac_ppo import AAC_PPO
+from aac_trainer import AACSequentialTrainer
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  BC Weight Loading
@@ -304,7 +309,13 @@ def main():
         raw_env = Skill3Env(cfg=env_cfg)
     else:
         raw_env = LeKiwiNavEnv(cfg=env_cfg)
-    env = wrap_env(raw_env, wrapper="isaaclab")
+
+    # AAC wrapper for skill-2/3 (critic obs 별도 전달), legacy는 symmetric
+    use_aac = args.skill in ("approach_and_grasp", "carry_and_place")
+    if use_aac:
+        env = wrap_env_aac(raw_env)
+    else:
+        env = wrap_env(raw_env, wrapper="isaaclab")
 
     device = env.device
 
@@ -371,16 +382,21 @@ def main():
     print("=" * 60 + "\n")
 
     # —— Models ————————————————————————————————————————————————
-    # NOTE: AAC (Asymmetric Actor-Critic) — Skill-2/3 env는 "policy"(30D/29D)와
-    # "critic"(37D/36D) observation을 별도 반환하지만, skrl 1.4.3 PPO는 memory에
-    # observation_space만 저장하고 value function에도 동일 텐서를 전달한다.
-    # 따라서 현재는 symmetric ValueNet 사용. CriticNet(critic_obs_dim=state_space)을
-    # 사용하려면 PPO memory에 critic obs를 별도 저장하는 커스텀 로직이 필요하다.
-    # TODO: skrl wrapper 또는 PPO subclass에서 critic obs 별도 저장 → CriticNet 전환
-    models = {
-        "policy": PolicyNet(env.observation_space, env.action_space, device),
-        "value": ValueNet(env.observation_space, env.action_space, device),
-    }
+    if use_aac and env._aac_state_space is not None:
+        critic_obs_dim = env._aac_state_space.shape[0]
+        models = {
+            "policy": PolicyNet(env.observation_space, env.action_space, device),
+            "value": CriticNet(
+                env.observation_space, env.action_space, device,
+                critic_obs_dim=critic_obs_dim,
+            ),
+        }
+        print(f"  AAC enabled: actor={env.observation_space.shape[0]}D, critic={critic_obs_dim}D")
+    else:
+        models = {
+            "policy": PolicyNet(env.observation_space, env.action_space, device),
+            "value": ValueNet(env.observation_space, env.action_space, device),
+        }
 
     # —— BC 가중치 로드 ————————————————————————————————————————
     if mode == "bc_finetune":
@@ -438,6 +454,14 @@ def main():
     cfg_ppo["value_preprocessor"] = RunningStandardScaler
     cfg_ppo["value_preprocessor_kwargs"] = {"size": 1, "device": device}
 
+    # AAC: critic observation preprocessor (별도 scaler)
+    if use_aac and env._aac_state_space is not None:
+        cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
+        cfg_ppo["critic_state_preprocessor_kwargs"] = {
+            "size": env._aac_state_space,
+            "device": device,
+        }
+
     # Logging
     skill_tag = args.skill.replace("_", "")
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"ppo_{skill_tag}")
@@ -450,14 +474,25 @@ def main():
     }
 
     # —— Agent ————————————————————————————————————————————————
-    agent = PPO(
-        models=models,
-        memory=memory,
-        cfg=cfg_ppo,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-    )
+    if use_aac and env._aac_state_space is not None:
+        agent = AAC_PPO(
+            models=models,
+            memory=memory,
+            cfg=cfg_ppo,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+            critic_observation_space=env._aac_state_space,
+        )
+    else:
+        agent = PPO(
+            models=models,
+            memory=memory,
+            cfg=cfg_ppo,
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            device=device,
+        )
 
     if mode == "resume":
         agent.load(args.checkpoint)
@@ -468,7 +503,10 @@ def main():
         "timesteps": args.max_iterations * cfg_ppo["rollouts"] * args.num_envs,
         "headless": args.headless,
     }
-    trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
+    if use_aac and env._aac_state_space is not None:
+        trainer = AACSequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
+    else:
+        trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
 
     # —— Train! ——————————————————————————————————————————————
     print(f"\n  Training started ({mode_label})...")

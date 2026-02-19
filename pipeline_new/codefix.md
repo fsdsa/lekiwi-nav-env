@@ -25,7 +25,6 @@
 | `extract_kiwi_geometry_from_usd.py` | USD geometry 추출 |
 | `build_object_catalog.py` | 물체 카탈로그 빌드 |
 | `leader_to_home_tcp_rest_matched_with_keyboard_base.py` | 리더암+키보드 |
-| `deploy_vla_action_bridge.py` | VLA 배포 브릿지 |
 | `object_catalog.json`, `object_catalog_all.json` | 물체 데이터 |
 
 ### 새로 만들 파일
@@ -36,6 +35,9 @@
 | `lekiwi_skill3_env.py` | CarryAndPlace 환경 (29D obs) |
 | `generate_handoff_buffer.py` | Skill-2 종료 상태 → Skill-3 초기 상태 |
 | `collect_navigate_data.py` | Navigate 스크립트 정책 데이터 수집 |
+| `aac_wrapper.py` | IsaacLabWrapper monkey-patch — critic obs 노출 (`state()` 메서드) |
+| `aac_ppo.py` | PPO 상속 — `critic_states` memory tensor 관리 |
+| `aac_trainer.py` | SequentialTrainer 상속 — critic states 매 step 추적 |
 
 ### 수정할 파일
 
@@ -44,9 +46,10 @@
 | `models.py` | `CriticNet` 클래스 추가 (기존 코드 유지) |
 | `train_lekiwi.py` | `--skill` 분기 추가 |
 | `train_bc.py` | `--expected_obs_dim` required화 |
-| `collect_demos.py` | robot_state 추출 + gripper binary + skill 분기 |
+| `collect_demos.py` | robot_state 추출 + gripper binary + skill 분기 + `Skill2EnvWithCam`/`Skill3EnvWithCam` 카메라 서브클래스 |
 | `convert_hdf5_to_lerobot_v3.py` | 채널명 v3.0 업데이트 + 단위 변환 제거 |
 | `record_teleop.py` | privileged obs 동시 기록 |
+| `deploy_vla_action_bridge.py` | `--action_format v6/legacy` 플래그 추가 |
 
 ---
 
@@ -252,8 +255,13 @@ v8의 `__init__`을 복사한 후:
 
 **추가할 버퍼:**
 ```python
-# Curriculum 상태 추적 (신규)
-self._curriculum_dist = float(self.cfg.object_dist_min)
+# Curriculum 상태 추적 (신규) — config에서 초기값 읽기
+if (hasattr(self.cfg, 'curriculum_current_max_dist')
+        and float(self.cfg.curriculum_current_max_dist) > float(self.cfg.object_dist_min)):
+    self._curriculum_dist = min(
+        float(self.cfg.curriculum_current_max_dist), float(self.cfg.object_dist_max))
+else:
+    self._curriculum_dist = float(self.cfg.object_dist_min)
 self._curriculum_success_window = torch.zeros(100, device=self.device)  # 최근 100 에피소드
 self._curriculum_idx = 0
 
@@ -548,6 +556,7 @@ def _get_observations(self) -> dict:
     ], dim=-1)  # 7D
     critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 37D
 
+    self._critic_obs = critic_obs   # ★ AAC wrapper가 state()로 참조
     return {"policy": actor_obs, "critic": critic_obs}
 ```
 
@@ -866,6 +875,7 @@ class Skill3EnvCfg(Skill2EnvCfg):  # Skill2 상속하여 공통 설정 재사용
     # Task
     return_thresh: float = 0.30
     place_dist_thresh: float = 0.05
+    place_gripper_threshold: float = -0.3  # ★ 이 값 이상 열리면 의도적 place로 판정
 
     # Handoff
     handoff_buffer_path: str = ""   # pickle 파일 경로
@@ -924,7 +934,55 @@ def _get_observations(self) -> dict:
     ], dim=-1)  # 총 29D
 
     self._cached_metrics = None
-    return {"policy": actor_obs}
+
+    # === Critic Observation (36D, AAC) ===
+    # Actor 29D + obj_dimensions(3D) + obj_mass(1D) + gripper_rel_pos(3D) = 36D
+    grip_pos_w = self.robot.data.body_pos_w[:, self._gripper_body_idx]
+    obj_delta = self.object_pos_w - grip_pos_w
+    gripper_rel_pos = quat_apply_inverse(self.robot.data.root_quat_w, obj_delta)
+    obj_mass_per_env = self._catalog_mass[
+        self.active_object_idx.clamp(max=len(self._catalog_mass) - 1)
+    ].unsqueeze(-1)
+    critic_extra = torch.cat([
+        self.object_bbox,          # 3D (원본, 비정규화)
+        obj_mass_per_env,          # 1D
+        gripper_rel_pos,           # 3D
+    ], dim=-1)  # 7D
+    critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 36D
+    self._critic_obs = critic_obs   # ★ AAC wrapper가 state()로 참조
+
+    return {"policy": actor_obs, "critic": critic_obs}
+```
+
+### 3-3b. `_update_grasp_state()` 오버라이드 — 의도적 place 구분
+
+Skill-3는 Skill-2의 `_update_grasp_state()`를 오버라이드하여 의도적 place를 구분한다:
+
+```python
+def _update_grasp_state(self, metrics):
+    """Skill-3 전용: 의도적 place vs 비의도적 drop 구분."""
+    self.intentional_placed[:] = False
+
+    # gripper가 place_gripper_threshold 이상 열리고 home 근처이면 → 의도적 place
+    if self.object_grasped.any():
+        gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
+        gripper_open = gripper_pos > float(self.cfg.place_gripper_threshold)
+        near_home = metrics["home_dist"] < float(self.cfg.return_thresh)
+        intentional = self.object_grasped & gripper_open & near_home
+        if intentional.any():
+            self.intentional_placed[intentional] = True
+            self.object_grasped[intentional] = False
+            ids = intentional.nonzero(as_tuple=False).squeeze(-1)
+            if self._grasp_attach_mode == "fixed_joint":
+                self._disable_grasp_fixed_joint_for_envs(ids)
+
+    # 부모 클래스의 grasp break 감지 (break_force 초과 → just_dropped=True)
+    super()._update_grasp_state(metrics)
+```
+
+`__init__`에 추가할 버퍼:
+```python
+self.intentional_placed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 ```
 
 ### 3-4. `_compute_metrics()` — home 관련 추가
@@ -1012,6 +1070,7 @@ def _reset_idx(self, env_ids: torch.Tensor):
     # 물체가 이미 잡힌 상태로 시작
     self.object_grasped[env_ids] = True
     self.just_dropped[env_ids] = False    # ★ 신규
+    self.intentional_placed[env_ids] = False  # ★ 의도적 place 리셋
 
     # ★ 주의: DR을 joint attach 전에 실행해야 break_force DR이 적용됨
     self._apply_domain_randomization(env_ids)
@@ -1183,6 +1242,40 @@ if mode == "bc_finetune":
     # ... 기존 mismatch 경고 로직 그대로 ...
 ```
 
+### 5-4. AAC 통합
+
+skrl 1.4.3는 native AAC를 지원하지 않으므로, 3개 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)을 사용한다:
+
+```python
+from aac_wrapper import wrap_env_aac
+from aac_ppo import AAC_PPO
+from aac_trainer import AACSequentialTrainer
+from models import CriticNet
+
+wrapped = wrap_env_aac(raw_env)  # IsaacLabWrapper + state() monkey-patch
+critic_obs_dim = wrapped._aac_state_space.shape[0] if wrapped._aac_state_space is not None else None
+
+models = {
+    "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
+    "value": CriticNet(
+        wrapped.observation_space, wrapped.action_space, device,
+        critic_obs_dim=critic_obs_dim,
+    ),
+}
+
+# critic_state_preprocessor 설정
+cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
+cfg_ppo["critic_state_preprocessor_kwargs"] = {"size": wrapped._aac_state_space, "device": device}
+
+agent = AAC_PPO(models=models, memory=memory, cfg=cfg_ppo,
+                observation_space=wrapped.observation_space,
+                action_space=wrapped.action_space, device=device,
+                critic_observation_space=wrapped._aac_state_space)
+
+trainer = AACSequentialTrainer(cfg=trainer_cfg, env=wrapped, agents=agent)
+trainer.train()
+```
+
 ---
 
 ## 6. `collect_demos.py` 수정
@@ -1239,6 +1332,27 @@ ep_act[i].append(action_to_save.cpu().numpy())
 ### 6-3. `--skill` 분기 추가
 
 train_lekiwi.py와 동일한 패턴으로 환경 import 분기.
+
+### 6-4. 카메라 서브클래스
+
+VLA 데이터 수집 시 카메라 렌더링이 필요하므로, 환경에 TiltedCamera 2대(base_cam, wrist_cam)를 추가한 서브클래스를 `collect_demos.py` 내부에 정의한다:
+
+```python
+class Skill2EnvWithCam(Skill2Env):
+    """Skill2Env + base_cam + wrist_cam 카메라 추가."""
+    def _setup_scene(self):
+        super()._setup_scene()
+        # TiltedCamera 2대 추가 (base_cam, wrist_cam)
+        # prim path는 2-6 Isaac Sim 5.0.0 검증 결과 참조
+
+class Skill3EnvWithCam(Skill3Env):
+    """Skill3Env + base_cam + wrist_cam 카메라 추가."""
+    def _setup_scene(self):
+        super()._setup_scene()
+        # TiltedCamera 2대 추가 (base_cam, wrist_cam)
+```
+
+RL 학습(`train_lekiwi.py`)에서는 카메라가 불필요하므로 기본 Skill2Env/Skill3Env를 사용하고, 데이터 수집(`collect_demos.py`)에서만 WithCam 서브클래스를 사용한다. 이렇게 분리하면 RL 학습 시 2048개 병렬 환경을 유지할 수 있다.
 
 ---
 
@@ -1350,19 +1464,24 @@ args = parser.parse_args()
 launcher = AppLauncher(args)
 sim_app = launcher.app
 
+import numpy as np
 import torch
 from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
-from models import PolicyNet, ValueNet
+from models import PolicyNet, ValueNet, CriticNet
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.resources.preprocessors.torch import RunningStandardScaler
+from aac_wrapper import wrap_env_aac
+from aac_ppo import AAC_PPO
 
 def main():
     env_cfg = Skill2EnvCfg()
     env_cfg.scene.num_envs = args.num_envs
     if args.dynamics_json:
         env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
+    if args.calibration_json:
+        env_cfg.calibration_json = os.path.expanduser(args.calibration_json)
     if args.arm_limit_json:
         env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
     if args.multi_object_json:
@@ -1373,12 +1492,16 @@ def main():
     env_cfg.curriculum_current_max_dist = env_cfg.object_dist_max
 
     env = Skill2Env(cfg=env_cfg)
-    wrapped = wrap_env(env, wrapper="isaaclab")
+    wrapped = wrap_env_aac(env)  # ★ AAC wrapper 사용
     device = wrapped.device
 
+    critic_obs_dim = wrapped._aac_state_space.shape[0] if wrapped._aac_state_space is not None else None
     models = {
         "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
-        "value": ValueNet(wrapped.observation_space, wrapped.action_space, device),
+        "value": CriticNet(
+            wrapped.observation_space, wrapped.action_space, device,
+            critic_obs_dim=critic_obs_dim,
+        ) if critic_obs_dim else ValueNet(wrapped.observation_space, wrapped.action_space, device),
     }
     memory = RandomMemory(memory_size=24, num_envs=args.num_envs, device=device)
     cfg_ppo = PPO_DEFAULT_CONFIG.copy()
@@ -1386,10 +1509,19 @@ def main():
     cfg_ppo["state_preprocessor_kwargs"] = {"size": wrapped.observation_space, "device": device}
     cfg_ppo["value_preprocessor"] = RunningStandardScaler
     cfg_ppo["value_preprocessor_kwargs"] = {"size": 1, "device": device}
+    if critic_obs_dim and wrapped._aac_state_space is not None:
+        cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
+        cfg_ppo["critic_state_preprocessor_kwargs"] = {"size": wrapped._aac_state_space, "device": device}
 
-    agent = PPO(models=models, memory=memory, cfg=cfg_ppo,
-                observation_space=wrapped.observation_space,
-                action_space=wrapped.action_space, device=device)
+    if critic_obs_dim and wrapped._aac_state_space is not None:
+        agent = AAC_PPO(models=models, memory=memory, cfg=cfg_ppo,
+                        observation_space=wrapped.observation_space,
+                        action_space=wrapped.action_space, device=device,
+                        critic_observation_space=wrapped._aac_state_space)
+    else:
+        agent = PPO(models=models, memory=memory, cfg=cfg_ppo,
+                    observation_space=wrapped.observation_space,
+                    action_space=wrapped.action_space, device=device)
     agent.load(args.checkpoint)
     agent.set_running_mode("eval")
 
@@ -1407,18 +1539,27 @@ def main():
             sids = success.nonzero(as_tuple=False).squeeze(-1)
             for sid in sids:
                 i = sid.item()
+                # Active object의 orientation 읽기
+                oi = int(env.active_object_idx[i].item())
+                if env._multi_object and oi < len(env.object_rigids):
+                    obj_quat = env.object_rigids[oi].data.root_quat_w[i].cpu().tolist()
+                elif env.object_rigid is not None:
+                    obj_quat = env.object_rigid.data.root_quat_w[i].cpu().tolist()
+                else:
+                    obj_quat = [1.0, 0.0, 0.0, 0.0]
+
                 entry = {
                     "base_pos": env.robot.data.root_pos_w[i].cpu().tolist(),
                     "base_ori": env.robot.data.root_quat_w[i].cpu().tolist(),
                     "arm_joints": env.robot.data.joint_pos[i, env.arm_idx[:5]].cpu().tolist(),
                     "gripper_state": env.robot.data.joint_pos[i, env.arm_idx[5]].item(),
                     "object_pos": env.object_pos_w[i].cpu().tolist(),
+                    "object_ori": obj_quat,
                     "object_type_idx": env.active_object_idx[i].item(),
                 }
-                
+
                 # ★ Noise injection — VLA의 부정확한 Skill-2 출력을 모사
                 # Skill-3가 "완벽하지 않은 grasp 상태"에서도 복구/운반할 수 있도록 학습
-                import numpy as np
                 if args.noise_arm_std > 0:
                     entry["arm_joints"] = [
                         v + np.random.normal(0, args.noise_arm_std) for v in entry["arm_joints"]
@@ -1438,7 +1579,9 @@ def main():
                 
                 entries.append(entry)
 
-        if len(entries) % 50 == 0 and len(entries) > 0:
+        prev_milestone = (len(entries) - sids.numel()) // 50
+        curr_milestone = len(entries) // 50
+        if curr_milestone > prev_milestone and len(entries) > 0:
             print(f"    {len(entries)}/{args.num_entries}")
 
     entries = entries[:args.num_entries]
@@ -1569,6 +1712,13 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 - [ ] `info.json`의 `codebase_version`이 `v3.0`
 - [ ] 카메라 키가 `observation.images.front` (NOT `base`)
 - [ ] displacement 관련 코드가 없음: `_compute_body_displacement`, `prev_root_pos_w`, `prev_root_quat_w`, `body_displacement` 버퍼, m→mm 변환
+- [ ] ★ AAC: `aac_wrapper.py`의 `state()` 메서드가 `env._critic_obs`를 반환하는지
+- [ ] ★ AAC: `aac_ppo.py`의 `_update()` 내에서 `critic_states` tensor가 memory에 저장되는지
+- [ ] ★ AAC: `train_lekiwi.py`에서 `CriticNet` critic_obs_dim이 Skill-2=37, Skill-3=36으로 설정되는지
+- [ ] ★ AAC: `generate_handoff_buffer.py`에서 AAC checkpoint 로드 후 eval 정상 동작하는지
+- [ ] ★ Intentional place: Skill-3에서 home 근처 gripper open 시 `intentional_placed=True`, `just_dropped=False` 확인
+- [ ] ★ Camera subclass: `collect_demos.py`의 `Skill2EnvWithCam`/`Skill3EnvWithCam`에서 카메라 2대 렌더링 정상
+- [ ] ★ `deploy_vla_action_bridge.py --action_format v6`이 `[arm5,grip1,base3]` 순서로 파싱하는지
 
 ---
 
@@ -1587,6 +1737,10 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 
 현재 contact sensor는 단일 스칼라를 좌/우 동일값으로 복사하여 2채널로 사용한다. 비대칭 grasp(한쪽 finger만 닿은 상태) 감지가 불가능하다. 실제 로봇에서 grasp 품질 문제가 발생하면 contact sensor를 좌/우 finger에 각각 배치하는 것을 검토한다.
 
-### 11-3. Skill 전환 로직
+### 11-3. AAC 구현 ✅ 완료
 
-sim에서는 각 Skill을 독립적으로 학습하지만, 실제 배포 시 Skill-1→2→3 전환 시점 판단은 VLA 또는 `deploy_vla_action_bridge.py`가 담당한다. 전환 로직(예: "gripper가 닫히고 N step 유지되면 Skill-3로 전환")의 설계와 검증은 VLA 배포 단계에서 별도로 진행해야 한다.
+skrl 1.4.3의 native AAC 미지원 문제는 3개 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)로 해결하였다. `train_lekiwi.py`와 `generate_handoff_buffer.py` 모두 AAC를 사용하도록 업데이트 완료. Skill-2 Critic 37D, Skill-3 Critic 36D.
+
+### 11-4. Skill 전환 로직
+
+sim에서는 각 Skill을 독립적으로 학습하지만, 실제 배포 시 Skill-1→2→3 전환 시점 판단은 VLA 또는 `deploy_vla_action_bridge.py`(`--action_format v6/legacy` 지원)가 담당한다. 전환 로직(예: "gripper가 닫히고 N step 유지되면 Skill-3로 전환")의 설계와 검증은 VLA 배포 단계에서 별도로 진행해야 한다.

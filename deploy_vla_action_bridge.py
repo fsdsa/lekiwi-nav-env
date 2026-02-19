@@ -3,9 +3,12 @@
 VLA action(9D, [-1, 1]) -> real robot command bridge utility.
 
 This script implements the full deployment conversion chain:
-  1) action[0:3] denormalization in sim-space
+  v6 format (default): [arm5, grip1, base3]
+  legacy format:       [base3, arm6]
+
+  1) base action denormalization in sim-space
   2) sim-space -> real-space base command transform
-  3) action[3:9] -> arm target(rad) mapping (same semantics as LeKiwiNavEnv)
+  3) arm action -> arm target(rad) mapping
 
 Usage example:
   python deploy_vla_action_bridge.py \
@@ -142,6 +145,11 @@ def main():
     parser.add_argument("--arm_action_scale", type=float, default=1.5)
     parser.add_argument("--arm_action_to_limits", action="store_true", help="map arm action [-1,1] to limits")
     parser.add_argument("--no_dynamics_cmd_scale", action="store_true", help="disable lin/ang cmd scaling from best_params")
+    parser.add_argument(
+        "--action_format", type=str, default="v6",
+        choices=["v6", "legacy"],
+        help="action format: v6=[arm5,grip1,base3] (default), legacy=[base3,arm6]",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -158,12 +166,20 @@ def main():
     max_lin_vel = _safe_float(args.base_max_lin_vel, 0.5) * lin_scale
     max_ang_vel = _safe_float(args.base_max_ang_vel, 3.0) * ang_scale
 
-    vx_sim = float(action[0] * max_lin_vel)
-    vy_sim = float(action[1] * max_lin_vel)
-    wz_sim = float(action[2] * max_ang_vel)
+    # Action format branching: v6=[arm5,grip1,base3] vs legacy=[base3,arm6]
+    if args.action_format == "v6":
+        # v6: [arm0-4, gripper, vx, vy, wz]
+        arm_action = action[0:6]   # arm5 + gripper1
+        vx_sim = float(action[6] * max_lin_vel)
+        vy_sim = float(action[7] * max_lin_vel)
+        wz_sim = float(action[8] * max_ang_vel)
+    else:
+        # legacy: [vx, vy, wz, arm0-5]
+        vx_sim = float(action[0] * max_lin_vel)
+        vy_sim = float(action[1] * max_lin_vel)
+        wz_sim = float(action[2] * max_ang_vel)
+        arm_action = action[3:9]
     vx_real, vy_real, wz_real = sim_to_real(vx_sim, vy_sim, wz_sim, cmd_tf)
-
-    arm_action = action[3:9]
     if args.arm_action_to_limits:
         arm_lo, arm_hi = _resolve_arm_limits(args)
         arm_center = 0.5 * (arm_lo + arm_hi)
