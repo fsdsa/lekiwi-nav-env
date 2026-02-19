@@ -104,7 +104,7 @@ parser.add_argument("--object_scale_phys", type=float, default=1.0,
                     help="physics grasp object uniform scale")
 parser.add_argument("--gripper_contact_prim_path", type=str, default="",
                     help="contact sensor prim path for gripper body (required in multi-object mode)")
-parser.add_argument("--grasp_gripper_threshold", type=float, default=-0.3,
+parser.add_argument("--grasp_gripper_threshold", type=float, default=0.7,
                     help="gripper joint position threshold for closed state")
 parser.add_argument("--grasp_contact_threshold", type=float, default=0.5,
                     help="minimum contact force magnitude for grasp success")

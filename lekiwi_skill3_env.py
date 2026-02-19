@@ -33,7 +33,7 @@ from typing import Dict
 
 import torch
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply_inverse, quat_mul
 
 from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
 
@@ -59,6 +59,11 @@ class Skill3EnvCfg(Skill2EnvCfg):
     rew_hold_bonus: float = 0.1
     rew_place_success_bonus: float = 20.0
     rew_drop_penalty: float = -10.0
+
+    # Handoff noise (per-load: 같은 entry를 여러 번 로드해도 다른 state)
+    handoff_arm_noise_std: float = 0.02       # ~1deg joint noise
+    handoff_base_pos_noise_std: float = 0.01  # 1cm position noise
+    handoff_base_yaw_noise_std: float = 0.02  # ~1deg heading noise
 
     # Curriculum 제거 (Skill-3는 불필요)
     curriculum_success_threshold: float = 1.0
@@ -170,6 +175,20 @@ class Skill3Env(Skill2Env):
         contact_force = self._contact_force_per_env()
         grip_force = contact_force.unsqueeze(-1)
 
+        # Observation noise (sim2real: 센서 노이즈 시뮬레이션, 학습 시에만)
+        if bool(self.cfg.enable_domain_randomization):
+            jp_noise = float(self.cfg.dr_obs_noise_joint_pos)
+            bv_noise = float(self.cfg.dr_obs_noise_base_vel)
+            or_noise = float(self.cfg.dr_obs_noise_object_rel)
+            if jp_noise > 0:
+                arm_pos = arm_pos + torch.randn_like(arm_pos) * jp_noise
+            if bv_noise > 0:
+                base_body_vel = base_body_vel + torch.randn_like(base_body_vel) * bv_noise
+                lin_vel = lin_vel + torch.randn_like(lin_vel) * bv_noise
+                ang_vel = ang_vel + torch.randn_like(ang_vel) * bv_noise
+            if or_noise > 0:
+                home_rel = home_rel + torch.randn_like(home_rel) * or_noise
+
         # BBox / Category
         bbox_norm = self.object_bbox / float(self._bbox_norm_scale)
         cat_denom = max(int(self.cfg.num_object_categories) - 1, 1)
@@ -221,6 +240,10 @@ class Skill3Env(Skill2Env):
 
         reward = torch.full((self.num_envs,), self.cfg.rew_time_penalty, device=self.device)
 
+        # Action smoothness penalty (sim2real: 실기에서 부드러운 동작 유도)
+        action_delta = self.actions - self.prev_actions
+        reward += self.cfg.rew_action_smoothness_weight * (action_delta ** 2).sum(dim=-1)
+
         # Carry: home까지 거리 줄이기
         home_progress = torch.clamp(self.prev_home_dist - metrics["home_dist"], -0.2, 0.2)
         reward += self.cfg.rew_carry_progress_weight * home_progress
@@ -255,6 +278,17 @@ class Skill3Env(Skill2Env):
         metrics = self._compute_metrics()
         self._update_grasp_state(metrics)  # drop 감지 포함
         self._cached_metrics = metrics
+
+        # ── CRITICAL-2 Fix: Override parent's lift-based task_success ──
+        # Parent sets task_success=True for lifted objects, but Skill-3
+        # starts with already-lifted objects from handoff buffer.
+        # Use place_success (intentional place near home) instead.
+        place_dist = torch.norm(
+            self.object_pos_w[:, :2] - self.home_pos_w[:, :2], dim=-1
+        )
+        near_home = place_dist < self.cfg.return_thresh
+        place_success = (~self.object_grasped) & near_home & (~self.just_dropped)
+        self.task_success = place_success
 
         root_pos = metrics["root_pos_w"]
         out_of_bounds = torch.norm(
@@ -302,33 +336,68 @@ class Skill3Env(Skill2Env):
         buf_size = len(self.handoff_buffer)
         indices = torch.randint(0, buf_size, (num,))
 
+        # Batch: collect all entries first to avoid per-loop tensor creation
+        entries = [self.handoff_buffer[indices[i].item()] for i in range(num)]
+
         root_states = self.robot.data.default_root_state[env_ids].clone()
         joint_positions = self.robot.data.default_joint_pos[env_ids].clone()
 
-        for i in range(num):
-            entry = self.handoff_buffer[indices[i].item()]
-            eid = env_ids[i]
+        # Batch tensor construction (CPU → GPU once)
+        base_pos = torch.tensor([e["base_pos"] for e in entries], device=self.device, dtype=torch.float32)
+        base_ori = torch.tensor([e["base_ori"] for e in entries], device=self.device, dtype=torch.float32)
+        obj_pos = torch.tensor([e["object_pos"] for e in entries], device=self.device, dtype=torch.float32)
+        obj_ori = torch.tensor(
+            [e.get("object_ori", [1.0, 0.0, 0.0, 0.0]) for e in entries],
+            device=self.device, dtype=torch.float32,
+        )
+        arm_joints = torch.tensor([e["arm_joints"] for e in entries], device=self.device, dtype=torch.float32)
+        grip_states = torch.tensor([e["gripper_state"] for e in entries], device=self.device, dtype=torch.float32)
+        obj_type_indices = torch.tensor([int(e["object_type_idx"]) for e in entries], device=self.device, dtype=torch.long)
 
-            # Robot root state
-            root_states[i, 0:3] = torch.tensor(entry["base_pos"], device=self.device, dtype=torch.float32)
-            root_states[i, 3:7] = torch.tensor(entry["base_ori"], device=self.device, dtype=torch.float32)
+        # Per-load noise: 같은 handoff entry라도 매번 다른 state로 시작
+        if self.cfg.handoff_arm_noise_std > 0:
+            arm_joints = arm_joints + torch.randn_like(arm_joints) * self.cfg.handoff_arm_noise_std
+            if self.cfg.arm_action_to_limits:
+                arm_lo = self.robot.data.soft_joint_pos_limits[0, self.arm_idx[:5], 0]
+                arm_hi = self.robot.data.soft_joint_pos_limits[0, self.arm_idx[:5], 1]
+                arm_joints = torch.clamp(arm_joints, arm_lo, arm_hi)
 
-            # Arm+gripper joints
-            arm_vals = entry["arm_joints"]
-            grip_val = entry["gripper_state"]
-            for j in range(5):
-                joint_positions[i, self.arm_idx[j]] = float(arm_vals[j])
-            joint_positions[i, self.arm_idx[5]] = float(grip_val)
+        if self.cfg.handoff_base_pos_noise_std > 0:
+            base_pos[:, :2] = base_pos[:, :2] + torch.randn(num, 2, device=self.device) * self.cfg.handoff_base_pos_noise_std
 
-            # Object position + orientation
-            self.object_pos_w[eid] = torch.tensor(entry["object_pos"], device=self.device, dtype=torch.float32)
-            if "object_ori" in entry:
-                self._handoff_object_ori[eid] = torch.tensor(entry["object_ori"], device=self.device, dtype=torch.float32)
-            obj_idx = int(entry["object_type_idx"])
-            self.active_object_idx[eid] = obj_idx
-            if self._multi_object:
-                self.object_bbox[eid] = self._catalog_bbox[min(obj_idx, len(self._catalog_bbox) - 1)]
-                self.object_category_id[eid] = self._catalog_category[min(obj_idx, len(self._catalog_category) - 1)]
+        if self.cfg.handoff_base_yaw_noise_std > 0:
+            dyaw = torch.randn(num, device=self.device) * self.cfg.handoff_base_yaw_noise_std
+            half = dyaw * 0.5
+            dq = torch.zeros(num, 4, device=self.device)
+            dq[:, 0] = torch.cos(half)   # w
+            dq[:, 3] = torch.sin(half)   # z (yaw only)
+            base_ori = quat_mul(dq, base_ori)
+
+        # Robot root state
+        root_states[:, 0:3] = base_pos
+        root_states[:, 3:7] = base_ori
+
+        # Arm+gripper joints (batched)
+        for j in range(5):
+            joint_positions[:, self.arm_idx[j]] = arm_joints[:, j]
+        joint_positions[:, self.arm_idx[5]] = grip_states
+
+        # Object position + orientation
+        self.object_pos_w[env_ids] = obj_pos
+        self._handoff_object_ori[env_ids] = obj_ori
+        self.active_object_idx[env_ids] = obj_type_indices
+
+        # Single-object sim write (multi_object=False일 때 sim에 실제 pose 반영)
+        if not self._multi_object and self.object_rigid is not None:
+            pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
+            pose[:, :3] = obj_pos
+            pose[:, 3:7] = obj_ori
+            self.object_rigid.write_root_pose_to_sim(pose, env_ids)
+
+        if self._multi_object:
+            clamped_idx = obj_type_indices.clamp(max=len(self._catalog_bbox) - 1)
+            self.object_bbox[env_ids] = self._catalog_bbox[clamped_idx]
+            self.object_category_id[env_ids] = self._catalog_category[clamped_idx.clamp(max=len(self._catalog_category) - 1)]
 
         self.robot.write_root_state_to_sim(root_states, env_ids)
         joint_vel = torch.zeros_like(joint_positions)
@@ -385,6 +454,12 @@ class Skill3Env(Skill2Env):
         # 물체를 잡힌 위치에 배치
         self.object_pos_w[env_ids, :2] = default_root_state[:, :2]
         self.object_pos_w[env_ids, 2] = default_root_state[:, 2] + float(self.cfg.grasp_attach_height)
+
+        # Single-object sim write (multi_object=False일 때 sim에 실제 pose 반영)
+        if not self._multi_object and self.object_rigid is not None:
+            pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
+            pose[:, :3] = self.object_pos_w[env_ids]
+            self.object_rigid.write_root_pose_to_sim(pose, env_ids)
 
         self.object_grasped[env_ids] = True
         self._apply_domain_randomization(env_ids)

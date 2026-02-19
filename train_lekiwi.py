@@ -73,7 +73,7 @@ parser.add_argument("--object_scale", type=float, default=1.0,
                     help="physics grasp object uniform scale")
 parser.add_argument("--gripper_contact_prim_path", type=str, default="",
                     help="contact sensor prim path for gripper body (required in physics grasp mode)")
-parser.add_argument("--grasp_gripper_threshold", type=float, default=-0.3,
+parser.add_argument("--grasp_gripper_threshold", type=float, default=0.7,
                     help="gripper joint position threshold for closed state")
 parser.add_argument("--grasp_contact_threshold", type=float, default=0.5,
                     help="minimum contact force magnitude for grasp success")
@@ -442,8 +442,8 @@ def main():
 
     cfg_ppo["learning_rate_scheduler"] = KLAdaptiveLR
     cfg_ppo["learning_rate_scheduler_kwargs"] = {"kl_threshold": 0.01}
-    cfg_ppo["grad_norm_clip"] = 1.0
-    cfg_ppo["ratio_clip"] = 0.2
+    cfg_ppo["grad_norm_clip"] = 0.5       # PPO 37 details: 0.5 권장
+    cfg_ppo["ratio_clip"] = 0.15          # manipulation 태스크: 0.1-0.2 사이 보수적 설정
     cfg_ppo["value_clip"] = 0.2
     cfg_ppo["clip_predicted_values"] = True
     cfg_ppo["entropy_loss_scale"] = 0.01

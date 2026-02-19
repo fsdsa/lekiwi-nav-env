@@ -370,12 +370,14 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 **Curriculum Learning**: 처음에는 물체를 로봇 앞 0.5m에 놓고, 성공률 70% 초과 시 거리를 점진적으로 2.5m까지 늘린다.
 
 **Domain Randomization (Dynamics, reset-time)**: 기존 v8 코드의 `enable_domain_randomization=True`를 그대로 사용.
-- Wheel: stiffness/damping/friction (0.8~1.2x)
-- Arm: stiffness/damping (0.9~1.1x)
-- Object: mass/static_friction/dynamic_friction (0.8~1.2x)
+- Wheel: stiffness(0.75~1.5x), damping(0.3~3.0x), friction(0.7~1.3x)
+- Arm: stiffness(0.8~1.25x), damping(0.5~2.0x)
+- Object: mass(0.5~2.0x), friction(0.6~1.5x)
 - Base values: `tuned_dynamics.json`의 `best_params`
+- Observation noise: joint_pos(0.01 rad), base_vel(0.02 m/s), object_rel(0.02 m)
+- Action delay: 1 step (10-50ms 통신 지연 시뮬레이션)
 
-**PPO 하이퍼파라미터**: lr=3e-4, gamma=0.99, GAE lambda=0.95, clip=0.2, entropy_coef=0.01, mini_batches=4. 병렬 환경 **2048개** (state-only Actor, 이미지 렌더링 불필요 — v8 기본값과 동일).
+**PPO 하이퍼파라미터**: lr=3e-4, gamma=0.99, GAE lambda=0.95, ratio_clip=0.15, grad_norm_clip=0.5, entropy_coef=0.01, mini_batches=4. 병렬 환경 **2048개** (state-only Actor, 이미지 렌더링 불필요 — v8 기본값과 동일).
 
 **BC → RL weight transfer**: BC의 state_dict를 RL Actor에 key-by-key 복사. 네트워크 구조 동일하므로 shape 동일. Critic은 랜덤 초기화. 기존 `train_lekiwi.py`의 BC warm-start 로직 재사용 (obs dim mismatch 시 net.0.weight 자동 어댑트).
 
@@ -493,7 +495,7 @@ python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29
 | drop | -10 | break_force 초과로 물체 낙하 (`just_dropped`) |
 | collision | -1 | 환경 충돌 |
 
-**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place와 비의도적 drop은 Skill-3의 `_update_grasp_state()` 오버라이드로 구분한다: gripper가 `place_gripper_threshold`(-0.3) 이상 열리고 home 근처(`return_thresh` 내)이면 `intentional_placed=True`로 설정하여 FixedJoint를 해제하고 `just_dropped=False`를 유지한다. 반면 break_force 초과로 물체가 떨어진 경우 `just_dropped=True`가 된다. place는 `truncated`(성공, +20 보상), drop은 `terminated`(실패, -10 페널티)로 처리.
+**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place와 비의도적 drop은 Skill-3의 `_update_grasp_state()` 오버라이드로 구분한다: gripper가 `place_gripper_threshold`(0.3) 이상 열리고 home 근처(`return_thresh` 내)이면 `intentional_placed=True`로 설정하여 FixedJoint를 해제하고 `just_dropped=False`를 유지한다. 반면 break_force 초과로 물체가 떨어진 경우 `just_dropped=True`가 된다. place는 `truncated`(성공, +20 보상), drop은 `terminated`(실패, -10 페널티)로 처리. `_get_dones()`는 부모의 lift 기반 task_success 대신 `place_success`를 직접 계산하여 오버라이드한다 (Skill-3는 handoff buffer에서 이미 grasped+lifted 상태로 시작하므로).
 
 **Dynamics DR**: Skill-2와 동일 + **break_force DR** (`dr_grasp_break_force_range: 15~45N`). 주의: `_reset_idx()`에서 `_apply_domain_randomization()`을 `_attach_grasp_fixed_joint_for_envs()` **이전**에 호출.
 
@@ -599,10 +601,12 @@ python collect_demos.py \
 #### 4-4-1. Domain Randomization
 
 **Dynamics DR (기본, 항상 적용)**:
-- Wheel stiffness/damping/friction: 0.8~1.2x
-- Arm stiffness/damping: 0.9~1.1x
-- Object mass/friction: 0.8~1.2x
+- Wheel: stiffness 0.75~1.5x, damping 0.3~3.0x, friction 0.7~1.3x
+- Arm: stiffness 0.8~1.25x, damping 0.5~2.0x
+- Object: mass 0.5~2.0x, friction 0.6~1.5x
 - 기존 v8 코드 `enable_domain_randomization=True` 사용
+- Observation noise: joint_pos(0.01 rad), base_vel(0.02 m/s), object_rel(0.02 m)
+- Action delay: 1 step (10-50ms 통신 지연 시뮬레이션)
 
 **Weak Visual DR (기본)**:
 - 물체 종류: object_catalog.json 12종 중 에피소드마다 1종 랜덤 선택 (나머지는 z=-10에 숨김)

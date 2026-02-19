@@ -78,7 +78,7 @@ parser.add_argument(
     default="",
     help="contact sensor prim path for gripper body (required in physics grasp mode)",
 )
-parser.add_argument("--grasp_gripper_threshold", type=float, default=-0.3, help="gripper joint position threshold for closed state")
+parser.add_argument("--grasp_gripper_threshold", type=float, default=0.7, help="gripper joint position threshold for closed state")
 parser.add_argument("--grasp_contact_threshold", type=float, default=0.5, help="minimum contact force magnitude for grasp success")
 parser.add_argument("--grasp_max_object_dist", type=float, default=0.25, help="max object distance for contact-based grasp success")
 parser.add_argument("--grasp_attach_height", type=float, default=0.15, help="attached object z-height after grasp success")

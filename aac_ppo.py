@@ -178,7 +178,7 @@ class AAC_PPO(PPO):
             not_dones = dones.logical_not()
             memory_size = rewards.shape[0]
             for i in reversed(range(memory_size)):
-                nv = values[i + 1] if i < memory_size - 1 else last_values
+                nv = values[i + 1] if i < memory_size - 1 else next_values
                 advantage = (
                     rewards[i] - values[i]
                     + discount_factor * not_dones[i] * (nv + lambda_coefficient * advantage)

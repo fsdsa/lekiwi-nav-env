@@ -116,7 +116,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     gripper_contact_prim_path: str = ""
     object_prim_path: str = "/World/envs/env_.*/Object"
     object_filter_prim_expr: str = "/World/envs/env_.*/Object"
-    grasp_gripper_threshold: float = -0.3
+    grasp_gripper_threshold: float = 0.7
     grasp_contact_threshold: float = 0.5
     grasp_max_object_dist: float = 0.25
     grasp_attach_height: float = 0.15
@@ -134,9 +134,12 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     rew_time_penalty: float = -0.01
     rew_effort_weight: float = -0.01
     rew_arm_move_weight: float = -0.02
+    rew_action_smoothness_weight: float = -0.005  # action delta penalty (sim2real)
     rew_approach_progress_weight: float = 6.0
     rew_approach_heading_weight: float = 0.2
     rew_approach_vel_weight: float = 0.5
+    rew_proximity_tanh_weight: float = 2.0  # tanh proximity kernel (가까울수록 강한 gradient)
+    rew_proximity_tanh_sigma: float = 0.5   # tanh kernel sigma
     rew_grasp_success_bonus: float = 10.0
     rew_lift_bonus: float = 5.0
     rew_collision: float = -1.0
@@ -144,24 +147,32 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     # === Termination (v8 동일) ===
     max_dist_from_origin: float = 6.0
 
-    # === DR (v8 동일) ===
+    # === DR (sim2real gap 핵심 — 범위 확대) ===
     enable_domain_randomization: bool = True
     dr_root_xy_noise_std: float = 0.12
     dr_root_yaw_jitter_rad: float = 0.2
-    dr_wheel_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
-    dr_wheel_damping_scale_range: tuple[float, float] = (0.85, 1.15)
-    dr_wheel_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_wheel_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_wheel_viscous_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_arm_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
-    dr_arm_damping_scale_range: tuple[float, float] = (0.85, 1.15)
-    dr_object_mass_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_object_static_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_wheel_stiffness_scale_range: tuple[float, float] = (0.75, 1.5)
+    dr_wheel_damping_scale_range: tuple[float, float] = (0.3, 3.0)   # 가장 중요: 실기 damping 편차 큼
+    dr_wheel_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_wheel_dynamic_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_wheel_viscous_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_arm_stiffness_scale_range: tuple[float, float] = (0.8, 1.25)
+    dr_arm_damping_scale_range: tuple[float, float] = (0.5, 2.0)
+    dr_object_mass_scale_range: tuple[float, float] = (0.5, 2.0)     # 실제 물체 질량 편차 큼
+    dr_object_static_friction_scale_range: tuple[float, float] = (0.6, 1.5)
+    dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.6, 1.5)
 
-    # Grasp DR (신규 — sim2real gap 핵심)
-    dr_grasp_break_force_range: tuple[float, float] = (15.0, 45.0)   # break_force 랜덤화
-    dr_grasp_break_torque_range: tuple[float, float] = (15.0, 45.0)  # break_torque 랜덤화
+    # Grasp DR (sim2real gap 핵심)
+    dr_grasp_break_force_range: tuple[float, float] = (15.0, 45.0)
+    dr_grasp_break_torque_range: tuple[float, float] = (15.0, 45.0)
+
+    # Observation noise (sim2real: 센서 노이즈 시뮬레이션)
+    dr_obs_noise_joint_pos: float = 0.01     # rad — arm joint position noise
+    dr_obs_noise_base_vel: float = 0.02      # m/s — base velocity noise
+    dr_obs_noise_object_rel: float = 0.02    # m — object relative position noise
+
+    # Action delay (sim2real: 통신 지연 시뮬레이션)
+    dr_action_delay_steps: int = 1           # 0=없음, 1-2=권장 (SSH/ZMQ 10-50ms)
 
 
 class Skill2Env(DirectRLEnv):
@@ -246,6 +257,15 @@ class Skill2Env(DirectRLEnv):
         self.prev_actions = torch.zeros_like(self.actions)
         self.episode_reward_sum = torch.zeros(self.num_envs, device=self.device)
         self.reached_count = 0
+
+        # Action delay buffer (sim2real: 통신 지연 시뮬레이션)
+        delay = max(int(self.cfg.dr_action_delay_steps), 0)
+        if delay > 0:
+            self._action_delay_buf = torch.zeros(
+                delay, self.num_envs, self.cfg.action_space, device=self.device
+            )
+        else:
+            self._action_delay_buf = None
         self._cached_metrics: Dict[str, torch.Tensor] | None = None
         self._contact_shape_warned = False
         self._grasp_attach_mode = str(getattr(self.cfg, "grasp_attach_mode", "fixed_joint")).strip().lower()
@@ -1327,7 +1347,15 @@ class Skill2Env(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.prev_actions = self.actions.clone()
-        self.actions = actions.clone().clamp(-1.0, 1.0)
+        raw = actions.clone().clamp(-1.0, 1.0)
+        # Action delay: FIFO buffer로 1-N step 지연된 action 적용
+        if self._action_delay_buf is not None:
+            self.actions = self._action_delay_buf[0].clone()
+            self._action_delay_buf = torch.cat(
+                [self._action_delay_buf[1:], raw.unsqueeze(0)], dim=0
+            )
+        else:
+            self.actions = raw
 
     def _apply_action(self):
         # 새 순서: [arm5, grip1, base3]
@@ -1391,6 +1419,20 @@ class Skill2Env(DirectRLEnv):
         cat_denom = max(int(self.cfg.num_object_categories) - 1, 1)
         cat_norm = (self.object_category_id / float(cat_denom)).unsqueeze(-1)
 
+        # Observation noise (sim2real: 센서 노이즈 시뮬레이션, 학습 시에만)
+        if bool(self.cfg.enable_domain_randomization):
+            jp_noise = float(self.cfg.dr_obs_noise_joint_pos)
+            bv_noise = float(self.cfg.dr_obs_noise_base_vel)
+            or_noise = float(self.cfg.dr_obs_noise_object_rel)
+            if jp_noise > 0:
+                arm_pos = arm_pos + torch.randn_like(arm_pos) * jp_noise
+            if bv_noise > 0:
+                base_body_vel = base_body_vel + torch.randn_like(base_body_vel) * bv_noise
+                lin_vel = lin_vel + torch.randn_like(lin_vel) * bv_noise
+                ang_vel = ang_vel + torch.randn_like(ang_vel) * bv_noise
+            if or_noise > 0:
+                rel_object = rel_object + torch.randn_like(rel_object) * or_noise
+
         # Actor Observation (30D)
         actor_obs = torch.cat([
             arm_pos[:, :5],             # [0:5]   arm joint pos 5D
@@ -1440,11 +1482,21 @@ class Skill2Env(DirectRLEnv):
         arm_pen = self.cfg.rew_arm_move_weight * (metrics["arm_vel"] ** 2).sum(dim=-1)
         reward += effort_pen + arm_pen
 
+        # Action smoothness penalty (sim2real: 실기에서 부드러운 동작 유도)
+        action_delta = self.actions - self.prev_actions
+        reward += self.cfg.rew_action_smoothness_weight * (action_delta ** 2).sum(dim=-1)
+
         # Approach: 물체 방향 진전
         approach_progress = torch.clamp(
             self.prev_object_dist - metrics["object_dist"], -0.2, 0.2
         )
         reward += self.cfg.rew_approach_progress_weight * approach_progress
+
+        # Tanh proximity kernel (목표 가까울수록 강한 gradient로 수렴 가속)
+        proximity_bonus = 1.0 - torch.tanh(
+            metrics["object_dist"] / self.cfg.rew_proximity_tanh_sigma
+        )
+        reward += self.cfg.rew_proximity_tanh_weight * proximity_bonus
 
         # Heading alignment
         reward += self.cfg.rew_approach_heading_weight * torch.cos(metrics["heading_object"])
@@ -1465,7 +1517,7 @@ class Skill2Env(DirectRLEnv):
                 bbox_max = self.object_bbox.max(dim=-1).values
                 close_target = torch.clamp(
                     float(self.cfg.grasp_gripper_threshold) * (1.0 - bbox_max * 2.0),
-                    min=-1.0, max=0.0,
+                    min=0.0, max=1.0,
                 )
                 close_progress = torch.clamp(close_target - gripper_pos, min=0.0, max=1.0)
             else:
@@ -1642,6 +1694,8 @@ class Skill2Env(DirectRLEnv):
         # Common buffers reset
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        if self._action_delay_buf is not None:
+            self._action_delay_buf[:, env_ids] = 0.0
 
         # DR 적용 (v8 그대로)
         self._apply_domain_randomization(env_ids)

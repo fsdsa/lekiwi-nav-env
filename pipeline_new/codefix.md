@@ -199,7 +199,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     gripper_contact_prim_path: str = ""
     object_prim_path: str = "/World/envs/env_.*/Object"
     object_filter_prim_expr: str = "/World/envs/env_.*/Object"
-    grasp_gripper_threshold: float = -0.3
+    grasp_gripper_threshold: float = 0.7
     grasp_contact_threshold: float = 0.5
     grasp_max_object_dist: float = 0.25
     grasp_attach_height: float = 0.15
@@ -217,9 +217,12 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     rew_time_penalty: float = -0.01
     rew_effort_weight: float = -0.01
     rew_arm_move_weight: float = -0.02
+    rew_action_smoothness_weight: float = -0.005  # action delta penalty (sim2real)
     rew_approach_progress_weight: float = 6.0
     rew_approach_heading_weight: float = 0.2
     rew_approach_vel_weight: float = 0.5
+    rew_proximity_tanh_weight: float = 2.0  # tanh proximity kernel
+    rew_proximity_tanh_sigma: float = 0.5   # tanh kernel sigma
     rew_grasp_success_bonus: float = 10.0
     rew_lift_bonus: float = 5.0
     rew_collision: float = -1.0
@@ -231,16 +234,24 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     enable_domain_randomization: bool = True
     dr_root_xy_noise_std: float = 0.12
     dr_root_yaw_jitter_rad: float = 0.2
-    dr_wheel_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
-    dr_wheel_damping_scale_range: tuple[float, float] = (0.85, 1.15)
-    dr_wheel_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_wheel_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_wheel_viscous_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_arm_stiffness_scale_range: tuple[float, float] = (0.9, 1.1)
-    dr_arm_damping_scale_range: tuple[float, float] = (0.85, 1.15)
-    dr_object_mass_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_object_static_friction_scale_range: tuple[float, float] = (0.8, 1.2)
-    dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.8, 1.2)
+    dr_wheel_stiffness_scale_range: tuple[float, float] = (0.75, 1.5)
+    dr_wheel_damping_scale_range: tuple[float, float] = (0.3, 3.0)   # sim2real 가장 중요
+    dr_wheel_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_wheel_dynamic_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_wheel_viscous_friction_scale_range: tuple[float, float] = (0.7, 1.3)
+    dr_arm_stiffness_scale_range: tuple[float, float] = (0.8, 1.25)
+    dr_arm_damping_scale_range: tuple[float, float] = (0.5, 2.0)
+    dr_object_mass_scale_range: tuple[float, float] = (0.5, 2.0)     # 실제 물체 편차 큼
+    dr_object_static_friction_scale_range: tuple[float, float] = (0.6, 1.5)
+    dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.6, 1.5)
+
+    # Observation noise (sim2real: 센서 노이즈)
+    dr_obs_noise_joint_pos: float = 0.01     # rad
+    dr_obs_noise_base_vel: float = 0.02      # m/s
+    dr_obs_noise_object_rel: float = 0.02    # m
+
+    # Action delay (sim2real: 통신 지연)
+    dr_action_delay_steps: int = 1           # 0=없음, 1-2=권장
 
     # ★ Grasp DR (신규 — sim2real gap 핵심)
     dr_grasp_break_force_range: tuple[float, float] = (15.0, 45.0)   # break_force 랜덤화
@@ -686,7 +697,7 @@ def _get_rewards(self) -> torch.Tensor:
             bbox_max = self.object_bbox.max(dim=-1).values
             close_target = torch.clamp(
                 float(self.cfg.grasp_gripper_threshold) * (1.0 - bbox_max * 2.0),
-                min=-1.0, max=0.0,
+                min=0.0, max=1.0,
             )
             close_progress = torch.clamp(close_target - gripper_pos, min=0.0, max=1.0)
         else:
@@ -875,7 +886,7 @@ class Skill3EnvCfg(Skill2EnvCfg):  # Skill2 상속하여 공통 설정 재사용
     # Task
     return_thresh: float = 0.30
     place_dist_thresh: float = 0.05
-    place_gripper_threshold: float = -0.3  # ★ 이 값 이상 열리면 의도적 place로 판정
+    place_gripper_threshold: float = 0.3  # ★ 이 값 이상 열리면 의도적 place로 판정
 
     # Handoff
     handoff_buffer_path: str = ""   # pickle 파일 경로
@@ -886,6 +897,11 @@ class Skill3EnvCfg(Skill2EnvCfg):  # Skill2 상속하여 공통 설정 재사용
     rew_hold_bonus: float = 0.1
     rew_place_success_bonus: float = 20.0
     rew_drop_penalty: float = -10.0
+
+    # Handoff noise (per-load: 같은 entry를 여러 번 로드해도 다른 state)
+    handoff_arm_noise_std: float = 0.02       # ~1deg joint noise
+    handoff_base_pos_noise_std: float = 0.01  # 1cm position noise
+    handoff_base_yaw_noise_std: float = 0.02  # ~1deg heading noise
 
     # Curriculum 제거 (Skill-3는 불필요)
     curriculum_success_threshold: float = 1.0  # 비활성
@@ -1019,31 +1035,61 @@ def _reset_idx(self, env_ids: torch.Tensor):
     buf_size = len(self.handoff_buffer)
     indices = torch.randint(0, buf_size, (num,))
 
+    # ★ 배치 텐서 생성 (per-loop torch.tensor 제거 — 2048 env 성능 개선)
+    entries = [self.handoff_buffer[indices[i].item()] for i in range(num)]
+
     root_states = self.robot.data.default_root_state[env_ids].clone()
     joint_positions = self.robot.data.default_joint_pos[env_ids].clone()
 
-    for i in range(num):
-        entry = self.handoff_buffer[indices[i].item()]
-        eid = env_ids[i]
+    base_pos = torch.tensor([e["base_pos"] for e in entries], device=self.device, dtype=torch.float32)
+    base_ori = torch.tensor([e["base_ori"] for e in entries], device=self.device, dtype=torch.float32)
+    obj_pos = torch.tensor([e["object_pos"] for e in entries], device=self.device, dtype=torch.float32)
+    obj_ori = torch.tensor(
+        [e.get("object_ori", [1.0, 0.0, 0.0, 0.0]) for e in entries],
+        device=self.device, dtype=torch.float32,
+    )
+    arm_joints = torch.tensor([e["arm_joints"] for e in entries], device=self.device, dtype=torch.float32)
+    grip_states = torch.tensor([e["gripper_state"] for e in entries], device=self.device, dtype=torch.float32)
+    obj_type_indices = torch.tensor([int(e["object_type_idx"]) for e in entries], device=self.device, dtype=torch.long)
 
-        # Robot root state
-        root_states[i, 0:3] = torch.tensor(entry["base_pos"], device=self.device, dtype=torch.float32)
-        root_states[i, 3:7] = torch.tensor(entry["base_ori"], device=self.device, dtype=torch.float32)
+    # ★ Per-load noise: 같은 handoff entry라도 매번 다른 state
+    if self.cfg.handoff_arm_noise_std > 0:
+        arm_joints = arm_joints + torch.randn_like(arm_joints) * self.cfg.handoff_arm_noise_std
+        if self.cfg.arm_action_to_limits:
+            arm_lo = self.robot.data.soft_joint_pos_limits[0, self.arm_idx[:5], 0]
+            arm_hi = self.robot.data.soft_joint_pos_limits[0, self.arm_idx[:5], 1]
+            arm_joints = torch.clamp(arm_joints, arm_lo, arm_hi)
+    if self.cfg.handoff_base_pos_noise_std > 0:
+        base_pos[:, :2] = base_pos[:, :2] + torch.randn(num, 2, device=self.device) * self.cfg.handoff_base_pos_noise_std
+    if self.cfg.handoff_base_yaw_noise_std > 0:
+        dyaw = torch.randn(num, device=self.device) * self.cfg.handoff_base_yaw_noise_std
+        half = dyaw * 0.5
+        dq = torch.zeros(num, 4, device=self.device)
+        dq[:, 0] = torch.cos(half)
+        dq[:, 3] = torch.sin(half)
+        base_ori = quat_mul(dq, base_ori)
 
-        # Arm+gripper joints
-        arm_vals = entry["arm_joints"]  # list of 5 floats
-        grip_val = entry["gripper_state"]
-        for j in range(5):
-            joint_positions[i, self.arm_idx[j]] = float(arm_vals[j])
-        joint_positions[i, self.arm_idx[5]] = float(grip_val)
+    root_states[:, 0:3] = base_pos
+    root_states[:, 3:7] = base_ori
+    for j in range(5):
+        joint_positions[:, self.arm_idx[j]] = arm_joints[:, j]
+    joint_positions[:, self.arm_idx[5]] = grip_states
 
-        # Object
-        self.object_pos_w[eid] = torch.tensor(entry["object_pos"], device=self.device, dtype=torch.float32)
-        obj_idx = int(entry["object_type_idx"])
-        self.active_object_idx[eid] = obj_idx
-        if self._multi_object:
-            self.object_bbox[eid] = self._catalog_bbox[obj_idx]
-            self.object_category_id[eid] = self._catalog_category[obj_idx]
+    self.object_pos_w[env_ids] = obj_pos
+    self._handoff_object_ori[env_ids] = obj_ori
+    self.active_object_idx[env_ids] = obj_type_indices
+
+    # ★ Single-object sim write (multi_object=False일 때)
+    if not self._multi_object and self.object_rigid is not None:
+        pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
+        pose[:, :3] = obj_pos
+        pose[:, 3:7] = obj_ori
+        self.object_rigid.write_root_pose_to_sim(pose, env_ids)
+
+    if self._multi_object:
+        clamped_idx = obj_type_indices.clamp(max=len(self._catalog_bbox) - 1)
+        self.object_bbox[env_ids] = self._catalog_bbox[clamped_idx]
+        self.object_category_id[env_ids] = self._catalog_category[clamped_idx.clamp(max=len(self._catalog_category) - 1)]
 
     self.robot.write_root_state_to_sim(root_states, env_ids)
     joint_vel = torch.zeros_like(joint_positions)
@@ -1062,10 +1108,12 @@ def _reset_idx(self, env_ids: torch.Tensor):
         for i in range(num):
             eid = env_ids[i]
             oi = int(self.active_object_idx[eid].item())
-            rigid = self.object_rigids[oi]
-            pose = rigid.data.default_root_state[eid:eid+1, :7].clone()
-            pose[0, :3] = self.object_pos_w[eid]
-            rigid.write_root_pose_to_sim(pose, torch.tensor([eid.item()]))
+            if oi < len(self.object_rigids):
+                rigid = self.object_rigids[oi]
+                pose = rigid.data.default_root_state[eid:eid+1, :7].clone()
+                pose[0, :3] = self.object_pos_w[eid]
+                pose[0, 3:7] = self._handoff_object_ori[eid]
+                rigid.write_root_pose_to_sim(pose, torch.tensor([eid.item()], device=self.device))
 
     # 물체가 이미 잡힌 상태로 시작
     self.object_grasped[env_ids] = True
@@ -1136,6 +1184,18 @@ def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
     self._update_grasp_state(metrics)  # drop 감지 포함
     self._cached_metrics = metrics
 
+    # ★ CRITICAL-2 Fix: place_success로 task_success 오버라이드
+    # 부모(Skill-2)의 _update_grasp_state()가 lifted 물체에 대해
+    # task_success=True를 설정하지만, Skill-3은 handoff buffer에서
+    # 이미 grasped+lifted 상태로 시작하므로 즉시 True가 된다.
+    # place_success(home 근처에서 의도적으로 놓음)를 사용해야 한다.
+    place_dist = torch.norm(
+        self.object_pos_w[:, :2] - self.home_pos_w[:, :2], dim=-1
+    )
+    near_home = place_dist < self.cfg.return_thresh
+    place_success = (~self.object_grasped) & near_home & (~self.just_dropped)
+    self.task_success = place_success
+
     root_pos = metrics["root_pos_w"]
     out_of_bounds = torch.norm(
         root_pos[:, :2] - self.home_pos_w[:, :2], dim=-1
@@ -1144,8 +1204,7 @@ def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
     fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
 
     # ★ Skill-3 핵심: drop → terminated (에피소드 즉시 종료, 페널티 학습)
-    # Skill-2에서는 drop이 없으므로 이 조건이 불필요했음
-    dropped = self.just_dropped  # 이번 step에서 grasp break 발생
+    dropped = self.just_dropped
 
     terminated = out_of_bounds | fell | dropped
 
@@ -1160,14 +1219,28 @@ def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
 ```
 
 > **Skill-2 vs Skill-3 `_get_dones()` 차이:**
-> - Skill-2: `terminated = out_of_bounds | fell` — drop 없음 (grasp 시도 중 재시도 허용)
-> - Skill-3: `terminated = out_of_bounds | fell | dropped` — drop 즉시 종료 (운반 실패)
+> - Skill-2: `terminated = out_of_bounds | fell` — drop 없음 (grasp 시도 중 재시도 허용). `task_success` = lift 성공 (Skill-2 목표).
+> - Skill-3: `terminated = out_of_bounds | fell | dropped` — drop 즉시 종료 (운반 실패). `task_success` = `place_success`로 오버라이드 (부모의 lift 기반 task_success가 아닌 place 기반). Handoff buffer에서 이미 lifted 상태로 시작하므로 필수.
 
 ---
 
 ## 4. `models.py` 수정
 
-기존 `PolicyNet`, `ValueNet`은 **그대로 유지**. `CriticNet`만 추가:
+기존 `PolicyNet`, `ValueNet`에 **orthogonal initialization** 추가 (PPO 37 implementation details 기반). `CriticNet` 추가:
+
+```python
+import math
+
+def _ortho_init(module: nn.Module, gain: float = math.sqrt(2)):
+    """Orthogonal initialization (PPO 37 implementation details)."""
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0.0)
+```
+
+- `PolicyNet`: hidden layers `gain=sqrt(2)`, `mean_layer` `gain=0.01` (작은 초기 action)
+- `ValueNet`/`CriticNet`: hidden layers `gain=sqrt(2)`, output layer `gain=1.0`
 
 ```python
 class CriticNet(DeterministicMixin, Model):
@@ -1178,7 +1251,6 @@ class CriticNet(DeterministicMixin, Model):
         Model.__init__(self, observation_space, action_space, device, **kwargs)
         DeterministicMixin.__init__(self, clip_actions=False)
 
-        # critic_obs_dim이 주어지면 해당 차원 사용
         obs_dim = critic_obs_dim if critic_obs_dim is not None else observation_space.shape[0]
 
         self.net = nn.Sequential(
@@ -1190,6 +1262,11 @@ class CriticNet(DeterministicMixin, Model):
             nn.ELU(),
             nn.Linear(64, 1),
         )
+        # Orthogonal init: hidden=sqrt(2), value output=1.0
+        for m in list(self.net.children())[:-1]:
+            if isinstance(m, nn.Linear):
+                _ortho_init(m, gain=math.sqrt(2))
+        _ortho_init(self.net[-1], gain=1.0)
 
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
@@ -1719,6 +1796,10 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 - [ ] ★ Intentional place: Skill-3에서 home 근처 gripper open 시 `intentional_placed=True`, `just_dropped=False` 확인
 - [ ] ★ Camera subclass: `collect_demos.py`의 `Skill2EnvWithCam`/`Skill3EnvWithCam`에서 카메라 2대 렌더링 정상
 - [ ] ★ `deploy_vla_action_bridge.py --action_format v6`이 `[arm5,grip1,base3]` 순서로 파싱하는지
+- [ ] ★ CRITICAL-1: `grasp_gripper_threshold=0.7` — 일반 물체(0.4~0.8 rad) 파지 시 `gripper_closed` 판정 통과하는지
+- [ ] ★ CRITICAL-2: Skill-3 에피소드가 1 step에서 종료되지 않는지 (handoff buffer 상태에서 episode_length > 10 확인)
+- [ ] ★ HIGH-1: `aac_ppo.py`의 `compute_gae()`에서 `next_values` 파라미터가 사용되는지 (`last_values` closure가 아닌)
+- [ ] ★ Multi-object gripper shaping: `close_target` clamp bounds가 `min=0.0, max=1.0`인지 (이전 `min=-1.0, max=0.0` 아닌)
 
 ---
 

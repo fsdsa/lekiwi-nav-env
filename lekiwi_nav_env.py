@@ -149,7 +149,7 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
     gripper_contact_prim_path: str = ""
     object_prim_path: str = "/World/envs/env_.*/Object"
     object_filter_prim_expr: str = "/World/envs/env_.*/Object"
-    grasp_gripper_threshold: float = -0.3
+    grasp_gripper_threshold: float = 0.7
     grasp_contact_threshold: float = 0.5
     grasp_max_object_dist: float = 0.25
     grasp_attach_height: float = 0.15

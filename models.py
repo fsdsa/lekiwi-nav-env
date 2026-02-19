@@ -9,10 +9,20 @@ BC → PPO warm-start가 정상 동작함.
 """
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 
 from skrl.models.torch import DeterministicMixin, GaussianMixin, Model
+
+
+def _ortho_init(module: nn.Module, gain: float = math.sqrt(2)):
+    """Orthogonal initialization (PPO 37 implementation details)."""
+    if isinstance(module, nn.Linear):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0.0)
 
 
 class PolicyNet(GaussianMixin, Model):
@@ -45,6 +55,10 @@ class PolicyNet(GaussianMixin, Model):
         self.mean_layer = nn.Linear(64, act_dim)
         self.log_std_parameter = nn.Parameter(torch.full((act_dim,), -1.0))
 
+        # Orthogonal init: hidden=sqrt(2), policy output=0.01
+        self.net.apply(lambda m: _ortho_init(m, gain=math.sqrt(2)))
+        _ortho_init(self.mean_layer, gain=0.01)
+
     def compute(self, inputs, role):
         x = self.net(inputs["states"])
         return self.mean_layer(x), self.log_std_parameter, {}
@@ -68,6 +82,11 @@ class ValueNet(DeterministicMixin, Model):
             nn.ELU(),
             nn.Linear(64, 1),
         )
+        # Orthogonal init: hidden=sqrt(2), value output=1.0
+        for m in list(self.net.children())[:-1]:
+            if isinstance(m, nn.Linear):
+                _ortho_init(m, gain=math.sqrt(2))
+        _ortho_init(self.net[-1], gain=1.0)  # output layer
 
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
@@ -92,6 +111,11 @@ class CriticNet(DeterministicMixin, Model):
             nn.ELU(),
             nn.Linear(64, 1),
         )
+        # Orthogonal init: hidden=sqrt(2), value output=1.0
+        for m in list(self.net.children())[:-1]:
+            if isinstance(m, nn.Linear):
+                _ortho_init(m, gain=math.sqrt(2))
+        _ortho_init(self.net[-1], gain=1.0)  # output layer
 
     def compute(self, inputs, role):
         return self.net(inputs["states"]), {}
