@@ -185,21 +185,16 @@ D455의 depth/IMU는 VLA 학습 데이터에 포함되지 않고, Safety Layer�
 
 **검증 결과 (Isaac Sim 5.0.0, 2026-02-19)**: LeKiwi USD의 전체 39개 revolute joint이 모두 `(-inf, +inf)` 확인됨. arm 6개 + gripper 1개는 반드시 캘리브레이션 범위로 덮어써야 팔-몸체 관통 방지.
 
-### 2-4. REST_POSE — 기존 값 존재, 안전 자세 재정의 필요 ⬜
+### 2-4. TUCKED_POSE ✅ 측정 완료
 
-현재 `leader_to_home_tcp_rest_matched_with_keyboard_base.py`에 정의된 `SIM_REST_RAD6`:
+sim 기본 자세(REST_POSE ≈ all-zeros)는 팔이 애매하게 펴진 상태다. 텔레옵으로 팔을 접은 TUCKED_POSE를 측정하여 `calibration/tucked_pose.json`에 저장했다.
+
 ```python
-SIM_REST_RAD6 = [
-    -0.001634,  # shoulder_pan
-    -0.002328,  # shoulder_lift
-     0.098572,  # elbow_flex
-     0.004954,  # wrist_flex
-     0.009319,  # wrist_roll
-    -0.000285,  # gripper
-]
+TUCKED_POSE = [0.0, -0.2154, 0.1889, 0.1251, 0.032, -0.2015]  # rad
+# shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 ```
 
-이 값은 거의 all-zeros(팔이 완전히 펴진 상태)다. 토크가 크고 실로봇에서 위험하다. 팔이 접힌 안전한 tucked pose를 새로 정의해야 한다. 이 값은 Navigate skill에서 arm 고정 target, RL 에피소드 초기 arm 자세로 사용된다.
+Navigate skill에서 arm 고정 target, RL 에피소드 초기 arm 자세로 사용된다.
 
 ### 2-5. ~~lekiwi_v6 데이터 형식 확인~~ ✅ 확정
 
@@ -544,7 +539,7 @@ sim에서 Isaac Sim의 `root_lin_vel_b`와 `root_ang_vel_b`로 body-frame veloci
 
 #### 4-3-1. 왜 스크립트 정책인가
 
-Navigate 핵심 행동: "목표 방향 이동"과 "탐색 회전". 둘 다 base만 움직이고 arm은 rest pose. RL 필요 없을 만큼 단순하지만, VLA 학습용 수천 에피소드가 필요하므로 스크립트로 생성.
+Navigate 핵심 행동: "목표 방향 이동"과 "탐색 회전". 둘 다 base만 움직이고 arm은 tucked pose. RL 필요 없을 만큼 단순하지만, VLA 학습용 수천 에피소드가 필요하므로 스크립트로 생성.
 
 #### 4-3-2. 목표 방향 이동 (Directed Navigation)
 
@@ -553,7 +548,7 @@ Navigate 핵심 행동: "목표 방향 이동"과 "탐색 회전". 둘 다 base�
 direction = target_pos - robot_pos  # sim ground truth
 angle_to_target = atan2(direction.y, direction.x) - robot_heading
 base_cmd = [K_lin * cos(angle_to_target), K_lin * sin(angle_to_target), K_ang * angle_to_target]
-arm_cmd = REST_POSE  # 고정
+arm_cmd = TUCKED_POSE  # 고정
 gripper_cmd = 1.0    # open 유지
 action = [arm_cmd(5D), gripper_cmd(1D), base_cmd(3D)]  # 9D
 ```
@@ -577,7 +572,7 @@ Skill-2/3 수집 환경(바닥 위 물체 + 로봇)에 추가 배경을 넣어 N
 
 #### 4-3-5. 저장 원칙
 
-스크립트가 목표 좌표를 알고 있었다는 사실은 저장하지 않는다. 저장하는 것은 오직 (이미지, 9D state, 9D action, instruction). 9D action에서 arm 5D = REST_POSE, gripper = 1.0, base 3D = command.
+스크립트가 목표 좌표를 알고 있었다는 사실은 저장하지 않는다. 저장하는 것은 오직 (이미지, 9D state, 9D action, instruction). 9D action에서 arm 5D = TUCKED_POSE, gripper = 1.0, base 3D = command.
 
 목표: 1K~2K개. Directed Navigation : Search Rotation ≈ 7:3.
 
@@ -763,7 +758,7 @@ Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
   [✅] Calibration gate 통과 (wheel=0.146, arm=0.087)
   [⬜] 실제 카메라 특성 → sim 카메라 일치
   [✅] Joint limits → `arm_limit_write_to_sim=True`로 코드에서 자동 적용
-  [⬜] REST_POSE 안전 자세 재정의
+  [✅] TUCKED_POSE 측정 완료 (`calibration/tucked_pose.json`)
   [✅] 데이터셋 형식 확인 — yubinnn11/lekiwi3 v3.0, velocity(m/s, rad/s)
 
 Phase 1: RL Expert 학습 (RTX 3090)
