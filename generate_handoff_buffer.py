@@ -129,12 +129,14 @@ def main():
                 else:
                     obj_quat = [1.0, 0.0, 0.0, 0.0]  # identity
 
+                # env_origin 기준 상대 좌표로 저장 (다른 env에 로드해도 정상 동작)
+                origin = env.scene.env_origins[i]
                 entry = {
-                    "base_pos": env.robot.data.root_pos_w[i].cpu().tolist(),
+                    "base_pos": (env.robot.data.root_pos_w[i] - origin).cpu().tolist(),
                     "base_ori": env.robot.data.root_quat_w[i].cpu().tolist(),
                     "arm_joints": env.robot.data.joint_pos[i, env.arm_idx[:5]].cpu().tolist(),
                     "gripper_state": env.robot.data.joint_pos[i, env.arm_idx[5]].item(),
-                    "object_pos": env.object_pos_w[i].cpu().tolist(),
+                    "object_pos": (env.object_pos_w[i] - origin).cpu().tolist(),
                     "object_ori": obj_quat,
                     "object_type_idx": env.active_object_idx[i].item(),
                 }

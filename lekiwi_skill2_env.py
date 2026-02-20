@@ -1576,6 +1576,9 @@ class Skill2Env(DirectRLEnv):
                         )
                         if self._curriculum_dist != old:
                             print(f"  [Curriculum] dist: {old:.2f} -> {self._curriculum_dist:.2f} (avg success: {avg:.2f})")
+                            # 이전 난이도의 성공률이 남아 조기 재상승하는 것을 방지
+                            self._curriculum_success_window.zero_()
+                            self._curriculum_idx = 0
 
         return terminated, truncated
 

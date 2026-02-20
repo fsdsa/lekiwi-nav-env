@@ -273,6 +273,7 @@ python leader_to_home_tcp_rest_matched_with_keyboard_base.py \
 
 # Desktop 측: sim에서 받아서 기록
 python record_teleop.py --num_demos 20 \
+  --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
@@ -377,7 +378,7 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 - Observation noise: joint_pos(0.01 rad), base_vel(0.02 m/s), object_rel(0.02 m)
 - Action delay: 1 step (10-50ms 통신 지연 시뮬레이션)
 
-**PPO 하이퍼파라미터**: lr=3e-4, gamma=0.99, GAE lambda=0.95, ratio_clip=0.15, grad_norm_clip=0.5, entropy_coef=0.01, mini_batches=4. 병렬 환경 **2048개** (state-only Actor, 이미지 렌더링 불필요 — v8 기본값과 동일).
+**PPO 하이퍼파라미터**: lr=3e-4 (KLAdaptiveLR, `kl_threshold=0.01`, BC fine-tune 시 `×0.3`), gamma=0.99, GAE lambda=0.95, ratio_clip=0.15, grad_norm_clip=0.5, entropy_coef=0.01, mini_batches=4, learning_epochs=5, rollouts=24, clip_predicted_values=True, value_clip=0.2, value_loss_scale=1.0. 병렬 환경 **2048개** (state-only Actor, 이미지 렌더링 불필요 — v8 기본값과 동일).
 
 **BC → RL weight transfer**: BC의 state_dict를 RL Actor에 key-by-key 복사. 네트워크 구조 동일하므로 shape 동일. Critic은 랜덤 초기화. 기존 `train_lekiwi.py`의 BC warm-start 로직 재사용 (obs dim mismatch 시 net.0.weight 자동 어댑트).
 
@@ -403,17 +404,17 @@ Skill-2 학습이 충분히 진행되면(성공률 80%+), Skill-2 expert를 수�
 
 ```python
 handoff_entry = {
-    "base_pos": [x, y, z],           # world position
+    "base_pos": [x, y, z],           # env_origin 기준 상대 좌표
     "base_ori": [qw, qx, qy, qz],   # world orientation
     "arm_joints": [5D],              # 관절 위치
     "gripper_state": float,          # 그리퍼 위치
-    "object_pos": [x, y, z],         # 물체 world position
+    "object_pos": [x, y, z],         # 물체 env_origin 기준 상대 좌표
     "object_ori": [qw, qx, qy, qz], # 물체 orientation
     "object_type_idx": int,          # 물체 종류 인덱스
 }
 ```
 
-world-frame 절대 좌표를 포함하지만, sim 내부 reset 용도이므로 괜찮다. VLA에 전달되지 않는다.
+env_origin 기준 상대 좌표로 저장되며, `_reset_from_handoff`에서 destination env의 `env_origins`를 더해 절대 좌표로 복원한다. sim 내부 reset 용도이며 VLA에 전달되지 않는다.
 
 다양한 물체(종류, 크기, 무게), 다양한 그립 자세, 다양한 로봇 위치에서 성공한 상태를 충분히 모아야 한다. **최소 200~500개** handoff entry 확보.
 
@@ -521,7 +522,7 @@ python train_lekiwi.py \
 RL Expert를 sim에서 실행하면서 **VLA가 실제로 받게 될 정보만 저장한다.**
 
 **저장하는 것:**
-- observation.images.base: base_cam 렌더 (1280×720, MP4)
+- observation.images.front: base_cam 렌더 (1280×720, MP4)
 - observation.images.wrist: wrist_cam 렌더 (640×480, MP4)
 - observation.state: [arm_shoulder_pan.pos, arm_shoulder_lift.pos, arm_elbow_flex.pos, arm_wrist_flex.pos, arm_wrist_roll.pos, arm_gripper.pos, x.vel, y.vel, theta.vel] = 9D
 - action: [shoulder_pan_target, ..., gripper_cmd, base_x_cmd, base_y_cmd, base_theta_cmd] = 9D
@@ -704,14 +705,12 @@ python convert_hdf5_to_lerobot_v3.py \
 |--------|------|-------|------|
 | observation.state | float32 | (9,) | arm 5 + grip 1 + base_body_vel 3 |
 | action | float32 | (9,) | arm_target 5 + grip_cmd 1 + base_cmd 3 |
-| observation.images.base | VideoFrame | — | base_cam MP4 |
+| observation.images.front | VideoFrame | — | base_cam MP4 |
 | observation.images.wrist | VideoFrame | — | wrist_cam MP4 |
 | episode_index | int64 | — | 에피소드 번호 |
 | task_index | int64 | — | tasks.parquet의 instruction 참조 |
 
-**robot_state 추출**: Skill-2/3의 RL obs는 각각 30D/29D이지만, VLA에 전달되는 것은 공통 9D (arm 5 + grip 1 + base_body_vel 3). 두 skill 모두 obs의 앞 9D가 [arm(5) + grip(1) + base_body_vel(3)]이므로, obs[0:9]를 그대로 추출하면 된다. base_body_vel은 `root_lin_vel_b`(vx, vy)와 `root_ang_vel_b`(wz)에서 직접 읽는다. 단위 변환 불필요.
-
-**⚠ v8의 obs[18:24]+obs[30:33] 추출은 사용하지 않는다.** 기존 `convert_hdf5_to_lerobot_v3.py`의 `infer_robot_state_from_obs()`와 `collect_demos.py`의 `extract_robot_state_9d()`는 v8의 37D obs 구조에 맞춰져 있고, 마지막 3D가 wheel_angular_vel(개별 휠 각속도)이다. 새 skill env에서는 collect 시점에 body-frame velocity를 직접 읽어 HDF5의 `robot_state` 필드에 저장하고, 변환 스크립트는 이 필드를 그대로 읽는다.
+**robot_state 추출**: Skill-2/3의 RL obs는 각각 30D/29D이지만, VLA에 전달되는 것은 공통 9D (arm 5 + grip 1 + base_body_vel 3). 새 skill env에서는 `collect_demos.py`의 `extract_robot_state_9d()`가 `env.robot.data.joint_pos`와 `root_lin_vel_b`/`root_ang_vel_b`를 직접 읽어 HDF5의 `robot_state` 필드에 저장한다 (obs 슬라이싱이 아닌 센서 직접 읽기). 변환 스크립트는 이 필드를 그대로 읽는다. `robot_state` 필드가 없는 레거시 HDF5의 경우, `infer_robot_state_from_obs()`가 30D/29D obs에서 `obs[0:9]`를, 37D/33D obs에서 `obs[18:24]+obs[30:33]`를 fallback으로 추출한다.
 
 **Action 순서 주의**: 새 skill 환경의 action은 `[arm5, grip1, base3]` (yubinnn11/lekiwi3 v3.0 호환). 기존 v8의 `[base3, arm6]` 순서와 **반대**이므로, v8의 `_apply_action()` 코드 재사용 시 인덱스 매핑을 변경해야 한다: `base_cmd = action[:, 6:9]`, `arm_target = action[:, 0:6]`.
 

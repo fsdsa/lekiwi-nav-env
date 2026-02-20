@@ -354,6 +354,11 @@ class Skill3Env(Skill2Env):
         grip_states = torch.tensor([e["gripper_state"] for e in entries], device=self.device, dtype=torch.float32)
         obj_type_indices = torch.tensor([int(e["object_type_idx"]) for e in entries], device=self.device, dtype=torch.long)
 
+        # 상대 좌표 → 절대 좌표 변환 (destination env의 origin 기준)
+        env_origins = self.scene.env_origins[env_ids]  # (num, 3)
+        base_pos = base_pos + env_origins
+        obj_pos = obj_pos + env_origins
+
         # Per-load noise: 같은 handoff entry라도 매번 다른 state로 시작
         if self.cfg.handoff_arm_noise_std > 0:
             arm_joints = arm_joints + torch.randn_like(arm_joints) * self.cfg.handoff_arm_noise_std
@@ -393,6 +398,9 @@ class Skill3Env(Skill2Env):
             pose[:, :3] = obj_pos
             pose[:, 3:7] = obj_ori
             self.object_rigid.write_root_pose_to_sim(pose, env_ids)
+            # 잔여 속도 제거 (이전 에피소드의 물체 움직임 방지)
+            zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
+            self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
 
         if self._multi_object:
             clamped_idx = obj_type_indices.clamp(max=len(self._catalog_bbox) - 1)
@@ -403,15 +411,18 @@ class Skill3Env(Skill2Env):
         joint_vel = torch.zeros_like(joint_positions)
         self.robot.write_joint_state_to_sim(joint_positions, joint_vel, env_ids=env_ids)
 
-        self.home_pos_w[env_ids, 0:2] = 0.0
+        # home = destination env의 origin (env_origin XY + robot Z)
+        self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
         self.home_pos_w[env_ids, 2] = root_states[:, 2]
 
         # Multi-object hide/show
         if self._multi_object and len(self.object_rigids) > 0:
+            zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
             for rigid in self.object_rigids:
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
                 hide_pose[:, 2] = -10.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
+                rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
             for i in range(num):
                 eid = env_ids[i]
@@ -479,3 +490,5 @@ class Skill3Env(Skill2Env):
         self.episode_reward_sum[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        if self._action_delay_buf is not None:
+            self._action_delay_buf[:, env_ids] = 0.0

@@ -536,6 +536,20 @@ def _get_observations(self) -> dict:
     cat_denom = max(int(self.cfg.num_object_categories) - 1, 1)
     cat_norm = (self.object_category_id / float(cat_denom)).unsqueeze(-1)
 
+    # Observation noise (sim2real: 센서 노이즈 시뮬레이션, 학습 시에만)
+    if bool(self.cfg.enable_domain_randomization):
+        jp_noise = float(self.cfg.dr_obs_noise_joint_pos)
+        bv_noise = float(self.cfg.dr_obs_noise_base_vel)
+        or_noise = float(self.cfg.dr_obs_noise_object_rel)
+        if jp_noise > 0:
+            arm_pos = arm_pos + torch.randn_like(arm_pos) * jp_noise
+        if bv_noise > 0:
+            base_body_vel = base_body_vel + torch.randn_like(base_body_vel) * bv_noise
+            lin_vel = lin_vel + torch.randn_like(lin_vel) * bv_noise
+            ang_vel = ang_vel + torch.randn_like(ang_vel) * bv_noise
+        if or_noise > 0:
+            rel_object = rel_object + torch.randn_like(rel_object) * or_noise
+
     # === Actor Observation (30D) ===
     actor_obs = torch.cat([
         arm_pos[:, :5],             # [0:5]   arm joint pos 5D
@@ -672,6 +686,10 @@ def _get_rewards(self) -> torch.Tensor:
     arm_pen = self.cfg.rew_arm_move_weight * (metrics["arm_vel"] ** 2).sum(dim=-1)
     reward += effort_pen + arm_pen
 
+    # Action smoothness penalty (sim2real: 실기에서 부드러운 동작 유도)
+    action_delta = self.actions - self.prev_actions
+    reward += self.cfg.rew_action_smoothness_weight * (action_delta ** 2).sum(dim=-1)
+
     # Approach: 물체 방향 진전
     approach_progress = torch.clamp(
         self.prev_object_dist - metrics["object_dist"], -0.2, 0.2
@@ -711,6 +729,12 @@ def _get_rewards(self) -> torch.Tensor:
             gripper_pos - float(self.cfg.grasp_gripper_threshold), min=0.0, max=1.0
         )
         reward += far_from_object.float() * (0.1 * open_progress)
+
+    # Tanh proximity kernel (목표 가까울수록 강한 gradient로 수렴 가속)
+    proximity_bonus = 1.0 - torch.tanh(
+        metrics["object_dist"] / self.cfg.rew_proximity_tanh_sigma
+    )
+    reward += self.cfg.rew_proximity_tanh_weight * proximity_bonus
 
     self.prev_object_dist[:] = metrics["object_dist"]
     self.episode_reward_sum += reward
@@ -756,6 +780,9 @@ def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
                     )
                     if self._curriculum_dist != old:
                         print(f"  [Curriculum] dist: {old:.2f} → {self._curriculum_dist:.2f} (avg success: {avg:.2f})")
+                        # 이전 난이도의 성공률이 남아 조기 재상승하는 것을 방지
+                        self._curriculum_success_window.zero_()
+                        self._curriculum_idx = 0
 
     return terminated, truncated
 ```
@@ -857,9 +884,10 @@ def _reset_idx(self, env_ids: torch.Tensor):
     self.prev_object_dist[env_ids] = 10.0
     self.grasp_entry_step[env_ids] = 0
     self.episode_reward_sum[env_ids] = 0.0
-
-    # ★ velocity 방식이므로 별도 displacement 버퍼 리셋 불필요
-    # (이전 설계의 prev_root_pos_w, prev_root_quat_w, body_displacement 리셋 삭제됨)
+    self.actions[env_ids] = 0.0
+    self.prev_actions[env_ids] = 0.0
+    if self._action_delay_buf is not None:
+        self._action_delay_buf[:, env_ids] = 0.0
 
     # === DR 적용 (v8 그대로) ===
     self._apply_domain_randomization(env_ids)
@@ -931,6 +959,20 @@ def _get_observations(self) -> dict:
     contact_force = self._contact_force_per_env()
     grip_force = contact_force.unsqueeze(-1)  # (N, 1)
 
+    # Observation noise (sim2real: 센서 노이즈 시뮬레이션, 학습 시에만)
+    if bool(self.cfg.enable_domain_randomization):
+        jp_noise = float(self.cfg.dr_obs_noise_joint_pos)
+        bv_noise = float(self.cfg.dr_obs_noise_base_vel)
+        or_noise = float(self.cfg.dr_obs_noise_object_rel)
+        if jp_noise > 0:
+            arm_pos = arm_pos + torch.randn_like(arm_pos) * jp_noise
+        if bv_noise > 0:
+            base_body_vel = base_body_vel + torch.randn_like(base_body_vel) * bv_noise
+            lin_vel = lin_vel + torch.randn_like(lin_vel) * bv_noise
+            ang_vel = ang_vel + torch.randn_like(ang_vel) * bv_noise
+        if or_noise > 0:
+            home_rel = home_rel + torch.randn_like(home_rel) * or_noise
+
     # BBox / Category (v8 그대로)
     bbox_norm = self.object_bbox / float(self._bbox_norm_scale)
     cat_denom = max(int(self.cfg.num_object_categories) - 1, 1)
@@ -953,9 +995,9 @@ def _get_observations(self) -> dict:
 
     # === Critic Observation (36D, AAC) ===
     # Actor 29D + obj_dimensions(3D) + obj_mass(1D) + gripper_rel_pos(3D) = 36D
+    # gripper_rel_pos: object position relative to gripper body (world-frame)
     grip_pos_w = self.robot.data.body_pos_w[:, self._gripper_body_idx]
-    obj_delta = self.object_pos_w - grip_pos_w
-    gripper_rel_pos = quat_apply_inverse(self.robot.data.root_quat_w, obj_delta)
+    gripper_rel_pos = self.object_pos_w - grip_pos_w  # (N, 3) — world frame
     obj_mass_per_env = self._catalog_mass[
         self.active_object_idx.clamp(max=len(self._catalog_mass) - 1)
     ].unsqueeze(-1)
@@ -979,21 +1021,27 @@ def _update_grasp_state(self, metrics):
     """Skill-3 전용: 의도적 place vs 비의도적 drop 구분."""
     self.intentional_placed[:] = False
 
-    # gripper가 place_gripper_threshold 이상 열리고 home 근처이면 → 의도적 place
+    # 부모(Skill2) grasp 로직 먼저 실행 (can_grasp, lift, drop detection)
+    super()._update_grasp_state(metrics)
+
+    # 그 후 intentional place 판정: gripper open + home 근처 → 의도적 place
     if self.object_grasped.any():
         gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
         gripper_open = gripper_pos > float(self.cfg.place_gripper_threshold)
-        near_home = metrics["home_dist"] < float(self.cfg.return_thresh)
+        home_dist = metrics.get("home_dist", None)
+        if home_dist is None:
+            home_delta_w = self.home_pos_w - self.robot.data.root_pos_w
+            home_pos_b = quat_apply_inverse(self.robot.data.root_quat_w, home_delta_w)
+            home_dist = torch.norm(home_pos_b[:, :2], dim=-1)
+        near_home = home_dist < self.cfg.return_thresh
         intentional = self.object_grasped & gripper_open & near_home
         if intentional.any():
-            self.intentional_placed[intentional] = True
+            place_ids = intentional.nonzero(as_tuple=False).squeeze(-1)
+            if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+                self._disable_grasp_fixed_joint_for_envs(place_ids)
             self.object_grasped[intentional] = False
-            ids = intentional.nonzero(as_tuple=False).squeeze(-1)
-            if self._grasp_attach_mode == "fixed_joint":
-                self._disable_grasp_fixed_joint_for_envs(ids)
-
-    # 부모 클래스의 grasp break 감지 (break_force 초과 → just_dropped=True)
-    super()._update_grasp_state(metrics)
+            self.intentional_placed[intentional] = True
+            # just_dropped은 False 유지 → place_success 조건 충족 가능
 ```
 
 `__init__`에 추가할 버퍼:
@@ -1020,7 +1068,9 @@ heading_home = torch.atan2(home_pos_b[:, 1], home_pos_b[:, 0])
 
 ```python
 def _reset_idx(self, env_ids: torch.Tensor):
-    super()._reset_idx(env_ids)  # DirectRLEnv.reset_idx
+    # DirectRLEnv._reset_idx (Skill2Env._reset_idx를 건너뜀)
+    DirectRLEnv_reset = super(Skill2Env, self)._reset_idx
+    DirectRLEnv_reset(env_ids)
     num = len(env_ids)
     if num == 0:
         return
@@ -1028,9 +1078,14 @@ def _reset_idx(self, env_ids: torch.Tensor):
     if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
         self._disable_grasp_fixed_joint_for_envs(env_ids)
 
-    if self.handoff_buffer is None or len(self.handoff_buffer) == 0:
-        raise RuntimeError("Handoff buffer is empty!")
+    if self.handoff_buffer is not None and len(self.handoff_buffer) > 0:
+        self._reset_from_handoff(env_ids, num)
+    else:
+        # Fallback: Skill-2 방식으로 리셋 (물체 잡힌 상태로 시작)
+        self._reset_fallback(env_ids, num)
 
+def _reset_from_handoff(self, env_ids: torch.Tensor, num: int):
+    """Handoff Buffer에서 랜덤 샘플하여 리셋."""
     # Handoff Buffer에서 랜덤 샘플
     buf_size = len(self.handoff_buffer)
     indices = torch.randint(0, buf_size, (num,))
@@ -1051,6 +1106,11 @@ def _reset_idx(self, env_ids: torch.Tensor):
     arm_joints = torch.tensor([e["arm_joints"] for e in entries], device=self.device, dtype=torch.float32)
     grip_states = torch.tensor([e["gripper_state"] for e in entries], device=self.device, dtype=torch.float32)
     obj_type_indices = torch.tensor([int(e["object_type_idx"]) for e in entries], device=self.device, dtype=torch.long)
+
+    # 상대 좌표 → 절대 좌표 변환 (destination env의 origin 기준)
+    env_origins = self.scene.env_origins[env_ids]  # (num, 3)
+    base_pos = base_pos + env_origins
+    obj_pos = obj_pos + env_origins
 
     # ★ Per-load noise: 같은 handoff entry라도 매번 다른 state
     if self.cfg.handoff_arm_noise_std > 0:
@@ -1095,7 +1155,8 @@ def _reset_idx(self, env_ids: torch.Tensor):
     joint_vel = torch.zeros_like(joint_positions)
     self.robot.write_joint_state_to_sim(joint_positions, joint_vel, env_ids=env_ids)
 
-    self.home_pos_w[env_ids, 0:2] = 0.0  # home은 원점 (또는 entry에서 로드)
+    # home = destination env의 origin (env_origin XY + robot Z)
+    self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
     self.home_pos_w[env_ids, 2] = root_states[:, 2]
 
     # Multi-object hide/show (v8 코드 재사용, 물체 위치만 handoff 기반)
@@ -1117,20 +1178,44 @@ def _reset_idx(self, env_ids: torch.Tensor):
 
     # 물체가 이미 잡힌 상태로 시작
     self.object_grasped[env_ids] = True
-    self.just_dropped[env_ids] = False    # ★ 신규
-    self.intentional_placed[env_ids] = False  # ★ 의도적 place 리셋
-
-    # ★ 주의: DR을 joint attach 전에 실행해야 break_force DR이 적용됨
+    # DR을 joint attach 전에 실행 → break_force DR이 적용된 joint 생성
     self._apply_domain_randomization(env_ids)
-    
-    # DR 이후에 attach → _per_env_break_force[env_ids] 값이 반영된 joint 생성
     self._attach_grasp_fixed_joint_for_envs(env_ids)
 
-    # ★ velocity 방식이므로 별도 displacement 버퍼 리셋 불필요
+    self._finish_reset(env_ids, num)
 
+def _reset_fallback(self, env_ids: torch.Tensor, num: int):
+    """Handoff buffer 없이 fallback: 물체 가까이 + 잡힌 상태."""
+    default_root_state = self.robot.data.default_root_state[env_ids].clone()
+    root_xy_std = float(self.cfg.dr_root_xy_noise_std) if bool(self.cfg.enable_domain_randomization) else 0.1
+    default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * root_xy_std
+    # ... random yaw + joint init + home_pos + object placement ...
+
+    # Single-object sim write (multi_object=False일 때)
+    if not self._multi_object and self.object_rigid is not None:
+        pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
+        pose[:, :3] = self.object_pos_w[env_ids]
+        self.object_rigid.write_root_pose_to_sim(pose, env_ids)
+
+    self.object_grasped[env_ids] = True
+    self._apply_domain_randomization(env_ids)
+    self._attach_grasp_fixed_joint_for_envs(env_ids)
+    self._finish_reset(env_ids, num)
+
+def _finish_reset(self, env_ids: torch.Tensor, num: int):
+    """공통 리셋 후처리."""
     self.task_success[env_ids] = False
+    self.just_grasped[env_ids] = False
+    self.just_dropped[env_ids] = False
+    self.intentional_placed[env_ids] = False
     self.prev_home_dist[env_ids] = 10.0
+    self.prev_object_dist[env_ids] = 10.0
+    self.grasp_entry_step[env_ids] = 0
     self.episode_reward_sum[env_ids] = 0.0
+    self.actions[env_ids] = 0.0
+    self.prev_actions[env_ids] = 0.0
+    if self._action_delay_buf is not None:
+        self._action_delay_buf[:, env_ids] = 0.0
 ```
 
 ### 3-6. Reward (CarryAndPlace)
@@ -1280,8 +1365,8 @@ class CriticNet(DeterministicMixin, Model):
 
 ```python
 parser.add_argument("--skill", type=str, default="approach_and_grasp",
-                    choices=["approach_and_grasp", "carry_and_place"],
-                    help="학습할 skill")
+                    choices=["approach_and_grasp", "carry_and_place", "legacy"],
+                    help="학습할 skill (legacy = v8 monolithic env)")
 parser.add_argument("--handoff_buffer", type=str, default=None,
                     help="Skill-3용 handoff buffer pickle 경로")
 ```
@@ -1306,8 +1391,10 @@ env_cfg.scene.num_envs = args.num_envs
 
 if args.skill == "approach_and_grasp":
     raw_env = Skill2Env(cfg=env_cfg)
-else:
+elif args.skill == "carry_and_place":
     raw_env = Skill3Env(cfg=env_cfg)
+else:
+    raw_env = LeKiwiNavEnv(cfg=env_cfg)  # legacy v8
 ```
 
 ### 5-3. BC dim 검증
@@ -1332,15 +1419,21 @@ from models import CriticNet
 wrapped = wrap_env_aac(raw_env)  # IsaacLabWrapper + state() monkey-patch
 critic_obs_dim = wrapped._aac_state_space.shape[0] if wrapped._aac_state_space is not None else None
 
-models = {
-    "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
-    "value": CriticNet(
-        wrapped.observation_space, wrapped.action_space, device,
-        critic_obs_dim=critic_obs_dim,
-    ),
-}
+if use_aac and wrapped._aac_state_space is not None:
+    models = {
+        "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
+        "value": CriticNet(
+            wrapped.observation_space, wrapped.action_space, device,
+            critic_obs_dim=critic_obs_dim,
+        ),
+    }
+else:
+    models = {
+        "policy": PolicyNet(wrapped.observation_space, wrapped.action_space, device),
+        "value": ValueNet(wrapped.observation_space, wrapped.action_space, device),
+    }
 
-# critic_state_preprocessor 설정
+# critic_state_preprocessor 설정 (AAC 사용 시에만)
 cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
 cfg_ppo["critic_state_preprocessor_kwargs"] = {"size": wrapped._aac_state_space, "device": device}
 
@@ -1625,12 +1718,14 @@ def main():
                 else:
                     obj_quat = [1.0, 0.0, 0.0, 0.0]
 
+                # env_origin 기준 상대 좌표로 저장 (다른 env에 로드해도 정상 동작)
+                origin = env.scene.env_origins[i]
                 entry = {
-                    "base_pos": env.robot.data.root_pos_w[i].cpu().tolist(),
+                    "base_pos": (env.robot.data.root_pos_w[i] - origin).cpu().tolist(),
                     "base_ori": env.robot.data.root_quat_w[i].cpu().tolist(),
                     "arm_joints": env.robot.data.joint_pos[i, env.arm_idx[:5]].cpu().tolist(),
                     "gripper_state": env.robot.data.joint_pos[i, env.arm_idx[5]].item(),
-                    "object_pos": env.object_pos_w[i].cpu().tolist(),
+                    "object_pos": (env.object_pos_w[i] - origin).cpu().tolist(),
                     "object_ori": obj_quat,
                     "object_type_idx": env.active_object_idx[i].item(),
                 }
@@ -1825,3 +1920,50 @@ skrl 1.4.3의 native AAC 미지원 문제는 3개 파일(`aac_wrapper.py`, `aac_
 ### 11-4. Skill 전환 로직
 
 sim에서는 각 Skill을 독립적으로 학습하지만, 실제 배포 시 Skill-1→2→3 전환 시점 판단은 VLA 또는 `deploy_vla_action_bridge.py`(`--action_format v6/legacy` 지원)가 담당한다. 전환 로직(예: "gripper가 닫히고 N step 유지되면 Skill-3로 전환")의 설계와 검증은 VLA 배포 단계에서 별도로 진행해야 한다.
+
+---
+
+## Audit v2 수정 사항 (2026-02-20)
+
+### CRITICAL: Handoff Buffer 좌표계 버그 수정
+
+**문제**: `generate_handoff_buffer.py`가 절대 world-frame 좌표로 저장하고, `Skill3Env._reset_from_handoff`가 home을 `(0,0,z)`로 하드코딩. `env_spacing=10.0`일 때 env 0 외의 entry는 `out_of_bounds`로 즉시 종료 → Skill-3 학습 사실상 불가.
+
+**수정**:
+- `generate_handoff_buffer.py`: `env.scene.env_origins[i]`를 빼서 상대 좌표로 저장
+- `lekiwi_skill3_env.py _reset_from_handoff`: `self.scene.env_origins[env_ids]`를 더해서 절대 좌표로 복원, `home_pos_w`를 `env_origins[:, 0:2]`로 설정
+
+### HIGH: Skill-3 `_action_delay_buf` 리셋 누락
+
+**문제**: Skill-3가 부모 `_reset_idx`를 건너뛰면서 `_action_delay_buf` 초기화도 누락. 이전 에피소드의 stale action이 새 에피소드 첫 step에서 실행되어 `break_force=30N` 초과 → spurious drop.
+
+**수정**: `_finish_reset()`에 추가:
+```python
+if self._action_delay_buf is not None:
+    self._action_delay_buf[:, env_ids] = 0.0
+```
+
+### LOW (방어적): Skill-3 Object velocity 미초기화
+
+**문제**: `_reset_from_handoff`에서 `write_root_velocity_to_sim` 미호출.
+
+**판단**: FixedJoint가 constraint solver를 통해 잔여 속도를 즉시 소거하므로 실질적 영향 없음. 방어적으로 코드에 추가는 했지만 학습 결과에 영향을 주지 않음.
+
+**수정**: Single-object/multi-object 경로 모두에 `write_root_velocity_to_sim(zero_vel, env_ids)` 추가 (방어적).
+
+### HIGH: Curriculum window 오염
+
+**문제**: 난이도 상승 후 `_curriculum_success_window` 미초기화. 이전 (쉬운) 난이도의 높은 성공률이 남아 즉시 연쇄 상승 → 0.5m에서 2.5m(최대)으로 직행.
+
+**수정**: 난이도 상승 직후 window와 idx 초기화:
+```python
+self._curriculum_success_window.zero_()
+self._curriculum_idx = 0
+```
+
+### 비적용 항목
+
+다음 항목은 검토 결과 실제 문제가 아니므로 수정하지 않음:
+
+- **`prev_object_dist=10.0`**: 상수 오프셋으로 모든 에피소드가 동일하게 +0.2 클램핑 → PPO advantage 정규화에 의해 상쇄. 정책 gradient에 영향 없음.
+- **`clip_predicted_values=True`**: 하이퍼파라미터 선택이지 버그가 아님. PPO 37 논문이 비활성화를 권장하지만, 성능 차이는 환경에 따라 다르고 학습이 깨지지 않음.
