@@ -405,11 +405,12 @@ class Skill2Env(DirectRLEnv):
                             disable_gravity=False,
                             max_linear_velocity=2.0,
                             max_angular_velocity=5.0,
+                            max_depenetration_velocity=1.0,
                         ),
                         mass_props=sim_utils.MassPropertiesCfg(mass=obj_mass),
                         collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     ),
-                    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -10.0)),
+                    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
                 )
                 self.object_rigids.append(RigidObject(obj_cfg))
 
@@ -443,6 +444,7 @@ class Skill2Env(DirectRLEnv):
                         disable_gravity=False,
                         max_linear_velocity=2.0,
                         max_angular_velocity=5.0,
+                        max_depenetration_velocity=1.0,
                     ),
                     mass_props=sim_utils.MassPropertiesCfg(mass=float(self.cfg.object_mass)),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
@@ -474,13 +476,8 @@ class Skill2Env(DirectRLEnv):
         if self.contact_sensor is not None:
             self.scene.sensors["gripper_contact"] = self.contact_sensor
 
-        # Grasp break 감지를 위한 gripper body index
-        _gripper_body_names = ["Moving_Jaw_08d_v1"]
-        try:
-            body_ids, _ = self.robot.find_bodies(_gripper_body_names)
-            self._gripper_body_idx = body_ids[0]
-        except (IndexError, RuntimeError):
-            self._gripper_body_idx = 0
+        # Grasp break 감지를 위한 gripper body index (sim.reset() 후 lazy init)
+        self._gripper_body_idx = None
 
     # ═══════════════════════════════════════════════════════════════════
     #  Calibration / Dynamics — v8 그대로 복사
@@ -1319,6 +1316,12 @@ class Skill2Env(DirectRLEnv):
             self.task_success[lifted] = True
 
         # Grasp break 감지 (fixed joint 파손 시 drop 판정)
+        if self._gripper_body_idx is None:
+            try:
+                body_ids, _ = self.robot.find_bodies(["Moving_Jaw_08d_v1"])
+                self._gripper_body_idx = body_ids[0]
+            except (IndexError, RuntimeError, AttributeError):
+                self._gripper_body_idx = 0
         if self.object_grasped.any() and self._physics_grasp:
             grip_pos_w = self.robot.data.body_pos_w[:, self._gripper_body_idx]
             obj_delta = self.object_pos_w - grip_pos_w
@@ -1388,7 +1391,11 @@ class Skill2Env(DirectRLEnv):
             mapped = center + arm_grip_action * half
             fallback = arm_grip_action * self.cfg.arm_action_scale
             arm_targets = torch.where(finite, mapped, fallback)
-            arm_targets = torch.where(finite, torch.clamp(arm_targets, arm_lo, arm_hi), arm_targets)
+            clamped = torch.clamp(arm_targets, arm_lo, arm_hi)
+            # 그리퍼: 하한 리밋 아래 타겟 허용 → PD가 강하게 닫음 (PhysX 물리 리밋이 실제 제약)
+            g = self.gripper_arm_offset
+            clamped[:, g] = torch.clamp(arm_targets[:, g], min=arm_lo[:, g] - 0.5, max=arm_hi[:, g])
+            arm_targets = torch.where(finite, clamped, arm_targets)
         else:
             arm_targets = arm_grip_action * self.cfg.arm_action_scale
 
@@ -1643,7 +1650,7 @@ class Skill2Env(DirectRLEnv):
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
                 hide_pose[:, 0] = 0.0
                 hide_pose[:, 1] = 0.0
-                hide_pose[:, 2] = -10.0
+                hide_pose[:, 2] = -100.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 obj_vel = torch.zeros((num, 6), dtype=torch.float32, device=self.device)
                 rigid.write_root_velocity_to_sim(obj_vel, env_ids=env_ids)

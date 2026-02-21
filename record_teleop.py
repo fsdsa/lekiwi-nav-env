@@ -413,6 +413,9 @@ def teleop_to_action(
     if arm_action_to_limits and arm_center is not None and arm_half_range is not None:
         safe_half = np.where(np.abs(arm_half_range) > 1e-6, arm_half_range, 1.0)
         arm_norm = np.clip((arm_pos - arm_center) / safe_half, -1.0, 1.0)
+        # 그리퍼(idx 5): 하한 클립 해제 — 리밋 아래 타겟으로 PD가 강하게 닫도록
+        grip_raw = (arm_pos[5] - arm_center[5]) / safe_half[5]
+        arm_norm[5] = np.clip(grip_raw, -1.5, 1.0)
     else:
         arm_norm = np.clip(arm_pos / arm_action_scale, -1.0, 1.0)
 
@@ -496,6 +499,12 @@ def main():
         env_cfg = LeKiwiNavEnvCfg()
 
     env_cfg.scene.num_envs = 1
+    # 텔레옵은 에피소드 길이 충분히 확보 (학습용 20s → 텔레옵 120s)
+    env_cfg.episode_length_s = 120.0
+    # 텔레옵 시 DR 비활성화 (action delay, obs noise가 제어를 방해)
+    env_cfg.enable_domain_randomization = False
+    # 텔레옵 시 PhysX에 baked limits 미기록 → USD 기본 리밋 사용 (test.py와 동일)
+    env_cfg.arm_limit_write_to_sim = False
     if args.calibration_json is not None:
         raw = str(args.calibration_json).strip()
         env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
@@ -581,14 +590,28 @@ def main():
     arm_center = None
     arm_half_range = None
     if arm_action_to_limits:
-        lim = env.robot.data.soft_joint_pos_limits[0, env.arm_idx].detach().cpu().numpy()
+        # env._apply_action()과 동일한 리밋 소스 사용 (sim 리밋과 다를 수 있음)
+        override = getattr(env, "_arm_action_limits_override", None)
+        if override is not None:
+            lim = override[0].detach().cpu().numpy()
+        else:
+            lim = env.robot.data.soft_joint_pos_limits[0, env.arm_idx].detach().cpu().numpy()
         arm_center = 0.5 * (lim[:, 0] + lim[:, 1])
         arm_half_range = 0.5 * (lim[:, 1] - lim[:, 0])
         arm_half_range = np.where(np.abs(arm_half_range) > 1e-6, arm_half_range, 1.0)
         print("  arm mapping: action [-1,1] -> joint limits (center/half-range)")
+        print(f"    gripper limit: [{lim[5,0]:.4f}, {lim[5,1]:.4f}] center={arm_center[5]:.4f}")
     else:
         print(f"  arm mapping: action * arm_action_scale ({arm_action_scale:.4f})")
     goal_thresh = float(getattr(env.cfg, "goal_reached_thresh", 0.30))
+
+    # wz 부호 보정: test.py(원본 텔레옵)에서 wz=-wz로 반전.
+    # dynamics_json의 command_transform.wz_sign이 있으면 사용, 없으면 -1.0 (test.py 기본 동작).
+    wz_sign = -1.0
+    ct = getattr(env, "_dynamics_command_transform", None)
+    if ct is not None and isinstance(ct, dict):
+        wz_sign = float(ct.get("wz_sign", -1.0))
+    print(f"  wz_sign: {wz_sign}")
 
     # —— 녹화 루프 ——
     obs, info = env.reset()
@@ -637,6 +660,9 @@ def main():
                 resolved_arm_unit = unit_used
                 print(f"  arm unit resolved: {resolved_arm_unit}")
 
+            # wz 부호 보정 (test.py 호환: wz=-wz)
+            body_cmd[2] *= wz_sign
+
             # 텔레옵 → action 변환
             if is_active:
                 action_np = teleop_to_action(
@@ -679,13 +705,18 @@ def main():
                 target_pos = env.object_pos_w[0, :2].cpu().numpy()
                 dist = np.linalg.norm(root_pos - target_pos)
                 conn_str = "🟢 연결" if is_active else "🔴 끊김"
+                # 그리퍼 디버그: raw input → normalized action → sim joint pos
+                grip_raw = arm_pos_rad[5] if arm_pos_rad is not None else float('nan')
+                grip_action = action_np[5]
+                grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
                 print(
                     f"  {conn_str} | "
                     f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
                     f"obj=({target_pos[0]:+.2f},{target_pos[1]:+.2f}) | "
                     f"dist={dist:.2f}m | "
                     f"steps={len(episode_obs)} | "
-                    f"saved={saved_count}/{args.num_demos}"
+                    f"saved={saved_count}/{args.num_demos}\n"
+                    f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}"
                 )
 
             # 목표 도달 확인 (truncated)

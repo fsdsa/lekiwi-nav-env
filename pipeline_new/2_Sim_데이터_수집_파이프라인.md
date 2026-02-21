@@ -66,7 +66,14 @@ direct 모드는 로봇 USB가 연결된 머신(192.168.0.104)에서 실행해�
 
 #### 2-1-3. Arm Joint Limit JSON 생성
 
+**새 방법 (리더암 TCP 측정, 권장)**: 섹션 2-3 참조. `calibrate_arm_limits.py` + `isaac_teleop.py`로 리더암을 직접 측정하여 `arm_limits_measured.json` 생성. 기존 `build_arm_limits_real2sim.py` 방법보다 간편하고 정확 (sim 좌표 직접 측정).
+
 ```bash
+# 새 방법
+python calibrate_arm_limits.py --port 15002
+# → calibration/arm_limits_measured.json 생성
+
+# 기존 방법 (fallback)
 python build_arm_limits_real2sim.py \
   --calibration_json calibration/calibration_latest.json \
   --encoder_calibration_json ~/.cache/huggingface/lerobot/calibration/robots/lekiwi/my_awesome_kiwi.json \
@@ -179,22 +186,44 @@ base_cam(D455)의 extrinsic 실측 필요. D455 factory calibration으로 intrin
 
 D455의 depth/IMU는 VLA 학습 데이터에 포함되지 않고, Safety Layer와 VIO에서만 사용. sim에서 이 센서를 시뮬레이션할 필요 없다.
 
-### 2-3. Joint Limits — JSON 생성 ✅, USD PhysX 반영 ✅ (코드에서 `arm_limit_write_to_sim=True`)
+### 2-3. Joint Limits — 리더암 TCP 측정 → JSON 생성 → USD PhysX 반영
 
-`arm_limits_real2sim.json`은 이미 생성되어 있다. RL 학습 시 **제어 target clamp와 USD PhysX joint limit 양쪽 모두에 적용**한다 (`arm_limit_write_to_sim=True`).
+**TUCKED_POSE 이후에 수행.** Windows에서 `isaac_teleop.py`, Home PC에서 `calibrate_arm_limits.py` 실행. `isaac_teleop.py`가 leader → sim 좌표 변환(SIGNS[4]=1.8 포함)을 하므로, 리더암만 측정하면 sim 좌표 기준 정확한 값이 나옴.
+
+```bash
+# Home PC
+python calibrate_arm_limits.py --port 15002
+# → 관절 하나씩 양방향 끝까지 밀기 → Enter → calibration/arm_limits_measured.json 저장
+
+# Windows (동시 실행)
+python isaac_teleop.py
+```
+
+RL 학습 시 `arm_limit_write_to_sim=True`로 제어 target clamp + USD PhysX joint limit 양쪽에 적용. 텔레옵 시에는 `arm_limit_write_to_sim=False`로 설정 (USD 기본 리밋 사용, 그리퍼 완전 닫힘 허용).
 
 **검증 결과 (Isaac Sim 5.0.0, 2026-02-19)**: LeKiwi USD의 전체 39개 revolute joint이 모두 `(-inf, +inf)` 확인됨. arm 6개 + gripper 1개는 반드시 캘리브레이션 범위로 덮어써야 팔-몸체 관통 방지.
 
-### 2-4. TUCKED_POSE ✅ 측정 완료
+### 2-4. TUCKED_POSE — 리더암 TCP 측정 (Joint Limits 이전에 수행)
 
-sim 기본 자세(REST_POSE ≈ all-zeros)는 팔이 애매하게 펴진 상태다. 텔레옵으로 팔을 접은 TUCKED_POSE를 측정하여 `calibration/tucked_pose.json`에 저장했다.
+sim 기본 자세(REST_POSE ≈ all-zeros)는 팔이 애매하게 펴진 상태다. **Self-collision이 USD에 설정되어 있지 않아서** 관절 이동 시 팔이 몸체를 관통한다. TUCKED_POSE는 팔을 최대한 접은 상태의 관절 값으로, **관절별 self-collision 방지 한계**로 사용된다. Joint Limits 측정 **이전에** 수행한다 — tucked pose가 관절 가동 범위의 한쪽 경계가 되기 때문.
+
+```bash
+# Home PC
+python calibrate_tucked_pose.py --port 15002
+# → 팔을 최대한 접은 뒤 Enter → calibration/tucked_pose.json 저장
+
+# Windows (동시 실행)
+python isaac_teleop.py
+```
+
+`isaac_teleop.py`가 leader → sim 변환을 하므로, 리더암만 측정하면 됨 (팔로워 불필요).
 
 ```python
-TUCKED_POSE = [0.0, -0.2154, 0.1889, 0.1251, 0.032, -0.2015]  # rad
+TUCKED_POSE = [0.0, -0.2154, 0.1889, 0.1251, 0.032, -0.2015]  # rad (기존 측정값, 재측정 필요)
 # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 ```
 
-Navigate skill에서 arm 고정 target, RL 에피소드 초기 arm 자세로 사용된다.
+용도: (1) Navigate skill에서 arm 고정 target, (2) RL 에피소드 초기 arm 자세, (3) self-collision 방지 관절 한계.
 
 ### 2-5. ~~lekiwi_v6 데이터 형식 확인~~ ✅ 확정
 
@@ -753,12 +782,12 @@ Isaac-GR00T repo의 convert_v3_to_v2.py로 변환 후 modality.json 추가.
 
 ```
 Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
+  [⬜] TUCKED_POSE 재측정 (`calibrate_tucked_pose.py` + `isaac_teleop.py` TCP, self-collision 방지 한계)
+  [⬜] Arm joint limits 재측정 (`calibrate_arm_limits.py` + `isaac_teleop.py` TCP → arm_limits_measured.json)
   [✅] 실로봇 모터 특성 → sim 물리 파라미터 일치 (tuned_dynamics.json)
-  [✅] 실로봇 관절 한계 → arm_limits_real2sim.json 생성
   [✅] Calibration gate 통과 (wheel=0.146, arm=0.087)
   [⬜] 실제 카메라 특성 → sim 카메라 일치
-  [✅] Joint limits → `arm_limit_write_to_sim=True`로 코드에서 자동 적용
-  [✅] TUCKED_POSE 측정 완료 (`calibration/tucked_pose.json`)
+  [✅] Joint limits → RL: `arm_limit_write_to_sim=True`, 텔레옵: `False`
   [✅] 데이터셋 형식 확인 — yubinnn11/lekiwi3 v3.0, velocity(m/s, rad/s)
 
 Phase 1: RL Expert 학습 (RTX 3090)

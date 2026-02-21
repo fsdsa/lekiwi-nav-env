@@ -35,6 +35,8 @@
 | `lekiwi_skill3_env.py` | CarryAndPlace 환경 (29D obs) |
 | `generate_handoff_buffer.py` | Skill-2 종료 상태 → Skill-3 초기 상태 |
 | `collect_navigate_data.py` | Navigate 스크립트 정책 데이터 수집 |
+| `calibrate_tucked_pose.py` | Tucked Pose 측정 (리더암 TCP, self-collision 방지 한계) |
+| `calibrate_arm_limits.py` | Arm Joint Limits 측정 (리더암 TCP, 관절별 min/max) |
 | `aac_wrapper.py` | IsaacLabWrapper monkey-patch — critic obs 노출 (`state()` 메서드) |
 | `aac_ppo.py` | PPO 상속 — `critic_states` memory tensor 관리 |
 | `aac_trainer.py` | SequentialTrainer 상속 — critic states 매 step 추적 |
@@ -178,7 +180,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dynamics_apply_cmd_scale: bool = True
     arm_limit_json: str | None = None
     arm_limit_margin_rad: float = 0.0
-    arm_limit_write_to_sim: bool = True    # ← False→True: USD의 inf limit 시 팔이 몸체 관통 방지
+    arm_limit_write_to_sim: bool = True    # RL: True (PhysX 제약), 텔레옵: False (USD 기본 리밋)
 
     # === Task Geometry (변경) ===
     object_dist_min: float = 0.5    # Curriculum 시작값 (v8은 1.0)
@@ -1853,7 +1855,7 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 
 **USD Joint Limits:**
 - arm joint 6개 + gripper 1개 + wheel 3개 + roller 30개 = 전부 `(-inf, inf)`
-- `arm_limit_write_to_sim=True`로 실측 범위 강제 필수
+- RL: `arm_limit_write_to_sim=True`로 실측 범위 강제, 텔레옵: `False` (USD 기본 리밋 사용, 그리퍼 완전 닫힘 허용)
 
 **Contact sensor:** USD에 미포함. Isaac Lab `ContactSensorCfg`로 코드에서 동적 생성 (v8 방식 유지).
 
@@ -1876,7 +1878,8 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 - [ ] ★ handoff buffer 노이즈: 동일 entry를 여러 번 로드했을 때 arm_joints 값이 매번 다른지
 - [ ] ★ Skill-3에서 drop 발생 시 `rew_drop_penalty`가 정상 적용되는지
 - [ ] ★ Skill-3에서 home 근처 의도적 place와 mid-carry drop이 구분되는지
-- [ ] ★ `arm_limit_write_to_sim: True` 상태에서 팔이 몸체를 관통하지 않는지
+- [ ] ★ RL: `arm_limit_write_to_sim: True` 상태에서 팔이 몸체를 관통하지 않는지
+- [ ] ★ 텔레옵: `arm_limit_write_to_sim: False` 상태에서 그리퍼 완전 닫힘 동작 확인
 - [ ] `collect_demos.py`의 robot_state가 `[arm6, base_body_vel3]` = 9D
 - [ ] 저장된 action의 `action[5]`가 0.0 또는 1.0 (gripper binary)
 - [ ] `convert_hdf5_to_lerobot_v3.py` 출력의 채널명이 `x.vel, y.vel, theta.vel`

@@ -55,7 +55,7 @@ LEADER_REST_RAD6 = [
     0.215753,    # gripper (18.09 deg)
 ]
 
-SIGNS = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+SIGNS = [1.0, 1.0, 1.0, 1.0, 1.8, 1.0]
 
 SMOOTH_ALPHA = 0.12
 MAX_SPEED_RAD_S = 2.0

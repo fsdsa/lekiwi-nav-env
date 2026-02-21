@@ -420,7 +420,7 @@ class Skill3Env(Skill2Env):
             zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
             for rigid in self.object_rigids:
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
-                hide_pose[:, 2] = -10.0
+                hide_pose[:, 2] = -100.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 

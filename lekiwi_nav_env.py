@@ -425,12 +425,13 @@ class LeKiwiNavEnv(DirectRLEnv):
                             disable_gravity=False,
                             max_linear_velocity=2.0,
                             max_angular_velocity=5.0,
+                            max_depenetration_velocity=1.0,
                         ),
                         mass_props=sim_utils.MassPropertiesCfg(mass=obj_mass),
                         collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
                     ),
                     # Spawn hidden by default; reset selects one object type per env.
-                    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -10.0)),
+                    init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
                 )
                 self.object_rigids.append(RigidObject(obj_cfg))
 
@@ -464,6 +465,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                         disable_gravity=False,
                         max_linear_velocity=2.0,
                         max_angular_velocity=5.0,
+                        max_depenetration_velocity=1.0,
                     ),
                     mass_props=sim_utils.MassPropertiesCfg(mass=float(self.cfg.object_mass)),
                     collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
@@ -1614,7 +1616,7 @@ class LeKiwiNavEnv(DirectRLEnv):
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
                 hide_pose[:, 0] = 0.0
                 hide_pose[:, 1] = 0.0
-                hide_pose[:, 2] = -10.0
+                hide_pose[:, 2] = -100.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 obj_vel = torch.zeros((num, 6), dtype=torch.float32, device=self.device)
                 rigid.write_root_velocity_to_sim(obj_vel, env_ids=env_ids)
