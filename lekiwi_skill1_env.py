@@ -137,8 +137,8 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     rew_collision_penalty: float = -2.0
     rew_speed_bonus: float = 0.5
     rew_action_smoothness: float = -0.005
-    rew_decel_weight: float = 0.5
-    rew_decel_dist: float = 1.0  # Start deceleration reward within this distance
+    rew_decel_weight: float = 0.15
+    rew_decel_dist: float = 0.6  # Just above arrival_thresh (0.5m)
 
     # === Termination ===
     max_dist_from_origin: float = 6.0

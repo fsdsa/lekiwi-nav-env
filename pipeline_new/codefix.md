@@ -3,6 +3,8 @@
 > **이 문서의 목적**: 기존 v8 코드베이스(`lekiwi_nav_env.py` 중심)를 3-Skill 파이프라인으로 리팩토링하기 위한 완전한 구현 명세.
 >
 > **핵심 원칙**: v8의 검증된 물리·캘리브레이션·DR·grasp 코드를 **함수 단위로 그대로 복사**하되, monolithic 4-phase FSM을 독립 Skill 환경 3개(Navigate, ApproachAndGrasp, CarryAndPlace)로 분리한다.
+>
+> **서버 환경 설치/전송/학습 가이드**: `feedback/server_guide.md` 참조
 
 ---
 

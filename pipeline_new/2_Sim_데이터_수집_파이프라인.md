@@ -14,11 +14,18 @@ sim 데이터가 real에서 통하려면 두 가지가 보장되어야 한다. �
 
 ## 2. Phase 0: Sim-Real 일치
 
-학습 환경: RTX 3090 24GB, Isaac Sim 5.0 + Isaac Lab 0.44.9, conda env_isaaclab (Python 3.11, PyTorch 2.7.0+cu128), skrl 1.4.3 / rsl_rl.
+**캘리브레이션/텔레옵 환경 (RTX 3090 Desktop)**: Isaac Sim 5.0 + Isaac Lab 0.44.9, conda env_isaaclab (Python 3.11, PyTorch 2.7.0+cu128), skrl 1.4.3 / rsl_rl.
+
+**BC/RL 학습 환경 (A100 서버)**: Isaac Sim 5.0.0.0 (headless, pip) + Isaac Lab v2.2.0 (editable), conda rl_train, skrl 1.4.3. 서버 설치/전송/학습 가이드: `feedback/server_guide.md`, 환경 설치: `feedback/setup_server_env.sh`, 검증: `bash feedback/setup_server_env.sh verify`
 
 ```bash
+# Desktop (캘리브레이션/텔레옵/데이터 수집)
 conda activate env_isaaclab
 source ~/isaacsim/setup_conda_env.sh
+cd ~/IsaacLab/scripts/lekiwi_nav_env
+
+# Server (BC/RL 학습)
+conda activate rl_train
 cd ~/IsaacLab/scripts/lekiwi_nav_env
 ```
 
@@ -797,17 +804,18 @@ Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
   [✅] Joint limits → RL: `arm_limit_write_to_sim=True`, 텔레옵: `False`
   [✅] 데이터셋 형식 확인 — yubinnn11/lekiwi3 v3.0, velocity(m/s, rad/s)
 
-Phase 1: RL Expert 학습 (RTX 3090)
+Phase 1: RL Expert 학습 (텔레옵: 3090 Desktop, BC/RL: A100 서버)
   Skill-1 (Navigate):
-    RL from scratch (PPO+AAC, 20D actor, 25D critic, BC 불필요) → 50%+ arrival rate
+    RL from scratch (A100, PPO+AAC, 20D actor, 25D critic, BC 불필요) → 50%+ arrival rate
   Skill-2 (ApproachAndGrasp):
-    텔레옵 10~20개 → BC (30D obs, 성공률 ~30%) → RL (PPO+AAC, 성공률 90%+)
+    텔레옵 10~20개 (Desktop) → scp → BC (A100) → RL (A100, PPO+AAC, 성공률 90%+)
   Handoff Buffer:
-    Skill-2 성공 상태 200~500개 저장
+    Skill-2 성공 상태 200~500개 저장 (A100)
   Skill-3 (CarryAndPlace):
-    텔레옵 10~20개 (Handoff에서) → BC (29D obs) → RL (PPO+AAC, 성공률 90%+)
+    텔레옵 10~20개 (Desktop) → scp → BC (A100) → RL (A100, PPO+AAC, 성공률 90%+)
+  Checkpoint: 서버 → scp → Desktop
 
-Phase 2: VLA 데이터 대량 수집 (RTX 3090)
+Phase 2: VLA 데이터 대량 수집 (RTX 3090 Desktop, 카메라 렌더링)
   Navigate: RL Expert rollout (collect_demos.py --skill navigate) → 1K~2K 에피소드
   Skill-2: RL Expert rollout × (Dynamics + Visual) DR → 1K~10K (성공 + visibility trim)
   Skill-3: RL Expert rollout × (Dynamics + Visual) DR → 1K~10K (성공 + visibility trim)
