@@ -709,6 +709,9 @@ def main():
                 grip_raw = arm_pos_rad[5] if arm_pos_rad is not None else float('nan')
                 grip_action = action_np[5]
                 grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                # wrist_roll 디버그 (idx 4 in arm)
+                wr_raw = arm_pos_rad[4] if arm_pos_rad is not None else float('nan')
+                wr_sim = env.robot.data.joint_pos[0, env.arm_idx[4]].item()
                 print(
                     f"  {conn_str} | "
                     f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
@@ -716,7 +719,8 @@ def main():
                     f"dist={dist:.2f}m | "
                     f"steps={len(episode_obs)} | "
                     f"saved={saved_count}/{args.num_demos}\n"
-                    f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}"
+                    f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}\n"
+                    f"    wrist_roll: raw={wr_raw:+.4f} sim={wr_sim:+.4f}"
                 )
 
             # 목표 도달 확인 (truncated)

@@ -82,8 +82,8 @@ parser.add_argument("--grasp_max_object_dist", type=float, default=0.25,
 parser.add_argument("--grasp_attach_height", type=float, default=0.15,
                     help="attached object z-height after grasp success")
 parser.add_argument("--skill", type=str, default="approach_and_grasp",
-                    choices=["approach_and_grasp", "carry_and_place", "legacy"],
-                    help="학습할 skill (legacy = v8 monolithic env)")
+                    choices=["approach_and_grasp", "carry_and_place", "navigate", "legacy"],
+                    help="학습할 skill (navigate = Skill-1 base-only, legacy = v8 monolithic env)")
 parser.add_argument("--handoff_buffer", type=str, default=None,
                     help="Skill-3용 handoff buffer pickle 경로")
 AppLauncher.add_app_launcher_args(parser)
@@ -275,6 +275,9 @@ def main():
             raise ValueError("--handoff_buffer required for carry_and_place skill")
         env_cfg = Skill3EnvCfg()
         env_cfg.handoff_buffer_path = os.path.expanduser(args.handoff_buffer)
+    elif args.skill == "navigate":
+        from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
+        env_cfg = Skill1EnvCfg()
     else:
         # legacy: v8 monolithic env
         from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
@@ -289,10 +292,14 @@ def main():
     if args.arm_limit_json:
         env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
         env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
-    physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
     multi_object_mode = bool(str(args.multi_object_json).strip())
     if multi_object_mode:
         env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+    # Navigate doesn't use physics grasp mode (no grasp mechanics)
+    if args.skill == "navigate":
+        physics_grasp_mode = False
+    else:
+        physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
     if physics_grasp_mode:
         env_cfg.object_usd = os.path.expanduser(args.object_usd)
         env_cfg.object_mass = float(args.object_mass)
@@ -307,11 +314,13 @@ def main():
         raw_env = Skill2Env(cfg=env_cfg)
     elif args.skill == "carry_and_place":
         raw_env = Skill3Env(cfg=env_cfg)
+    elif args.skill == "navigate":
+        raw_env = Skill1Env(cfg=env_cfg)
     else:
         raw_env = LeKiwiNavEnv(cfg=env_cfg)
 
     # AAC wrapper for skill-2/3 (critic obs 별도 전달), legacy는 symmetric
-    use_aac = args.skill in ("approach_and_grasp", "carry_and_place")
+    use_aac = args.skill in ("approach_and_grasp", "carry_and_place", "navigate")
     if use_aac:
         env = wrap_env_aac(raw_env)
     else:
@@ -326,6 +335,8 @@ def main():
             expected_dim = 30
         elif args.skill == "carry_and_place":
             expected_dim = 29
+        elif args.skill == "navigate":
+            expected_dim = 20
         else:
             expected_dim = env_obs_dim
         if bc_obs_dim is None:
@@ -447,6 +458,11 @@ def main():
     cfg_ppo["value_clip"] = 0.2
     cfg_ppo["clip_predicted_values"] = True
     cfg_ppo["entropy_loss_scale"] = 0.01
+    # Navigate: reduced entropy (6/9 action dims are "dead" arm/gripper),
+    # no value clipping (3D base-only, simple action space)
+    if args.skill == "navigate":
+        cfg_ppo["entropy_loss_scale"] = 0.005
+        cfg_ppo["clip_predicted_values"] = False
     cfg_ppo["value_loss_scale"] = 1.0
     cfg_ppo["kl_threshold"] = 0.0
     cfg_ppo["state_preprocessor"] = RunningStandardScaler
@@ -498,10 +514,26 @@ def main():
         agent.load(args.checkpoint)
         print(f"  ✅ PPO 체크포인트 로드: {args.checkpoint}")
 
+    # Navigate: freeze log_std for dead action dims (arm/gripper = dims 0:6).
+    # These dims are overwritten in env, so their entropy gradient has no
+    # opposing reward signal, causing unbounded std growth.
+    if args.skill == "navigate":
+        policy = agent.policy if hasattr(agent, "policy") else None
+        if policy is not None and hasattr(policy, "log_std_parameter"):
+            with torch.no_grad():
+                policy.log_std_parameter[:6] = -3.0  # std ≈ 0.05 for dead dims
+            policy.log_std_parameter.register_hook(
+                lambda grad: torch.cat([torch.zeros(6, device=grad.device), grad[6:]])
+            )
+            print(f"  Navigate: frozen log_std for dead action dims 0:6")
+
     # —— Trainer ——————————————————————————————————————————————
     trainer_cfg = {
-        "timesteps": args.max_iterations * cfg_ppo["rollouts"] * args.num_envs,
+        # vectorized env: env.step() processes all envs in parallel
+        # so timesteps = iterations * rollouts (NOT * num_envs)
+        "timesteps": args.max_iterations * cfg_ppo["rollouts"],
         "headless": args.headless,
+        "environment_info": "log",  # Isaac Lab puts custom metrics in extras["log"]
     }
     if use_aac and env._aac_state_space is not None:
         trainer = AACSequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)

@@ -188,7 +188,7 @@ D455의 depth/IMU는 VLA 학습 데이터에 포함되지 않고, Safety Layer�
 
 ### 2-3. Joint Limits — 리더암 TCP 측정 → JSON 생성 → USD PhysX 반영
 
-**TUCKED_POSE 이후에 수행.** Windows에서 `isaac_teleop.py`, Home PC에서 `calibrate_arm_limits.py` 실행. `isaac_teleop.py`가 leader → sim 좌표 변환(SIGNS[4]=1.8 포함)을 하므로, 리더암만 측정하면 sim 좌표 기준 정확한 값이 나옴.
+**TUCKED_POSE 이후에 수행.** Windows에서 `isaac_teleop.py`, Home PC에서 `calibrate_arm_limits.py` 실행. `isaac_teleop.py`가 leader → sim 좌표 변환(SIGNS[4]=1.814 포함)을 하므로, 리더암만 측정하면 sim 좌표 기준 정확한 값이 나옴. **측정 완료 (2026-02-21)**: `calibration/arm_limits_measured.json` 생성, tucked pose 제약 적용됨.
 
 ```bash
 # Home PC
@@ -203,9 +203,11 @@ RL 학습 시 `arm_limit_write_to_sim=True`로 제어 target clamp + USD PhysX j
 
 **검증 결과 (Isaac Sim 5.0.0, 2026-02-19)**: LeKiwi USD의 전체 39개 revolute joint이 모두 `(-inf, +inf)` 확인됨. arm 6개 + gripper 1개는 반드시 캘리브레이션 범위로 덮어써야 팔-몸체 관통 방지.
 
+**wrist_roll 기어비 (SIGNS[4]=1.814)**: 실물 wrist_roll에 약 1.8:1 기어 증폭이 있어서 서보 1rad 회전 시 실제 손목이 ~1.8rad 회전한다. USD 관절은 기어비를 모델링하지 않으므로 `isaac_teleop.py`의 SIGNS로 보상한다. 측정 방법: SIGNS=1.0 상태에서 그리퍼를 좌→우(180°) 회전시키고 leader_raw 변화량(Δ=1.7321)을 읽어 `SIGNS = π / Δ = 1.814`로 계산. 캘리브레이션 스크립트는 TCP 데이터를 그대로 받으므로 기어비가 자동 반영된 sim 좌표 기준으로 측정된다.
+
 ### 2-4. TUCKED_POSE — 리더암 TCP 측정 (Joint Limits 이전에 수행)
 
-sim 기본 자세(REST_POSE ≈ all-zeros)는 팔이 애매하게 펴진 상태다. **Self-collision이 USD에 설정되어 있지 않아서** 관절 이동 시 팔이 몸체를 관통한다. TUCKED_POSE는 팔을 최대한 접은 상태의 관절 값으로, **관절별 self-collision 방지 한계**로 사용된다. Joint Limits 측정 **이전에** 수행한다 — tucked pose가 관절 가동 범위의 한쪽 경계가 되기 때문.
+sim 기본 자세(REST_POSE ≈ all-zeros)는 팔이 애매하게 펴진 상태다. **Self-collision이 USD에 설정되어 있지 않아서** 관절 이동 시 팔이 몸체를 관통한다. TUCKED_POSE는 팔을 최대한 접은 상태의 관절 값으로, **관절별 self-collision 방지 한계**로 사용된다. Joint Limits 측정 **이전에** 수행한다 — tucked pose가 관절 가동 범위의 한쪽 경계가 되기 때문. **측정 완료 (2026-02-21)**: `calibration/tucked_pose.json` 생성.
 
 ```bash
 # Home PC
@@ -219,7 +221,7 @@ python isaac_teleop.py
 `isaac_teleop.py`가 leader → sim 변환을 하므로, 리더암만 측정하면 됨 (팔로워 불필요).
 
 ```python
-TUCKED_POSE = [0.0, -0.2154, 0.1889, 0.1251, 0.032, -0.2015]  # rad (기존 측정값, 재측정 필요)
+TUCKED_POSE = [-0.02966, -0.213839, 0.09066, 0.120177, 0.058418, -0.201554]  # rad (2026-02-21 측정)
 # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper
 ```
 
@@ -267,15 +269,18 @@ pxr(Isaac Sim Python) 환경에서 실행해야 함.
 
 ### 3-1. 전체 구조
 
-Skill-2(ApproachAndGrasp)와 Skill-3(CarryAndPlace) 각각에 대해 텔레옵 → BC → RL 순서로 진행한다. Navigate는 RL을 하지 않으므로 Phase 2에서 스크립트 정책으로 데이터를 직접 생성한다.
+Skill-1(Navigate), Skill-2(ApproachAndGrasp), Skill-3(CarryAndPlace) 각각에 대해 RL 학습을 진행한다. Skill-1은 BC warm-start 없이 from scratch PPO로 학습하고, Skill-2/3은 텔레옵 → BC → RL 순서로 진행한다.
 
 **기존 v8 코드와의 관계**: v8의 `lekiwi_nav_env.py`는 37D obs + 4-phase FSM(SEARCH→APPROACH→GRASP→RETURN)으로 전체 task를 단일 환경에서 처리한다. 3-Skill 분리는 이 환경을 Skill-2 env(ApproachAndGrasp)와 Skill-3 env(CarryAndPlace)로 분리 리팩토링하는 것이다. v8의 핵심 컴포넌트들은 재사용한다:
-- 물리 grasp (FixedJoint attach/detach) → break_force 조정
+- 물리 grasp (FixedJoint attach/detach) → break_force 조정 (Skill-2/3)
 - Dynamics DR (reset-time wheel/arm/object randomization)
 - 캘리브레이션 연동 (`--dynamics_json`, `--arm_limit_json`)
 - `models.py`의 PolicyNet/ValueNet/CriticNet 구조 + AAC 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)
-- Contact sensor 기반 grasp 판정
-- GRASP timeout 메커니즘 (75 steps)
+- Contact sensor 기반 grasp 판정 (Skill-2/3)
+- GRASP timeout 메커니즘 (75 steps, Skill-2/3)
+- Kiwi IK, body velocity 읽기 (모든 Skill 공통)
+
+**Skill-1(Navigate)은 독립 환경** (`lekiwi_skill1_env.py`): Skill-2/3와 달리 물체 grasp, contact sensor, curriculum 등이 없고, 텐서 기반 장애물 + pseudo-lidar + 감속 보상으로 구성된다. `train_lekiwi.py --skill navigate`로 학습.
 
 **모든 학습/수집 명령에서 `--dynamics_json`과 `--arm_limit_json`을 반드시 사용한다.**
 
@@ -564,35 +569,36 @@ sim에서 Isaac Sim의 `root_lin_vel_b`와 `root_ang_vel_b`로 body-frame veloci
 
 ---
 
-### 4-3. Navigate 데이터 수집 (스크립트 정책)
+### 4-3. Navigate 데이터 수집 (RL Expert rollout + 스크립트 정책 fallback)
 
-#### 4-3-1. 왜 스크립트 정책인가
+#### 4-3-1. RL Expert rollout (권장)
 
-Navigate 핵심 행동: "목표 방향 이동"과 "탐색 회전". 둘 다 base만 움직이고 arm은 tucked pose. RL 필요 없을 만큼 단순하지만, VLA 학습용 수천 에피소드가 필요하므로 스크립트로 생성.
+`lekiwi_skill1_env.py`로 학습한 Navigate RL Expert를 `collect_demos.py --skill navigate`로 rollout한다. RL Expert는 장애물 회피 + 감속 정지를 학습했으므로, P-controller보다 풍부한 행동 데이터를 생성한다. `Skill1EnvWithCam`(Skill1Env를 상속하여 TiltedCamera 2대를 추가한 서브클래스)을 사용한다.
 
-#### 4-3-2. 목표 방향 이동 (Directed Navigation)
-
-```python
-# 매 프레임:
-direction = target_pos - robot_pos  # sim ground truth
-angle_to_target = atan2(direction.y, direction.x) - robot_heading
-base_cmd = [K_lin * cos(angle_to_target), K_lin * sin(angle_to_target), K_ang * angle_to_target]
-arm_cmd = TUCKED_POSE  # 고정
-gripper_cmd = 1.0    # open 유지
-action = [arm_cmd(5D), gripper_cmd(1D), base_cmd(3D)]  # 9D
+```bash
+python collect_demos.py \
+  --checkpoint logs/ppo_lekiwi/navigate/checkpoints/best_agent.pt \
+  --skill navigate \
+  --dynamics_json calibration/tuned_dynamics.json \
+  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --num_envs 4 --num_demos 1000 --headless
 ```
 
-**노이즈 주입**: (1) 조향 흔들림 σ=0.05 rad, (2) 속도 양자화 3~5단계, (3) 5% 확률로 1~3프레임 이전 action 반복.
+arm은 TUCKED_POSE 고정, gripper는 open(1.0) 고정. 저장 시 action[0:5]=0.0, action[5]=1.0으로 오버라이드.
 
-#### 4-3-3. 탐색 회전 (Search Rotation)
+#### 4-3-2. 스크립트 정책 (fallback)
 
-제자리 회전 또는 전진+회전. instruction: "turn right slowly to search for the red cup".
+기존 `collect_navigate_data.py`의 proportional controller 기반 데이터 생성도 유지된다.
 
-**instruction의 가시성 조건**: 물체가 base_cam FOV 안에 10×10 pixel 이상으로 보이면 "navigate toward~", 안 보이면 "turn to search for~". 물체가 보이는데 "search"가 붙으면 시각-언어 정합성이 깨진다.
+**목표 방향 이동**: P-control (K_LIN=0.8, K_ANG=1.5). **탐색 회전**: 제자리 회전 또는 전진+회전. **노이즈 주입**: (1) 조향 흔들림 σ=0.05 rad, (2) 속도 양자화 3~5단계, (3) 5% 확률 action repeat.
+
+#### 4-3-3. instruction의 가시성 조건
+
+물체가 base_cam FOV 안에 10×10 pixel 이상으로 보이면 "navigate toward~", 안 보이면 "turn to search for~". 물체가 보이는데 "search"가 붙으면 시각-언어 정합성이 깨진다.
 
 #### 4-3-4. 환경 요구사항
 
-Navigate 데이터는 시각적 다양성이 중요하다. 빈 평면에서 proportional controller를 돌리면 VLA가 학습할 실내 시각 정보가 없다. 최소한:
+Navigate 데이터는 시각적 다양성이 중요하다. 최소한:
 - 바닥/벽 텍스쳐 랜덤 (Wood, Tile, Carpet 등)
 - Distractor 가구 1~3개 (테이블, 의자, 선반 등)
 - 조명 DR (색온도, 강도, 방향)
@@ -601,9 +607,9 @@ Skill-2/3 수집 환경(바닥 위 물체 + 로봇)에 추가 배경을 넣어 N
 
 #### 4-3-5. 저장 원칙
 
-스크립트가 목표 좌표를 알고 있었다는 사실은 저장하지 않는다. 저장하는 것은 오직 (이미지, 9D state, 9D action, instruction). 9D action에서 arm 5D = TUCKED_POSE, gripper = 1.0, base 3D = command.
+저장하는 것은 오직 (이미지, 9D state, 9D action, instruction). 9D action에서 arm 5D = 0.0 (TUCKED_POSE), gripper = 1.0, base 3D = command.
 
-목표: 1K~2K개. Directed Navigation : Search Rotation ≈ 7:3.
+목표: 1K~2K개.
 
 ---
 
@@ -734,7 +740,7 @@ python convert_hdf5_to_lerobot_v3.py \
 | episode_index | int64 | — | 에피소드 번호 |
 | task_index | int64 | — | tasks.parquet의 instruction 참조 |
 
-**robot_state 추출**: Skill-2/3의 RL obs는 각각 30D/29D이지만, VLA에 전달되는 것은 공통 9D (arm 5 + grip 1 + base_body_vel 3). 새 skill env에서는 `collect_demos.py`의 `extract_robot_state_9d()`가 `env.robot.data.joint_pos`와 `root_lin_vel_b`/`root_ang_vel_b`를 직접 읽어 HDF5의 `robot_state` 필드에 저장한다 (obs 슬라이싱이 아닌 센서 직접 읽기). 변환 스크립트는 이 필드를 그대로 읽는다. `robot_state` 필드가 없는 레거시 HDF5의 경우, `infer_robot_state_from_obs()`가 30D/29D obs에서 `obs[0:9]`를, 37D/33D obs에서 `obs[18:24]+obs[30:33]`를 fallback으로 추출한다.
+**robot_state 추출**: Skill-2/3의 RL obs는 각각 30D/29D이지만, VLA에 전달되는 것은 공통 9D (arm 5 + grip 1 + base_body_vel 3). 새 skill env에서는 `collect_demos.py`의 `extract_robot_state_9d()`가 `env.robot.data.joint_pos`와 `root_lin_vel_b`/`root_ang_vel_b`를 직접 읽어 HDF5의 `robot_state` 필드에 저장한다 (obs 슬라이싱이 아닌 센서 직접 읽기). 변환 스크립트는 이 필드를 그대로 읽는다. `robot_state` 필드가 없는 레거시 HDF5의 경우, `infer_robot_state_from_obs()`가 20D(Navigate)/30D/29D obs에서 `obs[0:6]+obs[6:9]`를, 37D/33D obs에서 `obs[18:24]+obs[30:33]`를 fallback으로 추출한다.
 
 **Action 순서 주의**: 새 skill 환경의 action은 `[arm5, grip1, base3]` (yubinnn11/lekiwi3 v3.0 호환). 기존 v8의 `[base3, arm6]` 순서와 **반대**이므로, v8의 `_apply_action()` 코드 재사용 시 인덱스 매핑을 변경해야 한다: `base_cmd = action[:, 6:9]`, `arm_target = action[:, 0:6]`.
 
@@ -782,8 +788,9 @@ Isaac-GR00T repo의 convert_v3_to_v2.py로 변환 후 modality.json 추가.
 
 ```
 Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
-  [⬜] TUCKED_POSE 재측정 (`calibrate_tucked_pose.py` + `isaac_teleop.py` TCP, self-collision 방지 한계)
-  [⬜] Arm joint limits 재측정 (`calibrate_arm_limits.py` + `isaac_teleop.py` TCP → arm_limits_measured.json)
+  [✅] TUCKED_POSE 측정 완료 (`calibrate_tucked_pose.py`, 2026-02-21, calibration/tucked_pose.json)
+  [✅] Arm joint limits 측정 완료 (`calibrate_arm_limits.py`, 2026-02-21, calibration/arm_limits_measured.json, tucked pose 제약 적용됨)
+  [✅] wrist_roll 기어비 측정 완료 (SIGNS[4]=1.814, isaac_teleop.py 반영)
   [✅] 실로봇 모터 특성 → sim 물리 파라미터 일치 (tuned_dynamics.json)
   [✅] Calibration gate 통과 (wheel=0.146, arm=0.087)
   [⬜] 실제 카메라 특성 → sim 카메라 일치
@@ -791,6 +798,8 @@ Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
   [✅] 데이터셋 형식 확인 — yubinnn11/lekiwi3 v3.0, velocity(m/s, rad/s)
 
 Phase 1: RL Expert 학습 (RTX 3090)
+  Skill-1 (Navigate):
+    RL from scratch (PPO+AAC, 20D actor, 25D critic, BC 불필요) → 50%+ arrival rate
   Skill-2 (ApproachAndGrasp):
     텔레옵 10~20개 → BC (30D obs, 성공률 ~30%) → RL (PPO+AAC, 성공률 90%+)
   Handoff Buffer:
@@ -799,7 +808,7 @@ Phase 1: RL Expert 학습 (RTX 3090)
     텔레옵 10~20개 (Handoff에서) → BC (29D obs) → RL (PPO+AAC, 성공률 90%+)
 
 Phase 2: VLA 데이터 대량 수집 (RTX 3090)
-  Navigate: 스크립트 정책 → 1K~2K 에피소드
+  Navigate: RL Expert rollout (collect_demos.py --skill navigate) → 1K~2K 에피소드
   Skill-2: RL Expert rollout × (Dynamics + Visual) DR → 1K~10K (성공 + visibility trim)
   Skill-3: RL Expert rollout × (Dynamics + Visual) DR → 1K~10K (성공 + visibility trim)
 

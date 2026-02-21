@@ -55,7 +55,7 @@ LEADER_REST_RAD6 = [
     0.215753,    # gripper (18.09 deg)
 ]
 
-SIGNS = [1.0, 1.0, 1.0, 1.0, 1.8, 1.0]
+SIGNS = [1.0, 1.0, 1.0, 1.0, 1.814, 1.0]  # wrist_roll: 기어비 실측 π/1.7321=1.814
 
 SMOOTH_ALPHA = 0.12
 MAX_SPEED_RAD_S = 2.0
@@ -242,6 +242,10 @@ def main():
             "base": base_cmd,
             "src": "so100_leader+keyboard",
         }
+
+        # wrist_roll 디버그 (캘리브레이션 측정용, 필요없으면 삭제)
+        if int(time.time() * 2) % 2 == 0:  # 0.5초마다 1회
+            print(f"  wrist_roll: leader_raw={leader_rad6[4]:+.4f}  target={out[4]:+.4f}")
 
         try:
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))

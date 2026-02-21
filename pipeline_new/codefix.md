@@ -2,7 +2,7 @@
 
 > **이 문서의 목적**: 기존 v8 코드베이스(`lekiwi_nav_env.py` 중심)를 3-Skill 파이프라인으로 리팩토링하기 위한 완전한 구현 명세.
 >
-> **핵심 원칙**: v8의 검증된 물리·캘리브레이션·DR·grasp 코드를 **함수 단위로 그대로 복사**하되, monolithic 4-phase FSM을 독립 Skill 환경 2개로 분리한다.
+> **핵심 원칙**: v8의 검증된 물리·캘리브레이션·DR·grasp 코드를 **함수 단위로 그대로 복사**하되, monolithic 4-phase FSM을 독립 Skill 환경 3개(Navigate, ApproachAndGrasp, CarryAndPlace)로 분리한다.
 
 ---
 
@@ -31,10 +31,11 @@
 
 | 파일 | 설명 |
 |------|------|
+| `lekiwi_skill1_env.py` | Navigate RL 환경 (장애물 회피 + pseudo-lidar + 감속, 20D actor / 25D critic) |
 | `lekiwi_skill2_env.py` | ApproachAndGrasp 환경 (30D obs) |
 | `lekiwi_skill3_env.py` | CarryAndPlace 환경 (29D obs) |
 | `generate_handoff_buffer.py` | Skill-2 종료 상태 → Skill-3 초기 상태 |
-| `collect_navigate_data.py` | Navigate 스크립트 정책 데이터 수집 |
+| `collect_navigate_data.py` | Navigate 스크립트 정책 데이터 수집 (fallback, RL Expert rollout 우선) |
 | `calibrate_tucked_pose.py` | Tucked Pose 측정 (리더암 TCP, self-collision 방지 한계) |
 | `calibrate_arm_limits.py` | Arm Joint Limits 측정 (리더암 TCP, 관절별 min/max) |
 | `aac_wrapper.py` | IsaacLabWrapper monkey-patch — critic obs 노출 (`state()` 메서드) |
@@ -46,10 +47,10 @@
 | 파일 | 변경 범위 |
 |------|-----------|
 | `models.py` | `CriticNet` 클래스 추가 (기존 코드 유지) |
-| `train_lekiwi.py` | `--skill` 분기 추가 |
+| `train_lekiwi.py` | `--skill` 분기 추가 (navigate / approach_and_grasp / carry_and_place / legacy) |
 | `train_bc.py` | `--expected_obs_dim` required화 |
-| `collect_demos.py` | robot_state 추출 + gripper binary + skill 분기 + `Skill2EnvWithCam`/`Skill3EnvWithCam` 카메라 서브클래스 |
-| `convert_hdf5_to_lerobot_v3.py` | 채널명 v3.0 업데이트 + 단위 변환 제거 |
+| `collect_demos.py` | robot_state 추출 + gripper binary + skill 분기 + `Skill1EnvWithCam`/`Skill2EnvWithCam`/`Skill3EnvWithCam` 카메라 서브클래스 |
+| `convert_hdf5_to_lerobot_v3.py` | 채널명 v3.0 업데이트 + 단위 변환 제거 + `infer_robot_state_from_obs()` dim==20 Navigate 지원 |
 | `record_teleop.py` | privileged obs 동시 기록 |
 | `deploy_vla_action_bridge.py` | `--action_format v6/legacy` 플래그 추가 |
 
@@ -1367,8 +1368,8 @@ class CriticNet(DeterministicMixin, Model):
 
 ```python
 parser.add_argument("--skill", type=str, default="approach_and_grasp",
-                    choices=["approach_and_grasp", "carry_and_place", "legacy"],
-                    help="학습할 skill (legacy = v8 monolithic env)")
+                    choices=["navigate", "approach_and_grasp", "carry_and_place", "legacy"],
+                    help="학습할 skill (navigate = Skill-1 장애물 회피, legacy = v8 monolithic env)")
 parser.add_argument("--handoff_buffer", type=str, default=None,
                     help="Skill-3용 handoff buffer pickle 경로")
 ```
@@ -1378,7 +1379,10 @@ parser.add_argument("--handoff_buffer", type=str, default=None,
 기존 `LeKiwiNavEnv, LeKiwiNavEnvCfg` import를 조건부로 변경:
 
 ```python
-if args.skill == "approach_and_grasp":
+if args.skill == "navigate":
+    from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
+    env_cfg = Skill1EnvCfg()
+elif args.skill == "approach_and_grasp":
     from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
     env_cfg = Skill2EnvCfg()
 elif args.skill == "carry_and_place":
@@ -1390,8 +1394,11 @@ elif args.skill == "carry_and_place":
 
 env_cfg.scene.num_envs = args.num_envs
 # ... 기존 calibration/dynamics/arm_limit/object 설정 그대로 적용 ...
+# ★ Navigate는 grasp/contact/multi_object 관련 설정 불필요 (base-only)
 
-if args.skill == "approach_and_grasp":
+if args.skill == "navigate":
+    raw_env = Skill1Env(cfg=env_cfg)
+elif args.skill == "approach_and_grasp":
     raw_env = Skill2Env(cfg=env_cfg)
 elif args.skill == "carry_and_place":
     raw_env = Skill3Env(cfg=env_cfg)
@@ -1404,13 +1411,13 @@ else:
 ```python
 if mode == "bc_finetune":
     bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
-    expected = 30 if args.skill == "approach_and_grasp" else 29
+    expected = 20 if args.skill == "navigate" else (30 if args.skill == "approach_and_grasp" else 29)
     # ... 기존 mismatch 경고 로직 그대로 ...
 ```
 
 ### 5-4. AAC 통합
 
-skrl 1.4.3는 native AAC를 지원하지 않으므로, 3개 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)을 사용한다:
+skrl 1.4.3는 native AAC를 지원하지 않으므로, 3개 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)을 사용한다. Navigate(Skill-1), ApproachAndGrasp(Skill-2), CarryAndPlace(Skill-3) 모두 AAC를 사용한다. Navigate 전용 변경: `entropy_loss_scale=0.02` (더 많은 탐색), `clip_predicted_values=False`:
 
 ```python
 from aac_wrapper import wrap_env_aac
@@ -1503,13 +1510,19 @@ ep_act[i].append(action_to_save.cpu().numpy())
 
 ### 6-3. `--skill` 분기 추가
 
-train_lekiwi.py와 동일한 패턴으로 환경 import 분기.
+train_lekiwi.py와 동일한 패턴으로 환경 import 분기. Navigate(navigate), ApproachAndGrasp(approach_and_grasp), CarryAndPlace(carry_and_place) 모두 지원. Navigate 데이터 수집 시 arm은 TUCKED_POSE로 고정, gripper=open(1.0)으로 오버라이드하여 저장한다.
 
 ### 6-4. 카메라 서브클래스
 
 VLA 데이터 수집 시 카메라 렌더링이 필요하므로, 환경에 TiltedCamera 2대(base_cam, wrist_cam)를 추가한 서브클래스를 `collect_demos.py` 내부에 정의한다:
 
 ```python
+class Skill1EnvWithCam(Skill1Env):
+    """Skill1Env + base_cam + wrist_cam 카메라 추가 (Navigate 데이터 수집용)."""
+    def _setup_scene(self):
+        super()._setup_scene()
+        # TiltedCamera 2대 추가 (base_cam, wrist_cam)
+
 class Skill2EnvWithCam(Skill2Env):
     """Skill2Env + base_cam + wrist_cam 카메라 추가."""
     def _setup_scene(self):
@@ -1569,6 +1582,17 @@ STATE_CHANNEL_NAMES = [
 # 기존 infer_robot_state_from_obs() (obs[18:24]+obs[30:33]) 불필요
 def read_robot_state(hdf5_episode):
     return hdf5_episode["robot_state"][:]  # shape (T, 9), 그대로 사용 (단위 변환 불필요)
+
+# fallback: robot_state 필드가 없는 경우 obs에서 추론
+def infer_robot_state_from_obs(obs: np.ndarray) -> np.ndarray:
+    dim = obs.shape[-1]
+    if dim == 20:  # Skill-1 Navigate: arm(5)+grip(1)+base_vel(3)+...
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
+    elif dim == 30:  # Skill-2 ApproachAndGrasp
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
+    elif dim == 29:  # Skill-3 CarryAndPlace
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
+    # ... 기존 v8(33D/37D) 로직 ...
 ```
 
 ### 7-4. info.json 업데이트
@@ -1778,6 +1802,15 @@ if __name__ == "__main__":
 cd ~/IsaacLab/scripts/lekiwi_nav_env
 conda activate env_isaaclab && source ~/isaacsim/setup_conda_env.sh
 
+# ── Step 0: Skill-1 Navigate RL (from scratch, BC 불필요) ──
+python train_lekiwi.py --num_envs 2048 --skill navigate \
+  --max_iterations 3000 --headless
+# obs: actor=20D, critic=25D, 장애물 회피 + 감속 정지 학습
+
+# ── Step 0b: Skill-1 Navigate 데이터 수집 (RL Expert rollout) ──
+python collect_demos.py --checkpoint logs/ppo_navigate/best_agent.pt \
+  --skill navigate --num_demos 1000 --num_envs 4
+
 # ── Step 1: Skill-2 테스트 (환경 동작 확인) ──
 python -c "
 from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
@@ -1856,6 +1889,13 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 **USD Joint Limits:**
 - arm joint 6개 + gripper 1개 + wheel 3개 + roller 30개 = 전부 `(-inf, inf)`
 - RL: `arm_limit_write_to_sim=True`로 실측 범위 강제, 텔레옵: `False` (USD 기본 리밋 사용, 그리퍼 완전 닫힘 허용)
+- 실측 완료: `calibration/arm_limits_measured.json` (2026-02-21), tucked pose 제약 적용됨
+
+**wrist_roll 기어비:**
+- 실물 wrist_roll에 약 1.8:1 기어 증폭 존재 (서보 1rad → 손목 ~1.8rad)
+- USD 관절은 기어비 미모델링 → `isaac_teleop.py`의 `SIGNS[4]=1.814`로 보상
+- 측정: SIGNS=1.0에서 그리퍼 좌→우(180°) 회전, leader_raw Δ=1.7321 → `π / 1.7321 = 1.814`
+- wrist_roll 캘리브레이션(LEADER_REST) 미완 — 리더↔LeKiwi 페어 캘리브레이션 시 wrist_roll 미측정(자동 입력). 리더↔sim offset 보정 필요 시 `isaac_teleop.py`의 `LEADER_REST_RAD6[4]`만 조정 (리더↔LeKiwi 페어 캘리브레이션 파일은 수정 금지)
 
 **Contact sensor:** USD에 미포함. Isaac Lab `ContactSensorCfg`로 코드에서 동적 생성 (v8 방식 유지).
 
@@ -1879,7 +1919,8 @@ python collect_demos.py --checkpoint logs/ppo_skill2/best_agent.pt \
 - [ ] ★ Skill-3에서 drop 발생 시 `rew_drop_penalty`가 정상 적용되는지
 - [ ] ★ Skill-3에서 home 근처 의도적 place와 mid-carry drop이 구분되는지
 - [ ] ★ RL: `arm_limit_write_to_sim: True` 상태에서 팔이 몸체를 관통하지 않는지
-- [ ] ★ 텔레옵: `arm_limit_write_to_sim: False` 상태에서 그리퍼 완전 닫힘 동작 확인
+- [x] ★ 텔레옵: `arm_limit_write_to_sim: False` 상태에서 그리퍼 완전 닫힘 동작 확인 (2026-02-21)
+- [x] ★ 텔레옵: wrist_roll SIGNS=1.814에서 리더암↔sim 1:1 회전 확인 (2026-02-21)
 - [ ] `collect_demos.py`의 robot_state가 `[arm6, base_body_vel3]` = 9D
 - [ ] 저장된 action의 `action[5]`가 0.0 또는 1.0 (gripper binary)
 - [ ] `convert_hdf5_to_lerobot_v3.py` 출력의 채널명이 `x.vel, y.vel, theta.vel`

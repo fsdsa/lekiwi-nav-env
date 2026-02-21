@@ -96,8 +96,8 @@ parser.add_argument(
     "--skill",
     type=str,
     default="approach_and_grasp",
-    choices=["approach_and_grasp", "carry_and_place", "legacy"],
-    help="수집할 skill (legacy = v8 monolithic env)",
+    choices=["approach_and_grasp", "carry_and_place", "navigate", "legacy"],
+    help="수집할 skill (navigate = Skill-1 base-only, legacy = v8 monolithic env)",
 )
 parser.add_argument(
     "--handoff_buffer",
@@ -142,6 +142,7 @@ import torch
 from isaaclab.sensors import Camera, CameraCfg
 
 from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
 from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
 from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
 from models import PolicyNet, ValueNet
@@ -386,6 +387,49 @@ class Skill3EnvWithCam(Skill3Env):
         return self._extract_rgb(self.wrist_cam)
 
 
+class Skill1EnvWithCam(Skill1Env):
+    """Skill1Env + base_rgb/wrist RGB 카메라 (VLA 데이터 수집용)."""
+
+    def __init__(self, cfg, base_cam_w=1280, base_cam_h=720,
+                 wrist_cam_w=640, wrist_cam_h=480, render_mode=None, **kwargs):
+        self._base_cam_w = base_cam_w
+        self._base_cam_h = base_cam_h
+        self._wrist_cam_w = wrist_cam_w
+        self._wrist_cam_h = wrist_cam_h
+        super().__init__(cfg, render_mode, **kwargs)
+
+    def _setup_scene(self):
+        super()._setup_scene()
+        base_cam_cfg = CameraCfg(
+            prim_path=BASE_RGB_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._base_cam_h, width=self._base_cam_w, data_types=["rgb"],
+        )
+        self.base_cam = Camera(base_cam_cfg)
+        self.scene.sensors["base_cam"] = self.base_cam
+
+        wrist_cam_cfg = CameraCfg(
+            prim_path=WRIST_CAM_PRIM, spawn=None, update_period=0.0,
+            height=self._wrist_cam_h, width=self._wrist_cam_w, data_types=["rgb"],
+        )
+        self.wrist_cam = Camera(wrist_cam_cfg)
+        self.scene.sensors["wrist_cam"] = self.wrist_cam
+        print(f"  [Camera] Skill1EnvWithCam: base={self._base_cam_w}x{self._base_cam_h}, wrist={self._wrist_cam_w}x{self._wrist_cam_h}")
+
+    def _extract_rgb(self, camera: Camera) -> torch.Tensor | None:
+        rgb = camera.data.output.get("rgb")
+        if rgb is None:
+            return None
+        if rgb.dtype == torch.float32:
+            rgb = (rgb * 255).clamp(0, 255).to(torch.uint8)
+        return rgb[:, :, :, :3]
+
+    def get_base_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.base_cam)
+
+    def get_wrist_rgb(self) -> torch.Tensor | None:
+        return self._extract_rgb(self.wrist_cam)
+
+
 def _extract_first_tensor(payload):
     if torch.is_tensor(payload):
         return payload
@@ -535,8 +579,12 @@ def _clear_buffers(idx, ep_obs, ep_act, ep_base_img, ep_wrist_img, ep_robot_stat
 
 def main():
     use_camera = not args.no_camera
-    physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
     multi_object_mode = bool(str(args.multi_object_json).strip())
+    # Navigate doesn't use physics grasp mode (no grasp mechanics)
+    if args.skill == "navigate":
+        physics_grasp_mode = False
+    else:
+        physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
     use_spawn = args.objects_index is not None and use_camera and (not physics_grasp_mode)
     if args.objects_index and not use_camera:
         print("  [WARN] --objects_index가 지정됐지만 --no_camera라 SpawnManager를 비활성화합니다.")
@@ -623,6 +671,9 @@ def main():
             raise ValueError("--handoff_buffer required for carry_and_place skill")
         env_cfg = Skill3EnvCfg()
         env_cfg.handoff_buffer_path = os.path.expanduser(args.handoff_buffer)
+    elif args.skill == "navigate":
+        from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
+        env_cfg = Skill1EnvCfg()
     else:
         from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
         env_cfg = LeKiwiNavEnvCfg()
@@ -670,6 +721,17 @@ def main():
             )
         else:
             env = Skill3Env(cfg=env_cfg)
+    elif args.skill == "navigate":
+        if use_camera:
+            env = Skill1EnvWithCam(
+                cfg=env_cfg,
+                base_cam_w=args.base_cam_width,
+                base_cam_h=args.base_cam_height,
+                wrist_cam_w=args.wrist_cam_width,
+                wrist_cam_h=args.wrist_cam_height,
+            )
+        else:
+            env = Skill1Env(cfg=env_cfg)
     else:
         if use_camera:
             from lekiwi_nav_env import LeKiwiNavEnv  # noqa: ensure import
@@ -832,9 +894,14 @@ def main():
 
             for i in range(args.num_envs):
                 ep_obs[i].append(obs["policy"][i].cpu().numpy())
-                # Gripper binary 변환 (VLA 데이터용: continuous -> 0/1)
                 action_to_save = action[i].clone()
-                action_to_save[5] = 1.0 if action_to_save[5].item() > 0.5 else 0.0
+                if args.skill == "navigate":
+                    # Navigate: arm stays at TUCKED_POSE (zero action = no movement), gripper open
+                    action_to_save[0:5] = 0.0
+                    action_to_save[5] = 1.0
+                else:
+                    # Gripper binary 변환 (VLA 데이터용: continuous -> 0/1)
+                    action_to_save[5] = 1.0 if action_to_save[5].item() > 0.5 else 0.0
                 ep_act[i].append(action_to_save.cpu().numpy())
                 ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
                 if args.annotate_subtasks and step_subtask_ids is not None:

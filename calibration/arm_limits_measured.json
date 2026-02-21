@@ -1,0 +1,28 @@
+{
+  "joint_limits_rad": {
+    "STS3215_03a_v1_Revolute_45": {
+      "min": -1.754671,
+      "max": 1.698081
+    },
+    "STS3215_03a_v1_1_Revolute_49": {
+      "min": -0.203485,
+      "max": 3.264987
+    },
+    "STS3215_03a_v1_2_Revolute_51": {
+      "min": -3.377846,
+      "max": 0.091
+    },
+    "STS3215_03a_v1_3_Revolute_53": {
+      "min": -2.927317,
+      "max": 0.120
+    },
+    "STS3215_03a_Wrist_Roll_v1_Revolute_55": {
+      "min": -1.278005,
+      "max": 4.498843
+    },
+    "STS3215_03a_v1_4_Revolute_57": {
+      "min": -0.202,
+      "max": 1.488736
+    }
+  }
+}

@@ -221,6 +221,9 @@ def infer_robot_state_from_obs(obs: np.ndarray) -> np.ndarray:
     if obs.ndim != 2:
         raise ValueError(f"obs must be 2D, got shape {obs.shape}")
     dim = obs.shape[1]
+    if dim == 20:
+        # Skill-1 Navigate obs: arm_pos(0:5) + gripper(5:6) + base_body_vel(6:9)
+        return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
     if dim == 30:
         # Skill-2 obs: arm_pos(0:5) + gripper(5:6) + base_body_vel(6:9)
         return np.concatenate([obs[:, 0:6], obs[:, 6:9]], axis=1).astype(np.float32)
