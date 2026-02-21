@@ -192,6 +192,10 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     grasp_thresh: float = 0.20      # v8 동일
     object_height: float = 0.03     # v8 동일
 
+    # === Spawn Heading (물체를 로봇 전방에 배치) ===
+    spawn_object_in_front: bool = True       # True = 로봇 yaw를 물체 방향으로 설정
+    spawn_heading_noise_std: float = 0.35    # ~20deg (카메라 FOV half=43.5deg, 2σ < FOV)
+
     # === Curriculum (신규) ===
     curriculum_success_threshold: float = 0.7
     curriculum_dist_increment: float = 0.25
@@ -807,21 +811,10 @@ def _reset_idx(self, env_ids: torch.Tensor):
     if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
         self._disable_grasp_fixed_joint_for_envs(env_ids)
 
-    # === Root reset (v8 그대로) ===
+    # === Root reset — XY 위치 설정 (yaw는 물체 배치 후 결정) ===
     default_root_state = self.robot.data.default_root_state[env_ids].clone()
     root_xy_std = float(self.cfg.dr_root_xy_noise_std) if bool(self.cfg.enable_domain_randomization) else 0.1
     default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * root_xy_std
-
-    random_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
-    if bool(self.cfg.enable_domain_randomization) and float(self.cfg.dr_root_yaw_jitter_rad) > 0.0:
-        random_yaw += torch.randn(num, device=self.device) * float(self.cfg.dr_root_yaw_jitter_rad)
-        random_yaw = torch.atan2(torch.sin(random_yaw), torch.cos(random_yaw))
-    half_yaw = random_yaw * 0.5
-    default_root_state[:, 3] = torch.cos(half_yaw)
-    default_root_state[:, 4] = 0.0
-    default_root_state[:, 5] = 0.0
-    default_root_state[:, 6] = torch.sin(half_yaw)
-    self.robot.write_root_state_to_sim(default_root_state, env_ids)
 
     # === Joint reset (v8 그대로) ===
     joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
@@ -840,6 +833,27 @@ def _reset_idx(self, env_ids: torch.Tensor):
         dist_max=self._curriculum_dist,   # ← 여기가 v8과 다름
         base_z=self.home_pos_w[env_ids, 2],
     )
+
+    # ★ Robot yaw: 물체 방향으로 설정 (+ 노이즈) 또는 360도 랜덤
+    if bool(self.cfg.spawn_object_in_front):
+        dx = self.object_pos_w[env_ids, 0] - default_root_state[:, 0]
+        dy = self.object_pos_w[env_ids, 1] - default_root_state[:, 1]
+        angle_to_obj = torch.atan2(dy, dx)
+        heading_noise = torch.randn(num, device=self.device) * float(self.cfg.spawn_heading_noise_std)
+        robot_yaw = torch.atan2(torch.sin(angle_to_obj + heading_noise), torch.cos(angle_to_obj + heading_noise))
+    else:
+        robot_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+
+    if bool(self.cfg.enable_domain_randomization) and float(self.cfg.dr_root_yaw_jitter_rad) > 0.0:
+        robot_yaw += torch.randn(num, device=self.device) * float(self.cfg.dr_root_yaw_jitter_rad)
+        robot_yaw = torch.atan2(torch.sin(robot_yaw), torch.cos(robot_yaw))
+
+    half_yaw = robot_yaw * 0.5
+    default_root_state[:, 3] = torch.cos(half_yaw)
+    default_root_state[:, 4] = 0.0
+    default_root_state[:, 5] = 0.0
+    default_root_state[:, 6] = torch.sin(half_yaw)
+    self.robot.write_root_state_to_sim(default_root_state, env_ids)
 
     # === Multi-object hide/show (v8 그대로 전체 복사) ===
     if self._multi_object and len(self.object_rigids) > 0:
@@ -886,7 +900,10 @@ def _reset_idx(self, env_ids: torch.Tensor):
     self.task_success[env_ids] = False
     self.just_grasped[env_ids] = False
     self.just_dropped[env_ids] = False    # ★ 신규
-    self.prev_object_dist[env_ids] = 10.0
+    # ★ 실제 거리로 초기화 (공짜 첫 스텝 보상 방지)
+    dx_init = self.object_pos_w[env_ids, 0] - default_root_state[:, 0]
+    dy_init = self.object_pos_w[env_ids, 1] - default_root_state[:, 1]
+    self.prev_object_dist[env_ids] = torch.sqrt(dx_init**2 + dy_init**2)
     self.grasp_entry_step[env_ids] = 0
     self.episode_reward_sum[env_ids] = 0.0
     self.actions[env_ids] = 0.0

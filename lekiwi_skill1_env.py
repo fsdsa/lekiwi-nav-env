@@ -139,6 +139,8 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     rew_action_smoothness: float = -0.005
     rew_decel_weight: float = 0.15
     rew_decel_dist: float = 0.6  # Just above arrival_thresh (0.5m)
+    rew_heading_weight: float = 0.3   # Face the target before moving
+    rew_diagonal_penalty: float = -1.0  # Prevent simultaneous vx+vy
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
@@ -1087,7 +1089,17 @@ class Skill1Env(DirectRLEnv):
         decel_bonus = self.cfg.rew_decel_weight * (1.0 - speed / max_speed).clamp(0.0, 1.0)
         rew_decel = torch.where(near_target, decel_bonus, 0.0)
 
-        total = reward + rew_approach + rew_arrival + rew_collision + rew_speed + rew_smooth + rew_decel
+        # 7. Heading alignment (reward facing the target)
+        heading_to_obj = metrics["heading_object"]  # body-frame angle to object
+        rew_heading = self.cfg.rew_heading_weight * torch.cos(heading_to_obj)
+
+        # 8. Diagonal penalty (prevent simultaneous vx + vy)
+        act_vx_abs = self.actions[:, 6].abs()  # actions are [-1, 1] normalized
+        act_vy_abs = self.actions[:, 7].abs()
+        rew_diagonal = self.cfg.rew_diagonal_penalty * act_vx_abs * act_vy_abs
+
+        total = (reward + rew_approach + rew_arrival + rew_collision + rew_speed
+                 + rew_smooth + rew_decel + rew_heading + rew_diagonal)
         self.prev_object_dist[:] = curr_dist
 
         # Logging
@@ -1098,11 +1110,14 @@ class Skill1Env(DirectRLEnv):
             "rew_speed": rew_speed.mean(),
             "rew_smooth": rew_smooth.mean(),
             "rew_decel": rew_decel.mean(),
+            "rew_heading": rew_heading.mean(),
+            "rew_diagonal": rew_diagonal.mean(),
             "dist_to_target": curr_dist.mean(),
             "min_obstacle_dist": min_obs_dist.mean(),
             "arrival_rate": arrived.float().mean(),
             "collision_rate": collision.float().mean(),
             "avg_speed": speed.mean(),
+            "diagonal_ratio": (act_vx_abs * act_vy_abs).mean(),
         }
 
         self.episode_reward_sum += total

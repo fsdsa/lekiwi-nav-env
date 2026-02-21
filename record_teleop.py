@@ -123,8 +123,8 @@ parser.add_argument(
     "--skill",
     type=str,
     default="legacy",
-    choices=["approach_and_grasp", "legacy"],
-    help="환경 모드: approach_and_grasp(Skill-2, 30D obs, v6 action), legacy(v8 FSM)",
+    choices=["approach_and_grasp", "carry_and_place", "legacy"],
+    help="환경 모드: approach_and_grasp(Skill-2, 30D obs), carry_and_place(Skill-3, 29D obs), legacy(v8 FSM)",
 )
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
@@ -494,6 +494,9 @@ def main():
     if args.skill == "approach_and_grasp":
         from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
         env_cfg = Skill2EnvCfg()
+    elif args.skill == "carry_and_place":
+        from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
+        env_cfg = Skill3EnvCfg()
     else:
         from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
         env_cfg = LeKiwiNavEnvCfg()
@@ -532,6 +535,8 @@ def main():
         )
     if args.skill == "approach_and_grasp":
         env = Skill2Env(cfg=env_cfg)
+    elif args.skill == "carry_and_place":
+        env = Skill3Env(cfg=env_cfg)
     else:
         env = LeKiwiNavEnv(cfg=env_cfg)
 
