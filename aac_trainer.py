@@ -4,14 +4,33 @@ Asymmetric Actor-Critic trainer for skrl 1.4.3.
 skrl 1.4.3의 SequentialTrainer는 critic obs를 추적하지 않는다.
 이 서브클래스는 env.state()를 통해 critic obs를 별도 추적하여
 AAC_PPO agent에 전달한다.
+
+Early stopping: 지정된 metric의 rolling average가 threshold 이상이면 학습 중단.
 """
 from __future__ import annotations
 
 import sys
+from collections import deque
+from dataclasses import dataclass
 
 import torch
 import tqdm
 from skrl.trainers.torch import SequentialTrainer
+
+
+@dataclass
+class EarlyStopCfg:
+    """Early stopping configuration (rolling window average).
+
+    metric: extras["log"]에서 추적할 키 (예: "direction_compliance")
+    threshold: rolling average가 이 값 이상이면 수렴으로 판정
+    window: rolling average 윈도우 크기 (rollout steps)
+    min_timesteps: 최소 학습 timestep (너무 빠른 중단 방지)
+    """
+    metric: str = ""
+    threshold: float = 0.93
+    window: int = 500
+    min_timesteps: int = 2000
 
 
 class AACSequentialTrainer(SequentialTrainer):
@@ -21,9 +40,17 @@ class AACSequentialTrainer(SequentialTrainer):
     _current_critic_states / _current_next_critic_states에 설정.
     """
 
+    def __init__(self, *args, early_stop: EarlyStopCfg | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.early_stop_cfg = early_stop
+        self._es_buffer: deque = deque(maxlen=early_stop.window if early_stop else 1)
+        self._es_triggered = False
+
     def single_agent_train(self) -> None:
         assert self.num_simultaneous_agents == 1
         assert self.env.num_agents == 1
+
+        es = self.early_stop_cfg
 
         # Reset
         states, infos = self.env.reset()
@@ -68,6 +95,30 @@ class AACSequentialTrainer(SequentialTrainer):
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
                             self.agents.track_data(f"Info / {k}", v.item())
+
+                # ── Early stopping check (rolling window average) ──
+                if es and es.metric and timestep >= es.min_timesteps:
+                    if self.environment_info in infos:
+                        log_dict = infos[self.environment_info]
+                        if es.metric in log_dict:
+                            val = log_dict[es.metric]
+                            if isinstance(val, torch.Tensor):
+                                val = val.item()
+                            self._es_buffer.append(val)
+                            if len(self._es_buffer) >= es.window:
+                                avg = sum(self._es_buffer) / len(self._es_buffer)
+                                if avg >= es.threshold:
+                                    self._es_triggered = True
+                                    print(
+                                        f"\n  Early stop: {es.metric} rolling avg "
+                                        f"= {avg:.4f} >= {es.threshold} "
+                                        f"(window={es.window}, timestep {timestep}). "
+                                        f"Saving final checkpoint."
+                                    )
+                                    self.agents.post_interaction(
+                                        timestep=timestep, timesteps=self.timesteps,
+                                    )
+                                    return
 
             self.agents.post_interaction(timestep=timestep, timesteps=self.timesteps)
 

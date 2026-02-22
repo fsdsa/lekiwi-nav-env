@@ -61,10 +61,13 @@ import argparse
 import json
 import math
 import os
+import select
 import socket
 import sys
+import termios
 import time
 import threading
+import tty
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -123,8 +126,26 @@ parser.add_argument(
     "--skill",
     type=str,
     default="legacy",
-    choices=["approach_and_grasp", "carry_and_place", "legacy"],
-    help="환경 모드: approach_and_grasp(Skill-2, 30D obs), carry_and_place(Skill-3, 29D obs), legacy(v8 FSM)",
+    choices=["approach_and_grasp", "carry_and_place", "combined", "legacy"],
+    help="환경 모드: approach_and_grasp(Skill-2), carry_and_place(Skill-3), combined(Skill-2→3 연속), legacy(v8 FSM)",
+)
+parser.add_argument(
+    "--grasp_hold_steps",
+    type=int,
+    default=600,
+    help="combined mode: 파지 유지 스텝 수 (600 = 10s @ 60Hz)",
+)
+parser.add_argument(
+    "--home_dist_thresh",
+    type=float,
+    default=0.7,
+    help="combined mode: Phase 2→3 전환 거리 (home이 이 거리 이내 + FOV 내일 때 Skill-3 기록 시작)",
+)
+parser.add_argument(
+    "--home_fov_thresh",
+    type=float,
+    default=0.76,
+    help="combined mode: Phase 2→3 전환 FOV 각도 (rad, spawn_heading_max_rad과 동일)",
 )
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
@@ -458,6 +479,60 @@ def normalize_arm_positions_to_rad(arm_pos: np.ndarray, unit: str) -> tuple[np.n
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  Non-blocking keyboard input (arrow key detection)
+# ═══════════════════════════════════════════════════════════════════════
+
+_old_term_settings = None
+_keyboard_available = False
+
+
+def _setup_keyboard():
+    """Terminal을 cbreak 모드로 설정 (비차단 키 입력, Ctrl+C 유지)."""
+    global _old_term_settings, _keyboard_available
+    if not sys.stdin.isatty():
+        print("  [WARN] stdin is not a terminal — 화살표 키 비활성화")
+        return
+    try:
+        fd = sys.stdin.fileno()
+        _old_term_settings = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+        _keyboard_available = True
+    except (termios.error, OSError):
+        print("  [WARN] termios setup 실패 — 화살표 키 비활성화")
+
+
+def _restore_keyboard():
+    """Terminal 원래 설정 복원."""
+    global _old_term_settings, _keyboard_available
+    if _old_term_settings is not None:
+        try:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _old_term_settings)
+        except (termios.error, OSError):
+            pass
+        _old_term_settings = None
+    _keyboard_available = False
+
+
+def _check_arrow_key():
+    """비차단 화살표 키 확인. 'right'/'left' 또는 None 반환."""
+    if not _keyboard_available:
+        return None
+    try:
+        if not select.select([sys.stdin], [], [], 0.0)[0]:
+            return None
+        ch = sys.stdin.read(1)
+        if ch == '\x1b':  # ESC sequence (arrow keys)
+            if select.select([sys.stdin], [], [], 0.05)[0]:
+                ch2 = sys.stdin.read(1)
+                if ch2 == '[' and select.select([sys.stdin], [], [], 0.05)[0]:
+                    ch3 = sys.stdin.read(1)
+                    return {'A': 'up', 'B': 'down', 'C': 'right', 'D': 'left'}.get(ch3)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -494,7 +569,7 @@ def main():
     if args.skill == "approach_and_grasp":
         from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
         env_cfg = Skill2EnvCfg()
-    elif args.skill == "carry_and_place":
+    elif args.skill in ("carry_and_place", "combined"):
         from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
         env_cfg = Skill3EnvCfg()
     else:
@@ -502,8 +577,8 @@ def main():
         env_cfg = LeKiwiNavEnvCfg()
 
     env_cfg.scene.num_envs = 1
-    # 텔레옵은 에피소드 길이 충분히 확보 (학습용 20s → 텔레옵 120s)
-    env_cfg.episode_length_s = 120.0
+    # 텔레옵은 에피소드 길이 충분히 확보 (수동 종료 사용, 1시간)
+    env_cfg.episode_length_s = 3600.0
     # 텔레옵 시 DR 비활성화 (action delay, obs noise가 제어를 방해)
     env_cfg.enable_domain_randomization = False
     # 텔레옵 시 PhysX에 baked limits 미기록 → USD 기본 리밋 사용 (test.py와 동일)
@@ -533,12 +608,51 @@ def main():
         raise ValueError(
             "multi-object(37D) 텔레옵 데모에는 --gripper_contact_prim_path가 필요합니다."
         )
+    is_combined = (args.skill == "combined")
+    if is_combined:
+        env_cfg.grasp_gripper_threshold = 0.5  # combined: 확실한 파지만 인정
     if args.skill == "approach_and_grasp":
         env = Skill2Env(cfg=env_cfg)
-    elif args.skill == "carry_and_place":
+    elif args.skill in ("carry_and_place", "combined"):
         env = Skill3Env(cfg=env_cfg)
+        if is_combined:
+            env._combined_mode = True
     else:
         env = LeKiwiNavEnv(cfg=env_cfg)
+
+    # Teleop: grasp_max_object_dist 강제 적용 (configclass 복사 이슈 대비)
+    if physics_grasp_mode:
+        env.cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
+        env.cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
+
+    # Teleop: 환경 자동 종료 비활성화 (물체 충돌/out_of_bounds로 리셋 방지)
+    # grasp state 업데이트는 유지하되, terminated/truncated는 항상 False
+    _original_get_dones = env._get_dones
+
+    def _teleop_get_dones():
+        terminated, truncated = _original_get_dones()
+        terminated[:] = False
+        truncated[:] = False
+        return terminated, truncated
+
+    env._get_dones = _teleop_get_dones
+
+    # Home 위치 마커 (초록 구체)
+    _home_marker = None
+    if hasattr(env, "home_pos_w"):
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+        import isaaclab.sim as sim_utils
+        _home_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/World/Visuals/home_marker",
+            markers={
+                "sphere": sim_utils.SphereCfg(
+                    radius=0.08,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),
+                ),
+            },
+        ))
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
 
     base_radius = float(env.base_radius)
     wheel_radius = float(env.wheel_radius)
@@ -620,6 +734,18 @@ def main():
 
     # —— 녹화 루프 ——
     obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+
+    # 디버그: 물체 스폰 확인
+    if hasattr(env, 'object_rigid') and env.object_rigid is not None:
+        obj_pos = env.object_rigid.data.root_pos_w[0].cpu().numpy()
+        print(f"  [DEBUG] object_rigid pos: ({obj_pos[0]:.3f}, {obj_pos[1]:.3f}, {obj_pos[2]:.3f})")
+        print(f"  [DEBUG] object_pos_w: {env.object_pos_w[0].cpu().numpy()}")
+        print(f"  [DEBUG] object_rigid num_instances: {env.object_rigid.num_instances}")
+    else:
+        print(f"  [DEBUG] object_rigid: None (physics_grasp={getattr(env, '_physics_grasp', '?')})")
 
     episode_obs = []
     episode_actions = []
@@ -628,36 +754,99 @@ def main():
     saved_count = 0
     step_count = 0
 
-    hdf5_file = h5py.File(output_path, "w")
-    hdf5_file.attrs["obs_dim"] = int(obs["policy"].shape[-1])
-    hdf5_file.attrs["action_dim"] = 9
-    hdf5_file.attrs["max_lin_vel"] = float(max_lin_vel)
-    hdf5_file.attrs["max_ang_vel"] = float(max_ang_vel)
-    hdf5_file.attrs["arm_action_scale"] = float(arm_action_scale)
-    hdf5_file.attrs["arm_action_to_limits"] = bool(arm_action_to_limits)
-    if args.dynamics_json:
-        hdf5_file.attrs["dynamics_json"] = str(os.path.expanduser(args.dynamics_json))
-    if args.arm_limit_json:
-        hdf5_file.attrs["arm_limit_json"] = str(os.path.expanduser(args.arm_limit_json))
-        hdf5_file.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
-    hdf5_file.attrs["skill"] = str(args.skill)
-    hdf5_file.attrs["action_format"] = "v6" if use_v6 else "legacy"
-    hdf5_file.attrs["physics_grasp_mode"] = bool(physics_grasp_mode)
-    hdf5_file.attrs["multi_object_mode"] = bool(multi_object_mode)
-    if args.object_usd:
-        hdf5_file.attrs["object_usd"] = str(os.path.expanduser(args.object_usd))
-    if args.multi_object_json:
-        hdf5_file.attrs["multi_object_json"] = str(os.path.expanduser(args.multi_object_json))
-    hdf5_file.attrs["object_mass"] = float(args.object_mass)
-    hdf5_file.attrs["object_scale_phys"] = float(args.object_scale_phys)
-    if args.gripper_contact_prim_path:
-        hdf5_file.attrs["gripper_contact_prim_path"] = str(args.gripper_contact_prim_path)
+    # HDF5 공통 attrs 헬퍼
+    def _write_hdf5_attrs(hf, obs_dim, skill_name):
+        hf.attrs["obs_dim"] = obs_dim
+        hf.attrs["action_dim"] = 9
+        hf.attrs["max_lin_vel"] = float(max_lin_vel)
+        hf.attrs["max_ang_vel"] = float(max_ang_vel)
+        hf.attrs["arm_action_scale"] = float(arm_action_scale)
+        hf.attrs["arm_action_to_limits"] = bool(arm_action_to_limits)
+        if args.dynamics_json:
+            hf.attrs["dynamics_json"] = str(os.path.expanduser(args.dynamics_json))
+        if args.arm_limit_json:
+            hf.attrs["arm_limit_json"] = str(os.path.expanduser(args.arm_limit_json))
+            hf.attrs["arm_limit_margin_rad"] = float(args.arm_limit_margin_rad)
+        hf.attrs["skill"] = skill_name
+        hf.attrs["action_format"] = "v6" if use_v6 else "legacy"
+        hf.attrs["physics_grasp_mode"] = bool(physics_grasp_mode)
+        hf.attrs["multi_object_mode"] = bool(multi_object_mode)
+        if args.object_usd:
+            hf.attrs["object_usd"] = str(os.path.expanduser(args.object_usd))
+        if args.multi_object_json:
+            hf.attrs["multi_object_json"] = str(os.path.expanduser(args.multi_object_json))
+        hf.attrs["object_mass"] = float(args.object_mass)
+        hf.attrs["object_scale_phys"] = float(args.object_scale_phys)
+        if args.gripper_contact_prim_path:
+            hf.attrs["gripper_contact_prim_path"] = str(args.gripper_contact_prim_path)
+
+    if is_combined:
+        os.makedirs("demos", exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        skill2_path = f"demos/combined_skill2_{timestamp}.hdf5"
+        skill3_path = f"demos/combined_skill3_{timestamp}.hdf5"
+        hdf5_skill2 = h5py.File(skill2_path, "w")
+        hdf5_skill3 = h5py.File(skill3_path, "w")
+        _write_hdf5_attrs(hdf5_skill2, 30, "approach_and_grasp")
+        _write_hdf5_attrs(hdf5_skill3, 29, "carry_and_place")
+        hdf5_file = None  # 단일 파일 미사용
+
+        # Phase tracking: 1=Skill-2(기록), 2=Transit(미기록), 3=Skill-3(기록)
+        current_phase = 1
+        grasp_hold_counter = 0
+        skill2_saved = 0
+        skill3_saved = 0
+        phase1_obs, phase1_actions, phase1_active, phase1_robot_state = [], [], [], []
+        phase3_obs, phase3_actions, phase3_active, phase3_robot_state = [], [], [], []
+        print(f"  Combined mode: Skill-2 -> Transit -> Skill-3 연속 레코딩")
+        print(f"    grasp_hold_steps: {args.grasp_hold_steps} ({args.grasp_hold_steps/60:.1f}s)")
+        print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
+        print(f"    home_fov_thresh: {args.home_fov_thresh:.2f}rad (Phase 2->3 전환)")
+        print(f"    grasp_gripper_threshold: {env.cfg.grasp_gripper_threshold}")
+        print(f"    Skill-2 output: {skill2_path}")
+        print(f"    Skill-3 output: {skill3_path}")
+        print(f"    → (오른쪽 화살표): 현재 Phase 저장/진행")
+        print(f"    ← (왼쪽 화살표): 현재 Phase 폐기, 리셋")
+    else:
+        hdf5_file = h5py.File(output_path, "w")
+        _write_hdf5_attrs(hdf5_file, int(obs["policy"].shape[-1]), str(args.skill))
+
+    # 키보드 비차단 입력 설정
+    _setup_keyboard()
 
     print("  ⏳ 텔레옵 입력 연결 대기 중...")
     resolved_arm_unit: str | None = None
 
+    # robot_state 9D 헬퍼
+    def _read_robot_state_9d():
+        arm_ps = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy()
+        vx = env.robot.data.root_lin_vel_b[0, 0].item()
+        vy = env.robot.data.root_lin_vel_b[0, 1].item()
+        wz = env.robot.data.root_ang_vel_b[0, 2].item()
+        return np.concatenate([arm_ps, np.array([vx, vy, wz], dtype=np.float32)])
+
+    # action 저장 헬퍼
+    def _save_action(action_np_in):
+        a = action_np_in.copy()
+        if use_v6:
+            a[5] = 1.0 if a[5] > 0.5 else 0.0
+        return a
+
+    # HDF5 에피소드 저장 헬퍼
+    def _save_episode(hf, ep_idx, ep_obs, ep_actions, ep_active, ep_rs):
+        grp = hf.create_group(f"episode_{ep_idx}")
+        grp.create_dataset("obs", data=np.array(ep_obs))
+        grp.create_dataset("actions", data=np.array(ep_actions))
+        grp.create_dataset("robot_state", data=np.array(ep_rs, dtype=np.float32))
+        grp.create_dataset("teleop_active", data=np.array(ep_active, dtype=np.int8))
+        grp.attrs["num_steps"] = len(ep_obs)
+        grp.attrs["num_active_steps"] = int(np.sum(np.asarray(ep_active, dtype=np.int32)))
+        grp.attrs["success"] = True
+        hf.flush()
+
     try:
-        while sim_app.is_running() and saved_count < args.num_demos:
+        max_demos = args.num_demos
+        while sim_app.is_running() and saved_count < max_demos:
             # 텔레옵 입력 읽기
             arm_pos, body_cmd, is_active = teleop_input.get_latest()
             arm_pos_rad, unit_used = normalize_arm_positions_to_rad(arm_pos, args.arm_input_unit)
@@ -679,7 +868,7 @@ def main():
                     use_v6=use_v6,
                 )
             else:
-                action_np = np.zeros(9)  # 연결 끊겼으면 정지
+                action_np = np.zeros(9)
 
             action = torch.tensor(action_np, dtype=torch.float32, device=env.device).unsqueeze(0)
 
@@ -687,111 +876,263 @@ def main():
             next_obs, reward, terminated, truncated, info = env.step(action)
             step_count += 1
 
-            # 데이터 기록 (항상): 시계열 간격을 일정하게 유지한다.
-            episode_obs.append(obs["policy"][0].cpu().numpy())
-            action_save = action_np.copy()
-            if use_v6:
-                # v6: action[5] = gripper → binary (VLA 데이터 호환)
-                action_save[5] = 1.0 if action_save[5] > 0.5 else 0.0
-            episode_actions.append(action_save)
-            episode_active.append(bool(is_active))
+            # ══════════════════════════════════════════════════
+            #  Combined mode — phase-aware recording
+            # ══════════════════════════════════════════════════
+            if is_combined:
+                action_s = _save_action(action_np)
+                rs = _read_robot_state_9d()
 
-            # Privileged obs: robot_state 9D 동시 기록 (v3.0: body-frame velocity)
-            arm_pos_state = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy()  # 6D
-            vx_body = env.robot.data.root_lin_vel_b[0, 0].item()   # x.vel (m/s)
-            vy_body = env.robot.data.root_lin_vel_b[0, 1].item()   # y.vel (m/s)
-            wz_body = env.robot.data.root_ang_vel_b[0, 2].item()   # theta.vel (rad/s)
-            base_body_vel = np.array([vx_body, vy_body, wz_body], dtype=np.float32)
-            episode_robot_state.append(np.concatenate([arm_pos_state, base_body_vel]))
+                # home 거리/각도 계산 (Phase 2/3 전환 + 상태 출력용)
+                from isaaclab.utils.math import quat_apply_inverse
+                home_delta_w = env.home_pos_w[0:1] - env.robot.data.root_pos_w[0:1]
+                home_rel_b = quat_apply_inverse(env.robot.data.root_quat_w[0:1], home_delta_w)[0]
+                home_dist = torch.norm(home_rel_b[:2]).item()
+                heading_to_home = math.atan2(home_rel_b[0].item(), home_rel_b[1].item())  # +y forward
 
-            # 상태 출력
-            if step_count % 25 == 0:  # 25Hz control → 매초
-                root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
-                target_pos = env.object_pos_w[0, :2].cpu().numpy()
-                dist = np.linalg.norm(root_pos - target_pos)
-                conn_str = "🟢 연결" if is_active else "🔴 끊김"
-                # 그리퍼 디버그: raw input → normalized action → sim joint pos
-                grip_raw = arm_pos_rad[5] if arm_pos_rad is not None else float('nan')
-                grip_action = action_np[5]
-                grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
-                # wrist_roll 디버그 (idx 4 in arm)
-                wr_raw = arm_pos_rad[4] if arm_pos_rad is not None else float('nan')
-                wr_sim = env.robot.data.joint_pos[0, env.arm_idx[4]].item()
-                print(
-                    f"  {conn_str} | "
-                    f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
-                    f"obj=({target_pos[0]:+.2f},{target_pos[1]:+.2f}) | "
-                    f"dist={dist:.2f}m | "
-                    f"steps={len(episode_obs)} | "
-                    f"saved={saved_count}/{args.num_demos}\n"
-                    f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}\n"
-                    f"    wrist_roll: raw={wr_raw:+.4f} sim={wr_sim:+.4f}"
-                )
+                if current_phase == 1:
+                    # Phase 1: Skill-2 (30D obs) 레코딩
+                    s2_obs = env._compute_skill2_actor_obs()
+                    phase1_obs.append(s2_obs[0].cpu().numpy())
+                    phase1_actions.append(action_s)
+                    phase1_active.append(bool(is_active))
+                    phase1_robot_state.append(rs)
 
-            # 목표 도달 확인 (truncated)
-            done = terminated.any() or truncated.any()
+                    # 파지 유지 카운터
+                    if bool(env.object_grasped[0].item()):
+                        grasp_hold_counter += 1
+                    else:
+                        grasp_hold_counter = 0
 
-            if done:
-                root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
-                target_pos = env.object_pos_w[0, :2].cpu().numpy()
-                final_dist = float(np.linalg.norm(root_pos - target_pos))
+                    # Phase 1→2 전환: grasp 유지 충분
+                    if grasp_hold_counter >= args.grasp_hold_steps:
+                        _save_episode(hdf5_skill2, skill2_saved,
+                                      phase1_obs, phase1_actions, phase1_active, phase1_robot_state)
+                        skill2_saved += 1
+                        print(f"\n  >>> Phase 1->2: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                        phase1_obs.clear(); phase1_actions.clear()
+                        phase1_active.clear(); phase1_robot_state.clear()
+                        current_phase = 2
+                        grasp_hold_counter = 0
+                        env.episode_length_buf[0] = 0  # Transit용 타이머 리셋
 
-                # 성공: task_success가 있으면 그것을 우선 사용, 없으면 기존 distance 기반 fallback
-                active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
-                if hasattr(env, "task_success"):
-                    success = bool(env.task_success[0].item()) and active_steps > 10
+                elif current_phase == 2:
+                    # Phase 2: Transit (미기록) — home 근처로 이동
+                    env.episode_length_buf[0] = 0  # timeout 방지
+
+                    # Phase 2→3 전환: home 근접 + FOV 내
+                    close_enough = home_dist < args.home_dist_thresh
+                    in_fov = abs(heading_to_home) < args.home_fov_thresh
+                    if close_enough and in_fov:
+                        print(f"\n  >>> Phase 2->3: Transit 완료 "
+                              f"(home={home_dist:.2f}m, heading={heading_to_home:+.2f}rad), Skill-3 기록 시작")
+                        current_phase = 3
+                        env.episode_length_buf[0] = 0  # Skill-3용 타이머 리셋
+
+                elif current_phase == 3:
+                    # Phase 3: Skill-3 (29D obs) 레코딩
+                    phase3_obs.append(obs["policy"][0].cpu().numpy())
+                    phase3_actions.append(action_s)
+                    phase3_active.append(bool(is_active))
+                    phase3_robot_state.append(rs)
+
+                # 상태 출력 (+ grasp 디버그 정보)
+                if step_count % 25 == 0:
+                    grasped = bool(env.object_grasped[0].item())
+                    grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                    conn = "ON" if is_active else "OFF"
+                    phase_names = {1: "Approach+Grasp", 2: "Transit", 3: "Carry+Place"}
+                    extra = ""
+                    if current_phase == 1:
+                        hold_pct = grasp_hold_counter / args.grasp_hold_steps * 100
+                        # Grasp 조건 디버그
+                        g_closed = grip_sim < float(env.cfg.grasp_gripper_threshold)
+                        cf = env._contact_force_per_env()[0].item()
+                        g_contact = cf > float(env.cfg.grasp_contact_threshold)
+                        # object_dist 직접 계산 (base→object XY)
+                        from isaaclab.utils.math import quat_apply_inverse as _qai
+                        _od_w = env.object_pos_w[0:1] - env.robot.data.root_pos_w[0:1]
+                        _od_b = _qai(env.robot.data.root_quat_w[0:1], _od_w)[0]
+                        od = float(torch.norm(_od_b[:2]).item())
+                        bbox_max = env.object_bbox.max(dim=-1).values[0].item()
+                        ad = min(max(float(env.cfg.grasp_max_object_dist) + bbox_max * 0.5, 0.10), 0.60)
+                        g_close = od < ad
+                        extra = (
+                            f"hold={grasp_hold_counter}/{args.grasp_hold_steps}({hold_pct:.0f}%)\n"
+                            f"    grasp: grip={grip_sim:.3f}({'O' if g_closed else 'X'}) "
+                            f"contact={cf:.2f}({'O' if g_contact else 'X'}) "
+                            f"dist={od:.3f}/{ad:.3f}({'O' if g_close else 'X'})"
+                        )
+                    elif current_phase == 2:
+                        extra = f"heading={heading_to_home:+.2f}rad"
+                    elif current_phase == 3:
+                        extra = f"steps={len(phase3_obs)}"
+                    print(
+                        f"  [{conn}] Phase-{current_phase}({phase_names[current_phase]}) | "
+                        f"home={home_dist:.2f}m | "
+                        f"grip={grip_sim:+.3f} {'GRASPED' if grasped else ''} | "
+                        f"{extra} | "
+                        f"s2={skill2_saved} s3={skill3_saved}/{max_demos}"
+                    )
+
+                # 수동 종료 (화살표 키)
+                key = _check_arrow_key()
+
+                if key == 'left':
+                    # ← : 현재 phase 폐기, 리셋
+                    print(f"\n  [←] Phase {current_phase} 폐기, 리셋")
+                    phase1_obs.clear(); phase1_actions.clear()
+                    phase1_active.clear(); phase1_robot_state.clear()
+                    phase3_obs.clear(); phase3_actions.clear()
+                    phase3_active.clear(); phase3_robot_state.clear()
+                    grasp_hold_counter = 0
+                    current_phase = 1
+                    obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+                    step_count = 0
+                elif key == 'right':
+                    if current_phase == 1:
+                        grasped_now = bool(env.object_grasped[0].item())
+                        if grasped_now and len(phase1_obs) > 10:
+                            _save_episode(hdf5_skill2, skill2_saved,
+                                          phase1_obs, phase1_actions, phase1_active, phase1_robot_state)
+                            skill2_saved += 1
+                            print(f"\n  [→] Phase 1 수동 완료: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                            phase1_obs.clear(); phase1_actions.clear()
+                            phase1_active.clear(); phase1_robot_state.clear()
+                            current_phase = 2
+                            grasp_hold_counter = 0
+                            env.episode_length_buf[0] = 0
+                        else:
+                            print(f"\n  [→] Phase 1: 파지 미완료 (grasped={grasped_now}, steps={len(phase1_obs)}) — 폐기, 리셋")
+                            phase1_obs.clear(); phase1_actions.clear()
+                            phase1_active.clear(); phase1_robot_state.clear()
+                            grasp_hold_counter = 0
+                            current_phase = 1
+                            obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+                            step_count = 0
+                    elif current_phase == 2:
+                        print(f"\n  [→] Phase 2 수동 완료: Transit 건너뜀, Skill-3 기록 시작")
+                        current_phase = 3
+                        env.episode_length_buf[0] = 0
+                    elif current_phase == 3:
+                        active_s = int(np.sum(np.asarray(phase3_active, dtype=np.int32)))
+                        if len(phase3_obs) > 10 and active_s > 10:
+                            _save_episode(hdf5_skill3, skill3_saved,
+                                          phase3_obs, phase3_actions, phase3_active, phase3_robot_state)
+                            skill3_saved += 1
+                            print(f"\n  [→] Phase 3 수동 완료: Skill-3 저장 ({len(phase3_obs)} steps)")
+                        else:
+                            print(f"\n  [→] Phase 3: steps 부족 ({len(phase3_obs)}, active={active_s}) — 폐기")
+                        phase3_obs.clear(); phase3_actions.clear()
+                        phase3_active.clear(); phase3_robot_state.clear()
+                        current_phase = 1
+                        grasp_hold_counter = 0
+                        obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+                        step_count = 0
+                        saved_count = min(skill2_saved, skill3_saved)
+                        if saved_count >= max_demos:
+                            break
                 else:
-                    success = bool(truncated.any() and final_dist < goal_thresh * 2 and active_steps > 10)
+                    obs = next_obs
 
-                if success:
-                    ep_name = f"episode_{saved_count}"
-                    grp = hdf5_file.create_group(ep_name)
-                    grp.create_dataset("obs", data=np.array(episode_obs))
-                    grp.create_dataset("actions", data=np.array(episode_actions))
-                    grp.create_dataset("robot_state", data=np.array(episode_robot_state, dtype=np.float32))
-                    grp.create_dataset("teleop_active", data=np.array(episode_active, dtype=np.int8))
-                    grp.attrs["num_steps"] = len(episode_obs)
-                    grp.attrs["num_active_steps"] = active_steps
-                    grp.attrs["final_dist"] = final_dist
-                    grp.attrs["success"] = True
-                    hdf5_file.flush()
-
-                    saved_count += 1
-                    print(f"\n  ✅ Episode {saved_count} 저장! "
-                          f"({len(episode_obs)} steps, dist={final_dist:.3f}m)")
-                elif terminated.any():
-                    print(f"\n  ❌ 실패 (벗어남/전도) — 폐기, 리셋")
-                else:
-                    print(f"\n  ⚠ 시간 초과 또는 불완전 — 폐기, 리셋")
-
-                # 리셋
-                episode_obs.clear()
-                episode_actions.clear()
-                episode_active.clear()
-                episode_robot_state.clear()
-                obs, info = env.reset()
-                step_count = 0
-
-                if saved_count >= args.num_demos:
-                    break
+            # ══════════════════════════════════════════════════
+            #  Single-skill mode — 기존 로직
+            # ══════════════════════════════════════════════════
             else:
-                obs = next_obs
+                episode_obs.append(obs["policy"][0].cpu().numpy())
+                episode_actions.append(_save_action(action_np))
+                episode_active.append(bool(is_active))
+                episode_robot_state.append(_read_robot_state_9d())
+
+                # 상태 출력
+                if step_count % 25 == 0:
+                    root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
+                    target_pos = env.object_pos_w[0, :2].cpu().numpy()
+                    dist = np.linalg.norm(root_pos - target_pos)
+                    conn_str = "ON" if is_active else "OFF"
+                    grip_raw = arm_pos_rad[5] if arm_pos_rad is not None else float('nan')
+                    grip_action = action_np[5]
+                    grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                    wr_raw = arm_pos_rad[4] if arm_pos_rad is not None else float('nan')
+                    wr_sim = env.robot.data.joint_pos[0, env.arm_idx[4]].item()
+                    print(
+                        f"  [{conn_str}] | "
+                        f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
+                        f"obj=({target_pos[0]:+.2f},{target_pos[1]:+.2f}) | "
+                        f"dist={dist:.2f}m | "
+                        f"steps={len(episode_obs)} | "
+                        f"saved={saved_count}/{max_demos}\n"
+                        f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}\n"
+                        f"    wrist_roll: raw={wr_raw:+.4f} sim={wr_sim:+.4f}"
+                    )
+
+                # 수동 종료 (화살표 키)
+                key = _check_arrow_key()
+                if key == 'right':
+                    # → : 저장 후 리셋
+                    active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
+                    if len(episode_obs) > 10 and active_steps > 10:
+                        _save_episode(hdf5_file, saved_count,
+                                      episode_obs, episode_actions, episode_active, episode_robot_state)
+                        saved_count += 1
+                        print(f"\n  [→] Episode {saved_count} 저장 ({len(episode_obs)} steps)")
+                    else:
+                        print(f"\n  [→] steps 부족 ({len(episode_obs)}, active={active_steps}) — 폐기")
+                    episode_obs.clear(); episode_actions.clear()
+                    episode_active.clear(); episode_robot_state.clear()
+                    obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+                    step_count = 0
+                    if saved_count >= max_demos:
+                        break
+                elif key == 'left':
+                    # ← : 폐기 후 리셋
+                    print(f"\n  [←] 폐기, 리셋")
+                    episode_obs.clear(); episode_actions.clear()
+                    episode_active.clear(); episode_robot_state.clear()
+                    obs, info = env.reset()
+    if _home_marker is not None:
+        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+        _home_marker.visualize(translations=_hm)
+                    step_count = 0
+                else:
+                    obs = next_obs
 
     except KeyboardInterrupt:
         print("\n\n  중단됨 (Ctrl+C)")
+    finally:
+        _restore_keyboard()
 
     # —— 마무리 ——
-    hdf5_file.close()
+    if is_combined:
+        hdf5_skill2.close()
+        hdf5_skill3.close()
+        print(f"\n" + "=" * 60)
+        print(f"  Combined 녹화 완료")
+        print(f"  Skill-2 에피소드: {skill2_saved} -> {skill2_path}")
+        print(f"  Skill-3 에피소드: {skill3_saved} -> {skill3_path}")
+        print("=" * 60)
+    else:
+        hdf5_file.close()
+        print(f"\n" + "=" * 60)
+        print(f"  녹화 완료")
+        print(f"  저장된 에피소드: {saved_count}")
+        print(f"  파일: {output_path}")
+        print(f"\n  다음 단계:")
+        print(f"    python train_bc.py --demo_dir demos/ --epochs 200")
+        print("=" * 60)
 
-    print(f"\n" + "=" * 60)
-    print(f"  녹화 완료")
-    print(f"  저장된 에피소드: {saved_count}")
-    print(f"  파일: {output_path}")
-    print(f"\n  다음 단계:")
-    print(f"    python train_bc.py --demo_dir demos/ --epochs 200")
-    print("=" * 60)
-
-    # 텔레옵 입력 정리
     teleop_input.shutdown()
     if selected_source == "ros2":
         teleop_input.destroy_node()

@@ -16,7 +16,7 @@ sim 데이터가 real에서 통하려면 두 가지가 보장되어야 한다. �
 
 **캘리브레이션/텔레옵 환경 (RTX 3090 Desktop)**: Isaac Sim 5.0 + Isaac Lab 0.44.9, conda env_isaaclab (Python 3.11, PyTorch 2.7.0+cu128), skrl 1.4.3 / rsl_rl.
 
-**BC/RL 학습 환경 (A100 서버)**: Isaac Sim 5.0.0.0 (headless, pip) + Isaac Lab v2.2.0 (editable), conda rl_train, skrl 1.4.3. 서버 설치/전송/학습 가이드: `feedback/server_guide.md`, 환경 설치: `feedback/setup_server_env.sh`, 검증: `bash feedback/setup_server_env.sh verify`
+**BC/RL 학습 환경 (A100 서버)**: A100-SXM4-40GB, Isaac Sim 5.0.0.0 (headless, pip) + Isaac Lab v2.2.0 (editable), conda rl_train (`~/miniconda3/`), skrl 1.4.3. 서버 설치/전송/학습 가이드: `pipeline_new/server_guide.md`, 환경 설치: `feedback/setup_server_env.sh`, 검증: `bash feedback/setup_server_env.sh verify`
 
 ```bash
 # Desktop (캘리브레이션/텔레옵/데이터 수집)
@@ -24,8 +24,9 @@ conda activate env_isaaclab
 source ~/isaacsim/setup_conda_env.sh
 cd ~/IsaacLab/scripts/lekiwi_nav_env
 
-# Server (BC/RL 학습)
-conda activate rl_train
+# Server (BC/RL 학습) — non-interactive shell에서 반드시 source 필요
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train
+export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd
 cd ~/IsaacLab/scripts/lekiwi_nav_env
 ```
 
@@ -84,7 +85,7 @@ python calibrate_arm_limits.py --port 15002
 python build_arm_limits_real2sim.py \
   --calibration_json calibration/calibration_latest.json \
   --encoder_calibration_json ~/.cache/huggingface/lerobot/calibration/robots/lekiwi/my_awesome_kiwi.json \
-  --output calibration/arm_limits_real2sim.json
+  --output calibration/arm_limits_measured.json
 ```
 
 #### 2-1-4. Sim 파라미터 튜닝
@@ -118,7 +119,7 @@ python replay_in_sim.py \
   --calibration calibration/calibration_latest.json \
   --mode command \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --report_path calibration/replay_command_report.json \
   --series_path calibration/replay_command_series.json --headless
 
@@ -126,7 +127,7 @@ python replay_in_sim.py \
   --calibration calibration/calibration_latest.json \
   --mode arm_command \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --report_path calibration/replay_arm_report.json \
   --series_path calibration/replay_arm_series.json --headless
 
@@ -287,9 +288,15 @@ Skill-1(Navigate), Skill-2(ApproachAndGrasp), Skill-3(CarryAndPlace) 각각에 �
 - GRASP timeout 메커니즘 (75 steps, Skill-2/3)
 - Kiwi IK, body velocity 읽기 (모든 Skill 공통)
 
-**Skill-1(Navigate)은 독립 환경** (`lekiwi_skill1_env.py`): Skill-2/3와 달리 물체 grasp, contact sensor, curriculum 등이 없고, 텐서 기반 장애물 + pseudo-lidar + 감속 보상으로 구성된다. `train_lekiwi.py --skill navigate`로 학습.
+**Skill-1(Navigate)은 독립 환경** (`lekiwi_skill1_env.py`): Direction-conditioned RL — VLM 방향 명령(forward/backward/left/right/turn_left/turn_right)을 obs로 받아, 해당 방향 이동 + 장애물 회피를 학습한다. 텐서 기반 장애물 + 8-ray pseudo-lidar + direction following 보상으로 구성. `train_lekiwi.py --skill navigate`로 학습.
 
 **모든 학습/수집 명령에서 `--dynamics_json`과 `--arm_limit_json`을 반드시 사용한다.**
+
+> **⚠️ arm_limit_json은 반드시 `arm_limits_measured.json`(신버전)을 사용할 것.**
+> 기존 `arm_limits_real2sim.json`(구버전, encoder 캘리브레이션 기반, 대칭 ±1.745)은 더 이상 사용하지 않는다.
+> 신버전은 `calibrate_arm_limits.py` + `isaac_teleop.py` TCP로 직접 측정한 비대칭 실측값이며,
+> `lekiwi_robot_cfg.py`의 `ARM_LIMITS_BAKED_RAD`도 동일 값으로 동기화되어 있다.
+> 서버/Desktop 모두 동일하게 `arm_limits_measured.json`을 사용해야 한다.
 
 ---
 
@@ -313,12 +320,64 @@ python leader_to_home_tcp_rest_matched_with_keyboard_base.py \
 python record_teleop.py --num_demos 20 \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json
+  --arm_limit_json calibration/arm_limits_measured.json
 ```
 
 기록 데이터: (카메라 이미지 2장, 9D state, 9D action) 프레임 단위. HDF5 형식.
+
+#### Combined 텔레옵 모드 (Skill-2 + Skill-3 연속 레코딩)
+
+Skill-3의 fallback reset은 물체를 gripper에 물리적으로 고정하지 못하는 문제(stale USD transform)가 있다. **Combined 모드**는 Skill-2에서 자연스럽게 물체를 잡은 뒤, 같은 sim 상태 그대로 Skill-3로 전환하여 두 스킬의 데모를 한 세션에서 동시에 수집한다. 3-phase 구조로 중간에 **Transit(미기록 이동)** 단계가 포함된다.
+
+**3-Phase 전환 메커니즘:**
+- **Phase 1 (Skill-2 기록)**: 접근 + 파지 → 30D obs 레코딩
+- **Phase 1→2 전환**: `object_grasped == True` **연속 600스텝** (10초 @ 60Hz) 유지
+  - `grasp_gripper_threshold`를 0.7 → **0.5**로 낮춤 (확실한 파지만 인정)
+  - 중간에 `object_grasped == False` 되면 카운터 리셋
+  - Skill-2 에피소드 저장
+- **Phase 2 (Transit, 미기록)**: 사람이 키보드로 home 근처까지 base 이동
+  - `episode_length_buf = 0` 매 스텝 (timeout 방지)
+  - 데이터 기록하지 않음 (실배포 시 Skill-1 Navigate가 이 역할)
+- **Phase 2→3 전환**: `home_dist < 0.7m` AND `|heading_to_home| < 0.76rad` (home이 FOV 내)
+  - Skill-1→Skill-2 전환과 동일한 근접+FOV 조건
+- **Phase 3 (Skill-3 기록)**: 목적지 접근 + place → 29D obs 레코딩
+  - **Home 마커**: 초록 구체가 home 위치에 표시됨 (리셋 시 자동 갱신)
+- **수동 종료**: → 화살표(저장+다음), ← 화살표(폐기+리셋). 모든 Phase에서 작동
+- Phase 3 종료 (→ 화살표/drop/timeout) → 리셋 → Phase 1로
+
+**배포 시 파이프라인과의 관계**: Transit(Phase 2)은 실배포 시 Skill-1(Navigate)이 담당한다. Skill-1은 물체를 든 상태에서도 base만 제어하므로 carrying dynamics 차이가 작아 별도 학습 없이 사용 가능(DR이 커버). 텔레옵에서 Transit을 사람이 수행하는 것은 Skill-1 데이터가 필요 없기 때문(RL from scratch).
+
+**Edge cases:**
+| 상황 | 처리 |
+|------|------|
+| Phase 1 timeout (못 잡음) | 데이터 폐기, 리셋 |
+| 잠깐 잡았다 놓침 | 카운터 리셋, 계속 시도 |
+| Phase 2에서 drop/fall | Skill-2는 이미 저장됨, 리셋 |
+| Phase 3에서 drop | Skill-3 폐기, 리셋 |
+| Phase 3 timeout | Skill-3 폐기, 리셋 |
+| Phase 3 place 성공 | Skill-3 저장, 리셋 |
+
+**출력**: 두 개의 HDF5 파일이 동시 생성
+- `demos/combined_skill2_TIMESTAMP.hdf5` (obs_dim=30, skill=approach_and_grasp)
+- `demos/combined_skill3_TIMESTAMP.hdf5` (obs_dim=29, skill=carry_and_place)
+
+```bash
+# Combined 텔레옵 — run_teleop.sh 사용 권장 (긴 경로 줄바꿈 방지)
+bash run_teleop.sh
+
+# 또는 직접 실행 (경로 줄바꿈 주의: 변수 사용 권장)
+OBJ="/path/to/object/model_clean.usd"
+python record_teleop.py --num_demos 10 \
+  --skill combined --grasp_hold_steps 600 \
+  --home_dist_thresh 0.7 --home_fov_thresh 0.76 \
+  --object_usd "$OBJ" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
+  --arm_limit_json calibration/arm_limits_measured.json
+```
+
+종료 조건: `min(skill2_saved, skill3_saved) >= num_demos`.
 
 **핵심: 텔레옵 시 sim에서 privileged obs(rel_object, contact)를 동시에 기록한다.** 이렇게 해야 BC의 obs가 RL Actor와 동일한 형태가 되어 weight transfer가 매끄럽다. "사후 추출" 방식은 replay 파이프라인이 추가로 필요하므로, sim 텔레옵 시 동시 기록을 기본으로 한다.
 
@@ -392,7 +451,7 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 
 **GRASP timeout**: 기존 v8의 `grasp_timeout_steps=75` (~3초@25Hz) 유지. timeout 내 grasp 미성공 시 APPROACH로 복귀 재시도.
 
-**Grasp Break 감지**: FixedJoint 파손 시 `object_grasped`가 자동으로 False가 되지 않으므로, 매 step gripper-object 거리를 체크하여 `grasp_drop_detect_dist`(0.15m) 초과 시 drop 판정 (`just_dropped=True`). Skill-3에서 drop → terminated(에피소드 즉시 종료) + `rew_drop_penalty=-10`. 의도적 place(home 근처 gripper 열기)와 비의도적 drop(break_force 초과)은 `just_dropped` 플래그로 구분.
+**Grasp Break 감지**: FixedJoint 파손 시 `object_grasped`가 자동으로 False가 되지 않으므로, 매 step gripper body-object 거리를 체크하여 `grasp_drop_detect_dist`(0.30m) 초과 시 drop 판정 (`just_dropped=True`). gripper body 중심~물체 중심 자연 오프셋이 ~0.18m이므로 0.30m로 설정 (기존 0.15m은 정상 파지에서도 drop 오판). Skill-3에서 drop → terminated(에피소드 즉시 종료) + `rew_drop_penalty=-10`. 의도적 place(home 근처 gripper 열기)와 비의도적 drop(break_force 초과)은 `just_dropped` 플래그로 구분.
 
 **Reward 설계**:
 
@@ -406,7 +465,7 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 
 **다중 물체 관리 (기존 v8 방식 유지)**: object_catalog.json의 12종 대표 물체를 환경 초기화 시 모두 pre-spawn한다. 매 에피소드 reset 시 12종 중 1종을 랜덤 선택하고, 선택된 물체만 로봇 근처에 배치하고 나머지는 z=-10에 숨긴다. 물체는 **바닥 위**에 배치되며(object_height = bbox_z × 0.5, 물체 크기에 맞게 지면 안착), 로봇 home에서 1.0~2.5m 거리에 360° 랜덤 방향으로 놓인다. 물체 yaw도 랜덤. 이렇게 하면 Teacher가 물체별로 다른 크기/형상에 적응한 grasp 전략을 학습한다.
 
-**Curriculum Learning**: 처음에는 물체를 로봇 앞 0.5m에 놓고, 성공률 70% 초과 시 거리를 점진적으로 2.5m까지 늘린다.
+**Curriculum Learning**: 처음에는 물체를 로봇 앞 0.7m에 놓고, 성공률 70% 초과 시 거리를 점진적으로 2.5m까지 늘린다.
 
 **Domain Randomization (Dynamics, reset-time)**: 기존 v8 코드의 `enable_domain_randomization=True`를 그대로 사용.
 - Wheel: stiffness(0.75~1.5x), damping(0.3~3.0x), friction(0.7~1.3x)
@@ -416,7 +475,7 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 - Observation noise: joint_pos(0.01 rad), base_vel(0.02 m/s), object_rel(0.02 m)
 - Action delay: 1 step (10-50ms 통신 지연 시뮬레이션)
 
-**PPO 하이퍼파라미터**: lr=3e-4 (KLAdaptiveLR, `kl_threshold=0.01`, BC fine-tune 시 `×0.3`), gamma=0.99, GAE lambda=0.95, ratio_clip=0.15, grad_norm_clip=0.5, entropy_coef=0.01, mini_batches=4, learning_epochs=5, rollouts=24, clip_predicted_values=True, value_clip=0.2, value_loss_scale=1.0. 병렬 환경 **2048개** (state-only Actor, 이미지 렌더링 불필요 — v8 기본값과 동일).
+**PPO 하이퍼파라미터**: lr=3e-4 (KLAdaptiveLR, `kl_threshold=0.01`, BC fine-tune 시 `×0.3`), gamma=0.99, GAE lambda=0.95, ratio_clip=0.15, grad_norm_clip=0.5, entropy_coef=0.01, mini_batches=4, learning_epochs=5, rollouts=24, clip_predicted_values=True, value_clip=0.2, value_loss_scale=1.0. 병렬 환경 **2048~8192개** (state-only Actor, 이미지 렌더링 불필요). A100에서는 8192 envs로 확대 가능 (VRAM 11GB/40GB). 8192+ envs 사용 시 `PhysxCfg(gpu_max_rigid_patch_count=2**18)` 필요 (`server_guide.md` 트러블슈팅 참조).
 
 **BC → RL weight transfer**: BC의 state_dict를 RL Actor에 key-by-key 복사. 네트워크 구조 동일하므로 shape 동일. Critic은 랜덤 초기화. 기존 `train_lekiwi.py`의 BC warm-start 로직 재사용 (obs dim mismatch 시 net.0.weight 자동 어댑트).
 
@@ -426,9 +485,9 @@ python train_lekiwi.py \
   --bc_checkpoint checkpoints/bc_skill2.pt \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --headless
 ```
 
@@ -470,7 +529,9 @@ env_origin 기준 상대 좌표로 저장되며, `_reset_from_handoff`에서 des
 
 #### 3-4-1. 텔레옵 수집
 
-Handoff Buffer의 상태 중 하나를 sim에 로드하고, 사람이 10~20개 시범을 보인다. 물체를 이미 잡은 상태에서 시작하여 home으로 이동하고 내려놓는다.
+**방법 A: Combined 모드 (권장)** — `record_teleop.py --skill combined`로 Skill-2와 동시에 수집. 3-phase 구조: Phase 1(접근+파지, 30D 기록) → Phase 2(Transit, 사람이 home 근처로 이동, 미기록) → Phase 3(목적지 접근+place, 29D 기록). home이 0.7m 이내 + FOV 내에 들어오면 Phase 3 기록이 자동 시작된다. Handoff Buffer 없이 물리 기반 grasp 상태를 그대로 이어받으므로 stale USD transform 문제가 없다. 자세한 사용법은 §3-2-1 "Combined 텔레옵 모드" 참조.
+
+**방법 B: 단독 수집** — Handoff Buffer의 상태 중 하나를 sim에 로드하고, 사람이 10~20개 시범을 보인다. 물체를 이미 잡은 상태에서 시작하여 home으로 이동하고 내려놓는다. Handoff Buffer가 충분히 확보된 후 사용.
 
 #### 3-4-2. BC 학습
 
@@ -545,9 +606,9 @@ python train_lekiwi.py \
   --skill carry_and_place \
   --handoff_buffer handoff_buffer.pkl \
   --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --headless
 ```
 
@@ -582,14 +643,14 @@ sim에서 Isaac Sim의 `root_lin_vel_b`와 `root_ang_vel_b`로 body-frame veloci
 
 #### 4-3-1. RL Expert rollout (권장)
 
-`lekiwi_skill1_env.py`로 학습한 Navigate RL Expert를 `collect_demos.py --skill navigate`로 rollout한다. RL Expert는 장애물 회피 + 감속 정지를 학습했으므로, P-controller보다 풍부한 행동 데이터를 생성한다. `Skill1EnvWithCam`(Skill1Env를 상속하여 TiltedCamera 2대를 추가한 서브클래스)을 사용한다.
+`lekiwi_skill1_env.py`로 학습한 Direction-Conditioned Navigate RL Expert를 `collect_demos.py --skill navigate`로 rollout한다. RL Expert는 방향 명령 추종 + 장애물 회피를 학습했으므로, P-controller보다 풍부한 행동 데이터를 생성한다. `Skill1EnvWithCam`(Skill1Env를 상속하여 TiltedCamera 2대를 추가한 서브클래스)을 사용한다.
 
 ```bash
 python collect_demos.py \
   --checkpoint logs/ppo_lekiwi/navigate/checkpoints/best_agent.pt \
   --skill navigate \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless
 ```
 
@@ -631,9 +692,9 @@ python collect_demos.py \
   --checkpoint logs/ppo_lekiwi/skill2_bc_finetune/checkpoints/best_agent.pt \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless \
   --annotate_subtasks
 ```
@@ -697,9 +758,9 @@ python collect_demos.py \
   --skill carry_and_place \
   --handoff_buffer handoff_buffer.pkl \
   --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/Moving_Jaw_08d_v1" \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
+  --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless \
   --annotate_subtasks
 ```
@@ -808,7 +869,7 @@ Phase 0: Sim-Real 일치 ★ Phase 1 시작 전 필수 (Hard Gate) ★
 
 Phase 1: RL Expert 학습 (텔레옵: 3090 Desktop, BC/RL: A100 서버)
   Skill-1 (Navigate):
-    RL from scratch (A100, PPO+AAC, 20D actor, 25D critic, BC 불필요) → 50%+ arrival rate
+    [✅] RL from scratch 완료 (A100, 8192 envs, ~10500 steps/20분, compliance 93.8%, collision 1.1%, early stop 구현)
   Skill-2 (ApproachAndGrasp):
     텔레옵 10~20개 (Desktop) → scp → BC (A100) → RL (A100, PPO+AAC, 성공률 90%+)
   Handoff Buffer:

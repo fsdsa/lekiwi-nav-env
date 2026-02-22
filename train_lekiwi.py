@@ -86,6 +86,12 @@ parser.add_argument("--skill", type=str, default="approach_and_grasp",
                     help="학습할 skill (navigate = Skill-1 base-only, legacy = v8 monolithic env)")
 parser.add_argument("--handoff_buffer", type=str, default=None,
                     help="Skill-3용 handoff buffer pickle 경로")
+parser.add_argument("--early_stop_metric", type=str, default="",
+                    help="Early stopping metric key from extras['log'] (e.g. direction_compliance)")
+parser.add_argument("--early_stop_threshold", type=float, default=0.93,
+                    help="Rolling avg threshold for early stopping (default 0.93)")
+parser.add_argument("--early_stop_window", type=int, default=500,
+                    help="Rolling window size in rollout steps (default 500)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
@@ -535,17 +541,41 @@ def main():
         "headless": args.headless,
         "environment_info": "log",  # Isaac Lab puts custom metrics in extras["log"]
     }
+
+    # Early stopping config
+    from aac_trainer import EarlyStopCfg
+    early_stop = None
+    es_metric = args.early_stop_metric
+    # Navigate defaults: auto-enable early stopping on direction_compliance
+    if not es_metric and args.skill == "navigate":
+        es_metric = "direction_compliance"
+    if es_metric:
+        early_stop = EarlyStopCfg(
+            metric=es_metric,
+            threshold=args.early_stop_threshold,
+            window=args.early_stop_window,
+        )
+        print(f"  Early stopping: {es_metric} rolling avg >= {args.early_stop_threshold} "
+              f"(window={args.early_stop_window})")
+
     if use_aac and env._aac_state_space is not None:
-        trainer = AACSequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
+        trainer = AACSequentialTrainer(
+            cfg=trainer_cfg, env=env, agents=agent, early_stop=early_stop,
+        )
     else:
         trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
+        if early_stop:
+            print("  ⚠ Early stopping only supported with AACSequentialTrainer (AAC mode)")
 
     # —— Train! ——————————————————————————————————————————————
     print(f"\n  Training started ({mode_label})...")
     trainer.train()
 
+    es_msg = ""
+    if hasattr(trainer, '_es_triggered') and trainer._es_triggered:
+        es_msg = " (early stopped)"
     best_ckpt = os.path.join(log_dir, exp_name, "checkpoints", "best_agent.pt")
-    print(f"\n  Training complete! Logs: {log_dir}")
+    print(f"\n  Training complete{es_msg}! Logs: {log_dir}")
     print(f"\n  다음 단계:")
     print(f"    tensorboard --logdir {log_dir}")
     print(f"    python collect_demos.py --checkpoint {best_ckpt} --headless")

@@ -92,11 +92,40 @@ class Skill3Env(Skill2Env):
         # Skill-3 추가 버퍼
         self.prev_home_dist = torch.zeros(self.num_envs, device=self.device)
         self.intentional_placed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Fallback: handoff buffer 없을 때 매 step teleport carry 사용
+        self._fallback_teleport_carry = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        # Combined mode: record_teleop에서 Skill-2→3 연속 레코딩 시 사용
+        self._combined_mode: bool = False
         # Handoff buffer에서 읽은 object orientation (identity default)
         self._handoff_object_ori = torch.zeros(self.num_envs, 4, device=self.device)
         self._handoff_object_ori[:, 0] = 1.0  # qw=1 identity
 
         print(f"  [Skill3Env] obs={self.cfg.observation_space} act={self.cfg.action_space} critic={self.cfg.state_space}")
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Action — teleport carry (fallback 모드)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _apply_action(self):
+        super()._apply_action()
+        # Fallback teleport carry: fixed joint 없이 물체를 gripper에 매 step 추적
+        tc_mask = self._fallback_teleport_carry & self.object_grasped
+        if tc_mask.any():
+            tc_ids = tc_mask.nonzero(as_tuple=False).squeeze(-1)
+            if self._gripper_body_idx is None:
+                try:
+                    body_ids, _ = self.robot.find_bodies(["Moving_Jaw_08d_v1"])
+                    self._gripper_body_idx = body_ids[0]
+                except (IndexError, RuntimeError, AttributeError):
+                    self._gripper_body_idx = 0
+            grip_pos = self.robot.data.body_pos_w[tc_ids, self._gripper_body_idx]
+            self.object_pos_w[tc_ids] = grip_pos
+            if not self._multi_object and self.object_rigid is not None:
+                pose = self.object_rigid.data.root_pose_w[tc_ids].clone()
+                pose[:, :3] = grip_pos
+                self.object_rigid.write_root_pose_to_sim(pose, env_ids=tc_ids)
+                zero_vel = torch.zeros(len(tc_ids), 6, dtype=torch.float32, device=self.device)
+                self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=tc_ids)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Metrics — home 관련 추가
@@ -215,6 +244,12 @@ class Skill3Env(Skill2Env):
             self.active_object_idx.clamp(max=len(self._catalog_mass) - 1)
         ].unsqueeze(-1)
         # gripper_rel_pos: object position relative to gripper body (world-frame)
+        if self._gripper_body_idx is None:
+            try:
+                body_ids, _ = self.robot.find_bodies(["Moving_Jaw_08d_v1"])
+                self._gripper_body_idx = body_ids[0]
+            except (IndexError, RuntimeError, AttributeError):
+                self._gripper_body_idx = 0
         grip_pos_w = self.robot.data.body_pos_w[:, self._gripper_body_idx]
         gripper_rel_pos = self.object_pos_w - grip_pos_w  # (N, 3)
         critic_extra = torch.cat([
@@ -226,6 +261,46 @@ class Skill3Env(Skill2Env):
         self._critic_obs = critic_obs  # AAC wrapper에서 state()로 접근
 
         return {"policy": actor_obs, "critic": critic_obs}
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Combined mode — Skill-2 (30D) obs 계산
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _compute_skill2_actor_obs(self) -> torch.Tensor:
+        """Combined teleop Phase 1용: Skill-2 (30D) actor obs 계산.
+
+        Skill-3 env가 상속한 Skill-2 메트릭/센서를 그대로 사용하여
+        Skill-2의 30D obs layout을 재현한다.
+        """
+        metrics = self._compute_metrics()
+        base_body_vel = self._read_base_body_vel()
+
+        arm_pos = metrics["arm_pos"]
+        arm_vel = metrics["arm_vel"]
+        lin_vel = metrics["lin_vel_b"]
+        ang_vel = metrics["ang_vel_b"]
+        rel_object = metrics["object_pos_b"]
+
+        contact_force = self._contact_force_per_env()
+        contact_binary = (contact_force > float(self.cfg.grasp_contact_threshold)).float()
+        contact_lr = torch.stack([contact_binary, contact_binary], dim=-1)
+
+        bbox_norm = self.object_bbox / float(self._bbox_norm_scale)
+        cat_denom = max(int(self.cfg.num_object_categories) - 1, 1)
+        cat_norm = (self.object_category_id / float(cat_denom)).unsqueeze(-1)
+
+        return torch.cat([
+            arm_pos[:, :5],       # [0:5]   arm 5D
+            arm_pos[:, 5:6],      # [5:6]   gripper 1D
+            base_body_vel,        # [6:9]   base body velocity 3D
+            lin_vel,              # [9:12]  base_lin_vel 3D
+            ang_vel,              # [12:15] base_ang_vel 3D
+            arm_vel,              # [15:21] arm+grip vel 6D
+            rel_object,           # [21:24] object relative pos 3D
+            contact_lr,           # [24:26] contact L/R 2D
+            bbox_norm,            # [26:29] bbox 3D
+            cat_norm,             # [29:30] category 1D
+        ], dim=-1)  # 30D
 
     # ═══════════════════════════════════════════════════════════════════
     #  Rewards — CarryAndPlace
@@ -315,6 +390,19 @@ class Skill3Env(Skill2Env):
     # ═══════════════════════════════════════════════════════════════════
 
     def _reset_idx(self, env_ids: torch.Tensor):
+        if self._combined_mode:
+            # Combined mode: Skill-2 리셋 사용 (물체 거리에 배치, 미파지 상태)
+            Skill2Env._reset_idx(self, env_ids)
+            # Skill-3 전용 버퍼 리셋 (Skill2._reset_idx가 모르는 것들)
+            self.prev_home_dist[env_ids] = 10.0
+            self.intentional_placed[env_ids] = False
+            self._fallback_teleport_carry[env_ids] = False
+            # home = env origin
+            env_origins = self.scene.env_origins[env_ids]
+            self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
+            self.home_pos_w[env_ids, 2] = self.robot.data.root_pos_w[env_ids, 2]
+            return
+
         # DirectRLEnv._reset_idx (Skill2Env._reset_idx를 건너뜀)
         DirectRLEnv_reset = super(Skill2Env, self)._reset_idx
         DirectRLEnv_reset(env_ids)
@@ -439,14 +527,18 @@ class Skill3Env(Skill2Env):
         # DR을 joint attach 전에 실행 → break_force DR이 적용된 joint 생성
         self._apply_domain_randomization(env_ids)
         self._attach_grasp_fixed_joint_for_envs(env_ids)
+        # Handoff buffer 사용 시 teleport carry 비활성화
+        self._fallback_teleport_carry[env_ids] = False
 
         self._finish_reset(env_ids, num)
 
     def _reset_fallback(self, env_ids: torch.Tensor, num: int):
-        """Handoff buffer 없이 fallback: 물체 가까이 + 잡힌 상태."""
+        """Handoff buffer 없이 fallback: tucked pose + gripper closed + 물체 attached."""
         default_root_state = self.robot.data.default_root_state[env_ids].clone()
         root_xy_std = float(self.cfg.dr_root_xy_noise_std) if bool(self.cfg.enable_domain_randomization) else 0.1
         default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * root_xy_std
+        # 속도 명시적 제로
+        default_root_state[:, 7:13] = 0.0
 
         random_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
         half_yaw = random_yaw * 0.5
@@ -454,27 +546,40 @@ class Skill3Env(Skill2Env):
         default_root_state[:, 4] = 0.0
         default_root_state[:, 5] = 0.0
         default_root_state[:, 6] = torch.sin(half_yaw)
-        self.robot.write_root_state_to_sim(default_root_state, env_ids)
 
+        # Arm: tucked pose + gripper closed (carrying configuration)
+        # tucked_pose.json에서 가져온 값 + gripper를 closed(0.5)로 변경
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
+        carry_joints = [-0.03, -0.21, 0.09, 0.12, 0.06, 0.50]  # tucked + gripper closed
+        for i, val in enumerate(carry_joints):
+            joint_pos[:, self.arm_idx[i]] = val
         joint_vel = torch.zeros_like(joint_pos)
+
+        self.robot.write_root_state_to_sim(default_root_state, env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        self.home_pos_w[env_ids] = default_root_state[:, :3]
+        # Home = 2m 전방 (+y body frame) — place 목적지
+        env_origins = self.scene.env_origins[env_ids] if hasattr(self.scene, "env_origins") else torch.zeros(num, 3, device=self.device)
+        self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
+        self.home_pos_w[env_ids, 2] = default_root_state[:, 2]
 
-        # 물체를 잡힌 위치에 배치
+        # 물체를 gripper 근처에 배치 (tucked pose에서 gripper는 base 바로 위)
+        # LeKiwi forward = +Y: tucked pose에서 EE는 base 중심 바로 위 ~15cm
         self.object_pos_w[env_ids, :2] = default_root_state[:, :2]
         self.object_pos_w[env_ids, 2] = default_root_state[:, 2] + float(self.cfg.grasp_attach_height)
 
-        # Single-object sim write (multi_object=False일 때 sim에 실제 pose 반영)
+        # Object sim write + velocity zero
         if not self._multi_object and self.object_rigid is not None:
             pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
             pose[:, :3] = self.object_pos_w[env_ids]
             self.object_rigid.write_root_pose_to_sim(pose, env_ids)
+            zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
+            self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
 
         self.object_grasped[env_ids] = True
         self._apply_domain_randomization(env_ids)
-        self._attach_grasp_fixed_joint_for_envs(env_ids)
+        # Fallback: fixed joint 대신 매 step teleport carry (stale USD transform 문제 우회)
+        self._fallback_teleport_carry[env_ids] = True
 
         self._finish_reset(env_ids, num)
 

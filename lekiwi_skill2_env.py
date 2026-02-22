@@ -98,7 +98,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     arm_limit_write_to_sim: bool = True    # USD의 inf limit 시 팔이 몸체 관통 방지
 
     # === Task Geometry (변경) ===
-    object_dist_min: float = 0.5    # Curriculum 시작값 (v8은 1.0)
+    object_dist_min: float = 0.7    # Curriculum 시작값 (핸드오프 지점, base cam에 물체 보이는 거리)
     object_dist_max: float = 2.5    # 최대 (v8 동일)
     approach_thresh: float = 0.35   # v8 동일
     grasp_thresh: float = 0.20      # v8 동일
@@ -106,12 +106,13 @@ class Skill2EnvCfg(DirectRLEnvCfg):
 
     # === Spawn Heading (물체를 로봇 전방에 배치) ===
     spawn_object_in_front: bool = True       # True = 로봇 yaw를 물체 방향으로 설정
-    spawn_heading_noise_std: float = 0.35    # ~20deg (카메라 FOV half=43.5deg, 2σ < FOV)
+    spawn_heading_noise_std: float = 0.35    # ~20deg Gaussian noise
+    spawn_heading_max_rad: float = 0.76      # Skill-1 arrival_heading_thresh와 동일 (base cam FOV half)
 
     # === Curriculum (신규) ===
     curriculum_success_threshold: float = 0.7
     curriculum_dist_increment: float = 0.25
-    curriculum_current_max_dist: float = 0.5  # 런타임에 변경됨
+    curriculum_current_max_dist: float = 0.7  # 런타임에 변경됨 (핸드오프 지점에서 시작)
 
     # === Physics Grasp (v8 동일, break_force만 변경) ===
     object_usd: str = ""
@@ -127,7 +128,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     grasp_attach_mode: str = "fixed_joint"
     grasp_joint_break_force: float = 30.0    # v8의 1e8에서 변경 (mass*g*10)
     grasp_joint_break_torque: float = 30.0
-    grasp_drop_detect_dist: float = 0.15     # gripper-object 거리 > 이 값이면 drop 판정
+    grasp_drop_detect_dist: float = 0.30     # gripper-object 거리 > 이 값이면 drop 판정 (gripper body 중심~물체 중심 자연 오프셋 ~0.18m)
     grasp_timeout_steps: int = 75
 
     # === Multi-object (v8 동일) ===
@@ -1246,7 +1247,8 @@ class Skill2Env(DirectRLEnv):
         object_delta_w = self.object_pos_w - root_pos_w
         object_pos_b = quat_apply_inverse(root_quat_w, object_delta_w)
         object_dist = torch.norm(object_pos_b[:, :2], dim=-1)
-        heading_object = torch.atan2(object_pos_b[:, 1], object_pos_b[:, 0])
+        # +y is robot forward: heading=0 when object is at +y (front)
+        heading_object = torch.atan2(object_pos_b[:, 0], object_pos_b[:, 1])
 
         lin_vel_b = quat_apply_inverse(root_quat_w, root_lin_vel_w)
         ang_vel_b = quat_apply_inverse(root_quat_w, root_ang_vel_w)
@@ -1296,7 +1298,7 @@ class Skill2Env(DirectRLEnv):
             bbox_max_dim = self.object_bbox.max(dim=-1).values
             adaptive_dist = torch.clamp(
                 float(self.cfg.grasp_max_object_dist) + bbox_max_dim * 0.5,
-                min=0.10, max=0.40,
+                min=0.10, max=0.60,
             )
             close_enough = metrics["object_dist"] < adaptive_dist
 
@@ -1630,13 +1632,17 @@ class Skill2Env(DirectRLEnv):
             base_z=self.home_pos_w[env_ids, 2],
         )
 
-        # Robot yaw: 물체 방향으로 설정 (+ 노이즈) 또는 360도 랜덤
+        # Robot yaw: +y(전방)를 물체 방향으로 설정 (+ 노이즈) 또는 360도 랜덤
         if bool(self.cfg.spawn_object_in_front):
             dx = self.object_pos_w[env_ids, 0] - default_root_state[:, 0]
             dy = self.object_pos_w[env_ids, 1] - default_root_state[:, 1]
             angle_to_obj = torch.atan2(dy, dx)
+            # LeKiwi forward = +y body axis → subtract π/2 so +y faces object
+            yaw_for_forward_y = angle_to_obj - math.pi / 2
             heading_noise = torch.randn(num, device=self.device) * float(self.cfg.spawn_heading_noise_std)
-            robot_yaw = torch.atan2(torch.sin(angle_to_obj + heading_noise), torch.cos(angle_to_obj + heading_noise))
+            max_rad = float(self.cfg.spawn_heading_max_rad)
+            heading_noise = torch.clamp(heading_noise, -max_rad, max_rad)
+            robot_yaw = torch.atan2(torch.sin(yaw_for_forward_y + heading_noise), torch.cos(yaw_for_forward_y + heading_noise))
         else:
             robot_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
 

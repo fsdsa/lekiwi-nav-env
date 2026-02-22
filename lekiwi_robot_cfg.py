@@ -58,14 +58,14 @@ KIWI_M = [
 ]
 
 # ── Arm soft limits (REAL 측정값 베이크, rad) ────────────────────────────
-# source: calibration/arm_limits_real2sim.json
+# source: calibration/arm_limits_measured.json (2026-02-21, calibrate_arm_limits.py + isaac_teleop TCP)
 ARM_LIMITS_BAKED_RAD = {
-    "STS3215_03a_v1_Revolute_45": (-1.7453292519943295, 1.7208288783054544),
-    "STS3215_03a_v1_1_Revolute_49": (-1.7453292519943295, 1.7453292519943295),
-    "STS3215_03a_v1_2_Revolute_51": (-1.7173293174703563, 1.73444038856834),
-    "STS3215_03a_v1_3_Revolute_53": (-1.7423760722109212, 1.7069379148100212),
-    "STS3215_03a_Wrist_Roll_v1_Revolute_55": (-1.680545357903209, 1.5680259629028417),
-    "STS3215_03a_v1_4_Revolute_57": (0.006566325252047892, 1.7453292519943295),
+    "STS3215_03a_v1_Revolute_45": (-1.754671, 1.698081),
+    "STS3215_03a_v1_1_Revolute_49": (-0.203485, 3.264987),
+    "STS3215_03a_v1_2_Revolute_51": (-3.377846, 0.091),
+    "STS3215_03a_v1_3_Revolute_53": (-2.927317, 0.120),
+    "STS3215_03a_Wrist_Roll_v1_Revolute_55": (-1.278005, 4.498843),
+    "STS3215_03a_v1_4_Revolute_57": (-0.202, 1.488736),
 }
 
 # ── 로봇 설정 ──────────────────────────────────────────────────────────

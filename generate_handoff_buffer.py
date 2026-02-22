@@ -69,7 +69,7 @@ def main():
         env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
     env_cfg.gripper_contact_prim_path = args.gripper_contact_prim_path
     # Curriculum을 최대로 열어서 다양한 거리 커버
-    env_cfg.object_dist_min = 0.5
+    env_cfg.object_dist_min = 0.7
     env_cfg.curriculum_current_max_dist = env_cfg.object_dist_max
 
     env = Skill2Env(cfg=env_cfg)

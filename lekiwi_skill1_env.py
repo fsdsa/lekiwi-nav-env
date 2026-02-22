@@ -1,19 +1,20 @@
 """
-LeKiwi Skill-1 — Navigate Isaac Lab DirectRLEnv.
+LeKiwi Skill-1 — Navigate (Direction-Conditioned) Isaac Lab DirectRLEnv.
 
-3-Skill pipeline first skill: navigate toward target object while avoiding obstacles.
+3-Skill pipeline first skill: execute VLM direction commands while avoiding obstacles.
+Direction commands: forward/backward/left/right/turn_left/turn_right.
 Arm held at TUCKED_POSE, gripper open. RL controls base only (3D effective action).
 
 Observation (Actor 20D):
   [0:5]   arm joint pos (5) — fixed TUCKED_POSE, included for VLA format
   [5:6]   gripper pos (1) — fixed open
   [6:9]   base body velocity (vx, vy, wz) (3)
-  [9:12]  object relative pos body (3)
+  [9:12]  direction command (cmd_vx, cmd_vy, cmd_wz) (3)
   [12:20] pseudo-lidar scan (8 rays, normalized)
 
 Observation (Critic 25D, AAC):
-  Actor 20D + abs_object_dist(1) + heading_to_object(1) +
-  vel_toward_object(1) + closest_obstacle_dist(1) + closest_obstacle_angle(1)
+  Actor 20D + speed(1) + direction_compliance(1) +
+  closest_obstacle_dist(1) + closest_obstacle_angle(1) + time_remaining(1)
 
 Action (9D — lekiwi_v6 order):
   [0:5]   arm joint target (IGNORED — forced to TUCKED_POSE)
@@ -34,7 +35,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
+from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse
 
@@ -71,17 +72,21 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=0.02, render_interval=2,
         gravity=(0.0, 0.0, -9.81), device="cuda:0",
+        physx=PhysxCfg(
+            gpu_max_rigid_patch_count=2**18,  # 262144, default 163840 overflows at 8192 envs
+        ),
     )
     decimation: int = 2
-    episode_length_s: float = 15.0
+    episode_length_s: float = 10.0  # No target to seek; shorter episodes
 
     # === Scene (same as Skill-2) ===
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=2048, env_spacing=10.0, replicate_physics=True,
     )
 
-    # === Robot (same as Skill-2) ===
+    # === Robot (same as Skill-2, contact sensors disabled for Navigate) ===
     robot_cfg = LEKIWI_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot_cfg.spawn.activate_contact_sensors = False
 
     # === Spaces ===
     observation_space: int = 20
@@ -102,10 +107,9 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     arm_limit_margin_rad: float = 0.0
     arm_limit_write_to_sim: bool = True
 
-    # === Task Geometry ===
+    # === Object Spawning (for camera collection; not used in RL obs/rewards) ===
     object_dist_min: float = 1.0
     object_dist_max: float = 4.0
-    arrival_thresh: float = 0.5  # = Skill-2 curriculum start
     object_height: float = 0.03
 
     # === Object (for target spawning, no grasp) ===
@@ -132,15 +136,11 @@ class Skill1EnvCfg(DirectRLEnvCfg):
 
     # === Reward ===
     rew_time_penalty: float = -0.01
-    rew_approach_weight: float = 3.0
-    rew_arrival_bonus: float = 15.0
-    rew_collision_penalty: float = -2.0
-    rew_speed_bonus: float = 0.5
-    rew_action_smoothness: float = -0.005
-    rew_decel_weight: float = 0.15
-    rew_decel_dist: float = 0.6  # Just above arrival_thresh (0.5m)
-    rew_heading_weight: float = 0.3   # Face the target before moving
-    rew_diagonal_penalty: float = -1.0  # Prevent simultaneous vx+vy
+    rew_direction_weight: float = 3.0       # dot(cmd, vel_norm) — main reward
+    rew_collision_penalty: float = -2.0     # hard penalty on obstacle collision
+    rew_obstacle_proximity_weight: float = -0.5  # soft penalty near obstacles
+    obstacle_proximity_safe_dist: float = 0.5    # distance below which proximity penalty kicks in
+    rew_action_smoothness: float = -0.005   # delta_action² penalty
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
@@ -159,7 +159,6 @@ class Skill1EnvCfg(DirectRLEnvCfg):
 
     # Obs noise
     dr_obs_noise_base_vel: float = 0.02
-    dr_obs_noise_object_rel: float = 0.02
     dr_obs_noise_lidar: float = 0.05
 
     # Action delay
@@ -227,7 +226,7 @@ class Skill1Env(DirectRLEnv):
         self._bbox_norm_scale = 0.2
 
         self.task_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.prev_object_dist = torch.zeros(self.num_envs, device=self.device)
+        self._direction_cmd = torch.zeros(self.num_envs, 3, device=self.device)
 
         # Action / metrics buffers
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
@@ -314,6 +313,7 @@ class Skill1Env(DirectRLEnv):
         self._maybe_apply_arm_limits_from_cfg()
         self._init_domain_randomization_buffers()
 
+        print(f"  [Skill1Env] Direction-conditioned Navigate")
         print(f"  [Skill1Env] obs={self.cfg.observation_space} act={self.cfg.action_space} critic={self.cfg.state_space}")
         print(f"  [Skill1Env] arm_idx={self.arm_idx.tolist()} wheel_idx={self.wheel_idx.tolist()}")
         print(f"  [Skill1Env] obstacles={self.cfg.num_obstacles_min}-{self.cfg.num_obstacles_max}, lidar={self.cfg.lidar_num_rays} rays")
@@ -790,9 +790,13 @@ class Skill1Env(DirectRLEnv):
         return torch.cat([vx, vy, wz], dim=-1)
 
     def _get_robot_heading(self) -> torch.Tensor:
-        """Robot heading angle from quaternion (N,)."""
+        """Robot forward (+y) heading angle in world frame (N,).
+
+        LeKiwi forward = +y body axis → add π/2 to standard yaw.
+        """
         quat = self.robot.data.root_quat_w  # (N, 4) [w,x,y,z]
-        return 2.0 * torch.atan2(quat[:, 3], quat[:, 0])
+        yaw = 2.0 * torch.atan2(quat[:, 3], quat[:, 0])
+        return yaw + math.pi / 2  # +y forward offset
 
     # ═══════════════════════════════════════════════════════════════════
     #  Obstacles (tensor-based, no USD prims)
@@ -904,38 +908,48 @@ class Skill1Env(DirectRLEnv):
         return scan
 
     # ═══════════════════════════════════════════════════════════════════
+    #  Direction command sampling
+    # ═══════════════════════════════════════════════════════════════════
+
+    # 6 cardinal direction commands (+y = robot forward)
+    _DIRECTION_COMMANDS: torch.Tensor | None = None
+
+    def _get_direction_commands(self) -> torch.Tensor:
+        if Skill1Env._DIRECTION_COMMANDS is None or Skill1Env._DIRECTION_COMMANDS.device != self.device:
+            Skill1Env._DIRECTION_COMMANDS = torch.tensor([
+                [0.0, 1.0, 0.0],    # forward (+y)
+                [0.0, -1.0, 0.0],   # backward (-y)
+                [-1.0, 0.0, 0.0],   # strafe left (-x)
+                [1.0, 0.0, 0.0],    # strafe right (+x)
+                [0.0, 0.0, 1.0],    # turn left (CCW)
+                [0.0, 0.0, -1.0],   # turn right (CW)
+            ], dtype=torch.float32, device=self.device)
+        return Skill1Env._DIRECTION_COMMANDS
+
+    def _sample_direction_cmd(self, n: int) -> torch.Tensor:
+        """Sample direction commands for n envs. Returns (n, 3)."""
+        cmds = self._get_direction_commands()
+        idx = torch.randint(0, len(cmds), (n,), device=self.device)
+        return cmds[idx]
+
+    # ═══════════════════════════════════════════════════════════════════
     #  Task metrics
     # ═══════════════════════════════════════════════════════════════════
 
     def _compute_metrics(self) -> Dict[str, torch.Tensor]:
-        # Update object positions from sim
-        if self._multi_object and len(self.object_rigids) > 0:
-            for oi, rigid in enumerate(self.object_rigids):
-                mask = self.active_object_idx == oi
-                if not mask.any():
-                    continue
-                ids = mask.nonzero(as_tuple=False).squeeze(-1)
-                self.object_pos_w[ids] = rigid.data.root_pos_w[ids]
-        elif self.object_rigid is not None:
-            self.object_pos_w[:] = self.object_rigid.data.root_pos_w
-
         root_pos_w = self.robot.data.root_pos_w
         root_quat_w = self.robot.data.root_quat_w
-        root_lin_vel_w = self.robot.data.root_lin_vel_w
-
-        # Object relative (body frame)
-        object_delta_w = self.object_pos_w - root_pos_w
-        object_pos_b = quat_apply_inverse(root_quat_w, object_delta_w)
-        object_dist = torch.norm(object_pos_b[:, :2], dim=-1)
-        heading_object = torch.atan2(object_pos_b[:, 1], object_pos_b[:, 0])
 
         # Body-frame velocity
-        lin_vel_b = quat_apply_inverse(root_quat_w, root_lin_vel_w)
-        lin_speed = torch.norm(lin_vel_b[:, :2], dim=-1)
+        base_body_vel = self._read_base_body_vel()  # (N, 3): vx, vy, wz
+        lin_speed = torch.norm(base_body_vel[:, :2], dim=-1)
 
-        # Velocity toward object
-        object_dir_b = object_pos_b[:, :2] / (object_dist.unsqueeze(-1) + 1e-6)
-        vel_toward_object = (lin_vel_b[:, :2] * object_dir_b).sum(dim=-1)
+        # Direction compliance: dot(cmd, vel_normalized)
+        cmd = self._direction_cmd  # (N, 3)
+        vel_norm = base_body_vel.clone()
+        vel_norm[:, :2] = vel_norm[:, :2] / (self.cfg.max_lin_vel + 1e-6)
+        vel_norm[:, 2] = vel_norm[:, 2] / (self.cfg.max_ang_vel + 1e-6)
+        direction_compliance = (cmd * vel_norm).sum(dim=-1)  # (N,)
 
         # Closest obstacle
         robot_xy = root_pos_w[:, :2].unsqueeze(1)  # (N, 1, 2)
@@ -954,12 +968,9 @@ class Skill1Env(DirectRLEnv):
 
         return {
             "root_pos_w": root_pos_w,
-            "object_pos_b": object_pos_b,
-            "object_dist": object_dist,
-            "heading_object": heading_object,
-            "lin_vel_b": lin_vel_b,
+            "base_body_vel": base_body_vel,
             "lin_speed": lin_speed,
-            "vel_toward_object": vel_toward_object,
+            "direction_compliance": direction_compliance,
             "min_obs_dist": min_obs_dist,
             "closest_obs_angle": closest_obs_angle,
         }
@@ -1005,10 +1016,10 @@ class Skill1Env(DirectRLEnv):
 
     def _get_observations(self) -> dict:
         metrics = self._cached_metrics if self._cached_metrics is not None else self._compute_metrics()
-        base_body_vel = self._read_base_body_vel()
+        base_body_vel = metrics["base_body_vel"]
 
         arm_pos = self.robot.data.joint_pos[:, self.arm_idx]
-        rel_object = metrics["object_pos_b"]
+        direction_cmd = self._direction_cmd
 
         # Pseudo-lidar
         lidar_scan = self._compute_lidar_scan()  # (N, 8)
@@ -1016,12 +1027,9 @@ class Skill1Env(DirectRLEnv):
         # Observation noise
         if bool(self.cfg.enable_domain_randomization):
             bv_noise = float(self.cfg.dr_obs_noise_base_vel)
-            or_noise = float(self.cfg.dr_obs_noise_object_rel)
             li_noise = float(self.cfg.dr_obs_noise_lidar)
             if bv_noise > 0:
                 base_body_vel = base_body_vel + torch.randn_like(base_body_vel) * bv_noise
-            if or_noise > 0:
-                rel_object = rel_object + torch.randn_like(rel_object) * or_noise
             if li_noise > 0:
                 lidar_scan = (lidar_scan + torch.randn_like(lidar_scan) * li_noise).clamp(0.0, 1.0)
 
@@ -1030,19 +1038,20 @@ class Skill1Env(DirectRLEnv):
             arm_pos[:, :5],       # [0:5]   arm joint pos (fixed TUCKED_POSE)
             arm_pos[:, 5:6],      # [5:6]   gripper pos (fixed open)
             base_body_vel,        # [6:9]   base body velocity (vx, vy, wz)
-            rel_object,           # [9:12]  object relative pos (body frame)
+            direction_cmd,        # [9:12]  direction command (cmd_vx, cmd_vy, cmd_wz)
             lidar_scan,           # [12:20] pseudo-lidar (8 rays, normalized)
         ], dim=-1)  # 20D
 
         self._cached_metrics = None
 
         # Critic Observation (25D, AAC)
+        time_remaining = 1.0 - (self.episode_length_buf.float() / max(float(self.max_episode_length), 1.0))
         critic_extra = torch.cat([
-            metrics["object_dist"].unsqueeze(-1),         # 1D
-            metrics["heading_object"].unsqueeze(-1),      # 1D
-            metrics["vel_toward_object"].unsqueeze(-1),   # 1D
-            metrics["min_obs_dist"].unsqueeze(-1),        # 1D
-            metrics["closest_obs_angle"].unsqueeze(-1),   # 1D
+            metrics["lin_speed"].unsqueeze(-1),               # 1D
+            metrics["direction_compliance"].unsqueeze(-1),    # 1D
+            metrics["min_obs_dist"].unsqueeze(-1).clamp(max=5.0),  # 1D
+            metrics["closest_obs_angle"].unsqueeze(-1),       # 1D
+            time_remaining.unsqueeze(-1),                     # 1D
         ], dim=-1)  # 5D
         critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 25D
         self._critic_obs = critic_obs
@@ -1060,64 +1069,36 @@ class Skill1Env(DirectRLEnv):
 
         reward = torch.full((self.num_envs,), self.cfg.rew_time_penalty, device=self.device)
 
-        curr_dist = metrics["object_dist"]
+        # 1. Direction following (main reward): dot(cmd, vel_normalized)
+        compliance = metrics["direction_compliance"]
+        rew_direction = self.cfg.rew_direction_weight * compliance
 
-        # 1. Approach progress
-        progress = torch.clamp(self.prev_object_dist - curr_dist, -0.2, 0.2)
-        rew_approach = self.cfg.rew_approach_weight * progress
-
-        # 2. Arrival bonus
-        arrived = curr_dist < self.cfg.arrival_thresh
-        rew_arrival = torch.where(arrived, self.cfg.rew_arrival_bonus, 0.0)
-
-        # 3. Collision penalty
+        # 2. Collision penalty (hard)
         min_obs_dist = metrics["min_obs_dist"]
         collision = min_obs_dist < self.cfg.collision_dist
         rew_collision = torch.where(collision, self.cfg.rew_collision_penalty, 0.0)
 
-        # 4. Speed bonus (velocity toward object)
-        rew_speed = self.cfg.rew_speed_bonus * metrics["vel_toward_object"].clamp(0.0, 0.5)
+        # 3. Obstacle proximity (soft, continuous penalty near obstacles)
+        safe_dist = self.cfg.obstacle_proximity_safe_dist
+        proximity_factor = (1.0 - min_obs_dist / safe_dist).clamp(0.0, 1.0)
+        rew_proximity = self.cfg.rew_obstacle_proximity_weight * proximity_factor
 
-        # 5. Action smoothness
+        # 4. Action smoothness
         delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]
         rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
 
-        # 6. Deceleration reward (slow down near target)
-        near_target = curr_dist < self.cfg.rew_decel_dist
-        speed = metrics["lin_speed"]
-        max_speed = self.cfg.max_lin_vel
-        decel_bonus = self.cfg.rew_decel_weight * (1.0 - speed / max_speed).clamp(0.0, 1.0)
-        rew_decel = torch.where(near_target, decel_bonus, 0.0)
-
-        # 7. Heading alignment (reward facing the target)
-        heading_to_obj = metrics["heading_object"]  # body-frame angle to object
-        rew_heading = self.cfg.rew_heading_weight * torch.cos(heading_to_obj)
-
-        # 8. Diagonal penalty (prevent simultaneous vx + vy)
-        act_vx_abs = self.actions[:, 6].abs()  # actions are [-1, 1] normalized
-        act_vy_abs = self.actions[:, 7].abs()
-        rew_diagonal = self.cfg.rew_diagonal_penalty * act_vx_abs * act_vy_abs
-
-        total = (reward + rew_approach + rew_arrival + rew_collision + rew_speed
-                 + rew_smooth + rew_decel + rew_heading + rew_diagonal)
-        self.prev_object_dist[:] = curr_dist
+        total = reward + rew_direction + rew_collision + rew_proximity + rew_smooth
 
         # Logging
         self.extras["log"] = {
-            "rew_approach": rew_approach.mean(),
-            "rew_arrival": rew_arrival.mean(),
+            "rew_direction": rew_direction.mean(),
             "rew_collision": rew_collision.mean(),
-            "rew_speed": rew_speed.mean(),
+            "rew_proximity": rew_proximity.mean(),
             "rew_smooth": rew_smooth.mean(),
-            "rew_decel": rew_decel.mean(),
-            "rew_heading": rew_heading.mean(),
-            "rew_diagonal": rew_diagonal.mean(),
-            "dist_to_target": curr_dist.mean(),
+            "direction_compliance": compliance.mean(),
             "min_obstacle_dist": min_obs_dist.mean(),
-            "arrival_rate": arrived.float().mean(),
             "collision_rate": collision.float().mean(),
-            "avg_speed": speed.mean(),
-            "diagonal_ratio": (act_vx_abs * act_vy_abs).mean(),
+            "avg_speed": metrics["lin_speed"].mean(),
         }
 
         self.episode_reward_sum += total
@@ -1140,14 +1121,9 @@ class Skill1Env(DirectRLEnv):
         terminated = out_of_bounds | fell
 
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
-        dist_to_target = metrics["object_dist"]
-        arrived = dist_to_target < self.cfg.arrival_thresh
-        self.task_success = arrived
-
-        # Arrived = truncated (success), not terminated
-        truncated = arrived | time_out
-
-        self.extras["task_success_rate"] = arrived.float().mean()
+        # No arrival condition in direction-conditioned mode
+        truncated = time_out
+        self.task_success[:] = False
 
         return terminated, truncated
 
@@ -1242,9 +1218,7 @@ class Skill1Env(DirectRLEnv):
 
         # Task state reset
         self.task_success[env_ids] = False
-        self.prev_object_dist[env_ids] = self.object_pos_w[env_ids, :2].sub(
-            self.robot.data.root_pos_w[env_ids, :2]
-        ).norm(dim=-1)
+        self._direction_cmd[env_ids] = self._sample_direction_cmd(num)
         self.episode_reward_sum[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0

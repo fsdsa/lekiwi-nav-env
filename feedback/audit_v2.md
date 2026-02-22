@@ -9,7 +9,7 @@
 VLM이 이미지에서 물체의 시각적 크기를 보고 판단
   → 물체가 작게 보임 → "navigate toward the red cup" (Navigate 계속)
   → 물체가 충분히 크게 보임 → "approach and grasp the red cup" (ApproachAndGrasp로 전환)
-ApproachAndGrasp는 curriculum으로 0.5m~2.5m 범위에서 base+arm 동시 접근을 학습했으니까, VLM이 대략 그 범위 안에서 instruction을 전환해주면 된다. VLM의 전환 판단이 정밀하지 않아도 되는 이유가 이거다 — ApproachAndGrasp가 커버하는 범위가 넓어서.
+ApproachAndGrasp는 curriculum으로 0.7m~2.5m 범위에서 base+arm 동시 접근을 학습했으니까, VLM이 대략 그 범위 안에서 instruction을 전환해주면 된다. VLM의 전환 판단이 정밀하지 않아도 되는 이유가 이거다 — ApproachAndGrasp가 커버하는 범위가 넓어서.
 그런데 여기서 진짜 걱정해야 할 건 다른 거다. Navigate 스크립트 데이터에서 물체에 접근하는 행동의 "마지막 구간"이 어떤 모습이냐는 거다. 스크립트 proportional controller는 물체에 가까워질수록 속도가 줄어드는 게 아니라, gain에 따라 계속 밀고 들어간다. 실제 데이터를 보면 물체에 거의 부딪히는 수준까지 가거나, 아니면 에피소드가 끝나거나 할 텐데, 이런 데이터로 학습하면 VLA가 Navigate 모드에서 감속 없이 물체에 돌진하는 행동을 배울 수 있다.
 물론 VLM이 그 전에 instruction을 ApproachAndGrasp로 바꿔줄 거라 기대하지만, VLM의 판단이 0.5초만 늦어도 로봇이 물체를 이미 밀어버릴 수 있다.
 정리하면
@@ -25,7 +25,19 @@ ApproachAndGrasp는 curriculum으로 0.5m~2.5m 범위에서 base+arm 동시 접�
 
 # Skill-1 Navigate RL 환경 구현 가이드
 
-> **목적**: Navigate를 Script Policy에서 RL Expert로 전환한다. 장애물 회피, 물체 근접 감속, 정지 행동을 RL이 학습하도록 새 환경 `lekiwi_skill1_env.py`를 만들고, 기존 파이프라인을 업데이트한다.
+> **[2026-02-22 업데이트] Direction-Conditioned RL로 전환됨**
+>
+> Navigate RL이 "목표물 접근" 방식에서 **"방향 명령 실행"** 방식으로 변경되었다.
+> - VLM이 방향 명령(forward/backward/left/right/turn_left/turn_right) 제공
+> - RL은 방향 명령을 받아 실행하면서 장애물을 회피하는 것을 학습
+> - Observation [9:12]이 `rel_object_body` → `direction_cmd (cmd_vx, cmd_vy, cmd_wz)`로 변경
+> - 보상: approach/arrival/heading/deceleration 제거 → direction_following(3.0) + collision(-2.0) + proximity(-0.5) + smoothness(-0.005)
+> - 에피소드 종료: arrival 없음, timeout/OOB만
+> - Skill-1→2 전환: VLM이 base cam으로 물체 인식 + 0.7m 이내일 때 판단 (RL이 아닌 VLM 레벨)
+>
+> 아래 내용은 구 설계(target-seeking)의 참고 자료로 보존됨.
+
+> **목적**: Navigate를 Script Policy에서 RL Expert로 전환한다. 장애물 회피 + VLM 방향 명령 실행을 RL이 학습하도록 환경 `lekiwi_skill1_env.py`를 만들고, 기존 파이프라인을 업데이트한다.
 >
 > **수정 금지 파일**: `lekiwi_robot_cfg.py`, `spawn_manager.py`, `calibration_common.py`, 모든 calibration/comparison 스크립트, `build_object_catalog.py`, `leader_to_home_tcp_rest_matched_with_keyboard_base.py`
 
@@ -39,14 +51,16 @@ ApproachAndGrasp는 curriculum으로 0.5m~2.5m 범위에서 base+arm 동시 접�
 
 ### Navigate RL의 특징 (vs Skill-2/3)
 
-| 항목 | Skill-2 ApproachAndGrasp | Skill-1 Navigate (신규) |
-|------|--------------------------|-------------------------|
+| 항목 | Skill-2 ApproachAndGrasp | Skill-1 Navigate (Direction-Conditioned) |
+|------|--------------------------|------------------------------------------|
 | Arm | 능동 제어 (5D) | TUCKED_POSE 고정 (출력은 9D이나 arm 무시) |
 | Gripper | 능동 제어 (continuous) | open 고정 (1.0) |
 | 실질 action | base 3D + arm 5D + grip 1D | **base 3D만** |
-| 핵심 난이도 | 접근 + 파지 | 장애물 회피 + 목표 접근 |
+| 핵심 난이도 | 접근 + 파지 | **방향 명령 추종 + 장애물 회피** |
 | 장애물 | 없음 | **있음 (랜덤 cuboid 3~8개)** |
-| 성공 조건 | object grasped + lifted | **dist_to_target < 0.5m** (Skill-2 curriculum 시작점) |
+| 입력 | 물체 상대위치 (body frame) | **VLM 방향 명령 (6가지 cardinal)** |
+| 성공 조건 | object grasped + lifted | **없음 (timeout까지 방향 추종 + 회피)** |
+| 핵심 메트릭 | grasp 성공률 | **direction_compliance (95%+)** |
 | BC warm-start | 필요 (teleop 10-20개) | **불필요** (3D action, 랜덤 탐색으로 충분) |
 | 학습 예상 시간 | 1-2일 | **수 시간** (action space 작고, reward 단순) |
 
@@ -66,9 +80,9 @@ lekiwi_skill1_env.py
 │   ├── _setup_scene()        — 로봇 + 물체 + 장애물 spawn
 │   ├── _pre_physics_step()   — arm 강제 고정 + base action 적용
 │   ├── _get_observations()   — Actor 20D + Critic 25D
-│   ├── _get_rewards()        — approach + collision + arrival + smoothness
-│   ├── _get_dones()          — timeout, out_of_bounds, (optional) collision
-│   ├── _reset_idx()          — 로봇/물체/장애물 재배치
+│   ├── _get_rewards()        — direction_following + collision + proximity + smoothness
+│   ├── _get_dones()          — timeout, out_of_bounds (no arrival)
+│   ├── _reset_idx()          — 로봇/장애물 재배치 + 방향 명령 샘플링
 │   ├── _compute_lidar_scan() — 8방향 pseudo-lidar (GT 기반)
 │   └── _read_base_body_vel() — Skill-2와 동일
 ```
@@ -86,7 +100,7 @@ class Skill1EnvCfg(DirectRLEnvCfg):
         gravity=(0.0, 0.0, -9.81), device="cpu",
     )
     decimation: int = 2
-    episode_length_s: float = 15.0  # Navigate는 Skill-2보다 짧아도 됨
+    episode_length_s: float = 10.0  # 방향 명령 실행, 도착 조건 없음
 
     # === Scene (Skill-2와 동일) ===
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
@@ -113,10 +127,9 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     arm_limit_margin_rad: float = 0.0
     arm_limit_write_to_sim: bool = True
 
-    # === Task Geometry ===
-    object_dist_min: float = 1.0   # 물체 최소 거리 (m)
-    object_dist_max: float = 4.0   # 물체 최대 거리 (m) — Skill-2보다 멀리
-    arrival_thresh: float = 0.5    # 도착 판정 (m) — Skill-2 curriculum 시작점과 일치
+    # === Object Spawning (for camera collection; not used in RL obs/rewards) ===
+    object_dist_min: float = 1.0   # 물체 최소 거리 (m, 카메라 수집용)
+    object_dist_max: float = 4.0   # 물체 최대 거리 (m, 카메라 수집용)
 
     # === Obstacle ===
     num_obstacles_min: int = 3
@@ -134,11 +147,11 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     lidar_max_range: float = 2.0     # 최대 감지 거리 (m)
 
     # === Reward ===
-    rew_approach_weight: float = 3.0
-    rew_arrival_bonus: float = 15.0
-    rew_collision_penalty: float = -2.0
-    rew_action_smoothness: float = -0.005
-    rew_speed_bonus: float = 0.5     # 목표 방향 속도 보상
+    rew_direction_weight: float = 3.0       # dot(cmd, vel_norm) — 방향 추종 (메인)
+    rew_collision_penalty: float = -2.0     # 장애물 충돌 하드 페널티
+    rew_obstacle_proximity_weight: float = -0.5  # 장애물 근접 소프트 페널티
+    obstacle_proximity_safe_dist: float = 0.5    # 근접 페널티 시작 거리 (m)
+    rew_action_smoothness: float = -0.005   # delta_action² 페널티
 
     # === Multi-Object (Skill-2와 동일) ===
     multi_object_json: str = ""
@@ -163,11 +176,21 @@ Index   Name                    Dim   Source                          비고
 0-4     arm_joint_pos           5     robot.data.joint_pos[:, arm_idx[:5]]    고정값이지만 VLA 데이터 일관성
 5       gripper_pos             1     robot.data.joint_pos[:, arm_idx[5]]     고정 1.0
 6-8     base_body_vel           3     root_lin_vel_b[:, :2] + root_ang_vel_b[:, 2]
-9-11    rel_object_body         3     물체 상대 위치 (body frame, dx/dy/dz)
+9-11    direction_cmd           3     VLM 방향 명령 (cmd_vx, cmd_vy, cmd_wz)
 12-19   lidar_scan              8     8방향 pseudo-lidar (normalized, 0=장애물 접촉, 1=감지 범위 밖)
 ─────────────────────────────────────────────────────────────────────────
 Total: 20D
 ```
+
+**Direction Commands (6가지, +y = robot forward):**
+| 명령 | cmd_vx | cmd_vy | cmd_wz |
+|------|--------|--------|--------|
+| forward | 0 | 1 | 0 |
+| backward | 0 | -1 | 0 |
+| strafe left | -1 | 0 | 0 |
+| strafe right | 1 | 0 | 0 |
+| turn left (CCW) | 0 | 0 | 1 |
+| turn right (CW) | 0 | 0 | -1 |
 
 **Critic Obs (25D, AAC privileged):**
 
@@ -175,11 +198,11 @@ Total: 20D
 Index   Name                    Dim   Source
 ─────────────────────────────────────────────────────────────────────────
 0-19    actor_obs               20    위와 동일
-20      abs_object_dist         1     유클리드 거리 (world frame)
-21      heading_to_object       1     로봇→물체 heading error (rad)
-22      vel_toward_object       1     목표 방향 속도 성분 (m/s)
-23      closest_obstacle_dist   1     가장 가까운 장애물까지 거리 (m)
-24      closest_obstacle_angle  1     가장 가까운 장애물의 body-frame 각도 (rad)
+20      speed                   1     선속도 크기 (m/s)
+21      direction_compliance    1     dot(cmd, vel_normalized) — 방향 추종도
+22      closest_obstacle_dist   1     가장 가까운 장애물까지 거리 (m, clamp max=5.0)
+23      closest_obstacle_angle  1     가장 가까운 장애물의 body-frame 각도 (rad)
+24      time_remaining          1     1.0 - (step / max_step) — 남은 시간 비율
 ─────────────────────────────────────────────────────────────────────────
 Total: 25D
 ```
@@ -380,64 +403,40 @@ def _get_rewards(self) -> torch.Tensor:
     4. speed_bonus: 목표 방향 속도 보상
     5. action_smoothness: 급격한 action 변화 패널티
     """
-    # ── 1. Approach Progress ──
-    curr_dist = torch.norm(
-        self.object_pos_w[:, :2] - self.robot.data.root_pos_w[:, :2], dim=-1
-    )
-    progress = self.prev_object_dist - curr_dist
-    progress = progress.clamp(-0.2, 0.2)  # 클램핑
-    rew_approach = self.cfg.rew_approach_weight * progress
-    self.prev_object_dist = curr_dist.clone()
-    
-    # ── 2. Arrival Bonus ──
-    arrived = curr_dist < self.cfg.arrival_thresh
-    rew_arrival = torch.where(arrived, self.cfg.rew_arrival_bonus, 0.0)
-    
-    # ── 3. Collision Penalty ──
-    # 장애물과의 최소 거리
-    robot_xy = self.robot.data.root_pos_w[:, :2].unsqueeze(1)  # (N, 1, 2)
-    delta = self._obstacle_xy - robot_xy  # (N, M, 2)
-    obs_dist = torch.norm(delta, dim=-1)  # (N, M)
-    obs_dist_valid = torch.where(
-        self._obstacle_valid, obs_dist, 
-        torch.tensor(float('inf'), device=self.device)
-    )
-    min_obs_dist = obs_dist_valid.min(dim=-1).values  # (N,)
-    
+    # ── 1. Direction Following (메인 보상) ──
+    # dot(cmd, vel_normalized): 명령 방향으로 빠르게 이동하면 +, 반대면 -
+    compliance = metrics["direction_compliance"]
+    rew_direction = self.cfg.rew_direction_weight * compliance
+
+    # ── 2. Collision Penalty (하드) ──
+    min_obs_dist = metrics["min_obs_dist"]
     collision = min_obs_dist < self.cfg.collision_dist
     rew_collision = torch.where(collision, self.cfg.rew_collision_penalty, 0.0)
-    
-    # ── 4. Speed Bonus (목표 방향 속도) ──
-    # body frame에서 물체 방향으로의 속도 성분
-    rel_obj = self.object_pos_w[:, :2] - self.robot.data.root_pos_w[:, :2]
-    heading = self._get_robot_heading()
-    angle_to_obj = torch.atan2(rel_obj[:, 1], rel_obj[:, 0]) - heading
-    
-    vx = self.robot.data.root_lin_vel_b[:, 0]
-    vy = self.robot.data.root_lin_vel_b[:, 1]
-    speed = torch.sqrt(vx**2 + vy**2)
-    vel_toward = speed * torch.cos(angle_to_obj)  # 물체 방향 속도 성분
-    rew_speed = self.cfg.rew_speed_bonus * vel_toward.clamp(0, 0.5)
-    
-    # ── 5. Action Smoothness ──
+
+    # ── 3. Obstacle Proximity (소프트) ──
+    safe_dist = self.cfg.obstacle_proximity_safe_dist
+    proximity_factor = (1.0 - min_obs_dist / safe_dist).clamp(0.0, 1.0)
+    rew_proximity = self.cfg.rew_obstacle_proximity_weight * proximity_factor
+
+    # ── 4. Action Smoothness ──
     delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]  # base만
     rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
-    
-    total = rew_approach + rew_arrival + rew_collision + rew_speed + rew_smooth
-    
+
+    total = rew_direction + rew_collision + rew_proximity + rew_smooth
+
     # Logging
     self.extras["log"] = {
-        "rew_approach": rew_approach.mean(),
-        "rew_arrival": rew_arrival.mean(),
+        "rew_direction": rew_direction.mean(),
         "rew_collision": rew_collision.mean(),
         "rew_speed": rew_speed.mean(),
         "rew_smooth": rew_smooth.mean(),
         "dist_to_target": curr_dist.mean(),
         "min_obstacle_dist": min_obs_dist.mean(),
-        "arrival_rate": arrived.float().mean(),
+        "direction_compliance": compliance.mean(),
         "collision_rate": collision.float().mean(),
+        "avg_speed": metrics["lin_speed"].mean(),
     }
-    
+
     return total
 ```
 
@@ -446,33 +445,29 @@ def _get_rewards(self) -> torch.Tensor:
 ```python
 def _get_dones(self):
     """
-    Navigate 종료 조건:
-    - timeout: episode_length 초과
+    Navigate (Direction-Conditioned) 종료 조건:
+    - timeout: episode_length 초과 (10초)
     - out_of_bounds: env 범위 이탈
-    - arrived: 물체 도달 (success)
-    
-    NOTE: collision은 terminate 하지 않음.
-    충돌 시 패널티만 주고 계속 진행하여, 충돌 후 복구하는 행동도 학습하게 한다.
+    - fell: 로봇 넘어짐
+
+    NOTE: arrival 조건 없음 — 목표물이 아닌 방향 명령 실행이므로.
+    collision도 terminate 하지 않음 — 패널티만 주고 계속 진행.
     """
-    time_out = self.episode_length_buf >= self.max_episode_length
-    
-    robot_xy = self.robot.data.root_pos_w[:, :2]
-    origin_xy = self.scene.env_origins[:, :2]
-    dist_from_origin = torch.norm(robot_xy - origin_xy, dim=-1)
-    out_of_bounds = dist_from_origin > (self.cfg.scene.env_spacing / 2 - 0.5)
-    
-    dist_to_target = torch.norm(
-        self.object_pos_w[:, :2] - robot_xy, dim=-1
-    )
-    arrived = dist_to_target < self.cfg.arrival_thresh
-    
-    self.task_success = arrived  # Skill-2와 동일한 인터페이스
-    
-    terminated = out_of_bounds  # arrived는 보너스만 주고 종료하지 않을 수도 있음
-    # 옵션: arrived도 terminate → 에피소드 빨리 끝내고 새 배치 시작
-    terminated = terminated | arrived
-    
-    return terminated, time_out
+    time_out = self.episode_length_buf >= (self.max_episode_length - 1)
+
+    root_pos = self.robot.data.root_pos_w
+    out_of_bounds = torch.norm(
+        root_pos[:, :2] - self.home_pos_w[:, :2], dim=-1
+    ) > self.cfg.max_dist_from_origin
+
+    env_z = self.scene.env_origins[:, 2]
+    fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
+
+    terminated = out_of_bounds | fell
+    truncated = time_out
+    self.task_success[:] = False  # 방향 명령 모드에서는 task_success 없음
+
+    return terminated, truncated
 ```
 
 ---
@@ -501,7 +496,7 @@ if args.skill == "navigate":
 **주의사항:**
 - Navigate는 BC warm-start가 필요 없다. `--bc_checkpoint`가 없으면 from scratch 시작하도록 기존 로직에서 이미 처리됨.
 - PPO 하이퍼파라미터는 Skill-2와 동일하게 시작. Action space가 작으므로 수렴이 빠를 것.
-- `entropy_coef`를 약간 높여도 됨 (0.01 → 0.02): 탐색 장려
+- `entropy_coef=0.005`: 6/9 action dims가 dead(arm/gripper 고정)이므로 entropy를 낮춤. dead dims (0:6) log_std는 -3.0에 고정(gradient zero).
 
 ### 2-2. `collect_demos.py` — `Skill1EnvWithCam` 추가
 
@@ -617,17 +612,17 @@ action_to_save[:, 5] = 1.0  # 항상 open → binary도 1.0
 
 ## 4. Instruction 텍스트
 
-VLA 학습 시 instruction text가 필요하다. Navigate의 instruction은 VLM이 배포 시 생성하는 것과 유사해야 한다.
+VLA 학습 시 instruction text가 필요하다. Navigate는 direction-conditioned이므로, VLM이 생성하는 방향 명령과 일치하는 instruction을 사용한다.
 
 ```python
-NAVIGATE_INSTRUCTIONS = [
-    "navigate toward the {object_name}",
-    "move toward the {object_name}",
-    "go to the {object_name}",
-    "approach the {object_name} from a distance",
-    "drive toward the {object_name} while avoiding obstacles",
-    "find a path to the {object_name}",
-]
+NAVIGATE_INSTRUCTIONS = {
+    "forward":    ["move forward", "go straight ahead", "drive forward"],
+    "backward":   ["move backward", "go back", "reverse"],
+    "left":       ["move left", "strafe left", "go to the left"],
+    "right":      ["move right", "strafe right", "go to the right"],
+    "turn_left":  ["turn left", "rotate left", "turn counterclockwise"],
+    "turn_right": ["turn right", "rotate right", "turn clockwise"],
+}
 
 SEARCH_INSTRUCTIONS = [
     "turn to search for the {object_name}",
@@ -745,11 +740,11 @@ rel_object_noise: ±0.03 m
 
 ### Reward
 
-- [ ] 물체에 접근하면 `rew_approach > 0`
-- [ ] 물체에서 멀어지면 `rew_approach < 0`
-- [ ] 도착 시 `rew_arrival = 15.0`
+- [ ] 명령 방향으로 이동하면 `rew_direction > 0`
+- [ ] 명령 반대 방향으로 이동하면 `rew_direction < 0`
 - [ ] 장애물 충돌 시 `rew_collision = -2.0`
-- [ ] `arrival_rate`가 학습 진행에 따라 증가하는지
+- [ ] 장애물 근접 시 `rew_proximity < 0` (soft, 0.5m 이내)
+- [ ] `direction_compliance`가 학습 진행에 따라 증가하는지 (95%+ 목표)
 
 ### 데이터 저장
 
@@ -867,4 +862,4 @@ rel_object_noise: ±0.03 m
 
 4. **BC warm-start는 불필요하다.** 3D 실질 action space에서 랜덤 탐색만으로 물체 도달 경험이 충분히 나온다. Holonomic base라서 어느 방향으로든 즉시 이동 가능.
 
-5. **arrival_thresh = 0.5m = Skill-2 curriculum 시작점.** Navigate가 여기까지 데려다주면, Skill-2가 인수받아 나머지 접근+파지를 처리한다.
+5. **arrival_thresh = 0.7m = 핸드오프 지점 = Skill-2 curriculum 시작점.** Navigate가 여기까지 데려다주면, Skill-2가 인수받아 나머지 접근+파지를 처리한다.
