@@ -160,7 +160,7 @@ class LeKiwiNavEnvCfg(DirectRLEnvCfg):
     # Optional: representative multi-object catalog JSON for privileged teacher observations.
     # Format: [{"usd": "...", "bbox": [x, y, z], "mass": 0.2, "scale": 1.0, "category": 0}, ...]
     multi_object_json: str = ""
-    num_object_categories: int = 6
+    num_object_categories: int = 12
 
     # Backward compatibility (기존 스크립트에서 참조)
     goal_reached_thresh: float = 0.30

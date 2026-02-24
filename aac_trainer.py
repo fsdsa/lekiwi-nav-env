@@ -24,11 +24,15 @@ class EarlyStopCfg:
 
     metric: extras["log"]에서 추적할 키 (예: "direction_compliance")
     threshold: rolling average가 이 값 이상이면 수렴으로 판정
+    metric2: (optional) 두 번째 조건 — rolling avg가 threshold2 이하일 때 만족
+    threshold2: metric2의 상한 임계값
     window: rolling average 윈도우 크기 (rollout steps)
     min_timesteps: 최소 학습 timestep (너무 빠른 중단 방지)
     """
     metric: str = ""
     threshold: float = 0.93
+    metric2: str = ""
+    threshold2: float = 0.05
     window: int = 500
     min_timesteps: int = 2000
 
@@ -44,6 +48,7 @@ class AACSequentialTrainer(SequentialTrainer):
         super().__init__(*args, **kwargs)
         self.early_stop_cfg = early_stop
         self._es_buffer: deque = deque(maxlen=early_stop.window if early_stop else 1)
+        self._es_buffer2: deque = deque(maxlen=early_stop.window if early_stop else 1)
         self._es_triggered = False
 
     def single_agent_train(self) -> None:
@@ -100,25 +105,43 @@ class AACSequentialTrainer(SequentialTrainer):
                 if es and es.metric and timestep >= es.min_timesteps:
                     if self.environment_info in infos:
                         log_dict = infos[self.environment_info]
+                        # Primary metric (>= threshold)
                         if es.metric in log_dict:
                             val = log_dict[es.metric]
                             if isinstance(val, torch.Tensor):
                                 val = val.item()
                             self._es_buffer.append(val)
-                            if len(self._es_buffer) >= es.window:
-                                avg = sum(self._es_buffer) / len(self._es_buffer)
-                                if avg >= es.threshold:
-                                    self._es_triggered = True
-                                    print(
-                                        f"\n  Early stop: {es.metric} rolling avg "
-                                        f"= {avg:.4f} >= {es.threshold} "
-                                        f"(window={es.window}, timestep {timestep}). "
-                                        f"Saving final checkpoint."
-                                    )
-                                    self.agents.post_interaction(
-                                        timestep=timestep, timesteps=self.timesteps,
-                                    )
-                                    return
+                        # Secondary metric (<= threshold2)
+                        if es.metric2 and es.metric2 in log_dict:
+                            val2 = log_dict[es.metric2]
+                            if isinstance(val2, torch.Tensor):
+                                val2 = val2.item()
+                            self._es_buffer2.append(val2)
+                        # Check convergence
+                        if len(self._es_buffer) >= es.window:
+                            avg = sum(self._es_buffer) / len(self._es_buffer)
+                            cond1 = avg >= es.threshold
+                            cond2 = True
+                            avg2_str = ""
+                            if es.metric2 and len(self._es_buffer2) >= es.window:
+                                avg2 = sum(self._es_buffer2) / len(self._es_buffer2)
+                                cond2 = avg2 <= es.threshold2
+                                avg2_str = f", {es.metric2} avg = {avg2:.4f} <= {es.threshold2}"
+                            elif es.metric2:
+                                cond2 = False  # not enough data yet
+                            if cond1 and cond2:
+                                self._es_triggered = True
+                                print(
+                                    f"\n  Early stop: {es.metric} avg "
+                                    f"= {avg:.4f} >= {es.threshold}"
+                                    f"{avg2_str}"
+                                    f" (window={es.window}, timestep {timestep}). "
+                                    f"Saving final checkpoint."
+                                )
+                                self.agents.post_interaction(
+                                    timestep=timestep, timesteps=self.timesteps,
+                                )
+                                return
 
             self.agents.post_interaction(timestep=timestep, timesteps=self.timesteps)
 

@@ -133,7 +133,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
 
     # === Multi-object (v8 동일) ===
     multi_object_json: str = ""
-    num_object_categories: int = 6
+    num_object_categories: int = 12
 
     # === Reward (approach/grasp/lift 전용) ===
     rew_time_penalty: float = -0.01
@@ -1370,13 +1370,19 @@ class Skill2Env(DirectRLEnv):
         # 새 순서: [arm5, grip1, base3]
         arm_grip_action = self.actions[:, 0:6]
 
-        base_vx = self.actions[:, 6] * self.cfg.max_lin_vel
-        base_vy = self.actions[:, 7] * self.cfg.max_lin_vel
-        base_wz = self.actions[:, 8] * self.cfg.max_ang_vel
+        # Action [6:9] is in body frame (same as obs base_body_vel)
+        body_vx = self.actions[:, 6] * self.cfg.max_lin_vel
+        body_vy = self.actions[:, 7] * self.cfg.max_lin_vel
+        body_wz = self.actions[:, 8] * self.cfg.max_ang_vel
 
-        # Base -> Kiwi IK -> Wheel (v8 로직 그대로)
-        body_cmd = torch.stack([base_vx, base_vy, base_wz], dim=-1)
-        wheel_radps = body_cmd @ self.kiwi_M.T / self.wheel_radius
+        # Body frame → IK frame
+        ik_vx = body_vy       # IK vx+ = body vy+ (forward)
+        ik_vy = -body_vx      # IK vy+ = body vx- (left)
+        ik_wz = body_wz       # IK wz+ = CCW = body wz+ (same convention)
+
+        # Base -> Kiwi IK -> Wheel
+        ik_cmd = torch.stack([ik_vx, ik_vy, ik_wz], dim=-1)
+        wheel_radps = ik_cmd @ self.kiwi_M.T / self.wheel_radius
 
         vel_target = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         vel_target[:, self.wheel_idx] = wheel_radps
@@ -1523,7 +1529,7 @@ class Skill2Env(DirectRLEnv):
         # Lift 성공 보너스
         reward += self.task_success.float() * self.cfg.rew_lift_bonus
 
-        # Gripper shaping (v8 그대로)
+        # Gripper shaping (wider range + original near-object)
         if self._physics_grasp:
             gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
             if self._multi_object:
@@ -1538,12 +1544,20 @@ class Skill2Env(DirectRLEnv):
                     float(self.cfg.grasp_gripper_threshold) - gripper_pos, min=0.0, max=1.0
                 )
             near_object = metrics["object_dist"] < self.cfg.approach_thresh
+            wider_near = metrics["object_dist"] < (self.cfg.approach_thresh * 2.0)  # 0.70m
+            reward += (wider_near & ~near_object).float() * (0.3 * close_progress)
             reward += near_object.float() * (0.5 * close_progress)
-            far_from_object = ~near_object
+            far_from_object = ~wider_near
             open_progress = torch.clamp(
                 gripper_pos - float(self.cfg.grasp_gripper_threshold), min=0.0, max=1.0
             )
             reward += far_from_object.float() * (0.1 * open_progress)
+
+        # Height penalty — 팔이 물체 위에서 접근하지 않도록
+        if "object_pos_b" in metrics:
+            vertical_offset = metrics["object_pos_b"][:, 2].abs()
+            height_penalty = -0.1 * torch.clamp(vertical_offset - 0.10, min=0.0)
+            reward += height_penalty
 
         self.prev_object_dist[:] = metrics["object_dist"]
         self.episode_reward_sum += reward

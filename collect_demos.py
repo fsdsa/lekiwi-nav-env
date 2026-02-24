@@ -192,6 +192,22 @@ def _full_task_text_for_object(object_name: object) -> str:
     return f"find the {name} and bring it back"
 
 
+def _navigate_instruction_for_object(
+    object_name: object, visible_any: bool, cmd_vec: np.ndarray | list[float] | tuple[float, ...] | None = None
+) -> str:
+    name = _sanitize_object_name(object_name)
+    lowered = name.lower()
+    if cmd_vec is not None:
+        arr = np.asarray(cmd_vec, dtype=np.float64).reshape(-1)
+        if arr.size >= 3:
+            vx, vy, wz = float(arr[0]), float(arr[1]), float(arr[2])
+            if abs(wz) > max(abs(vx), abs(vy), 0.1):
+                return "turn left to search for the target object" if wz > 0.0 else "turn right to search for the target object"
+    if lowered in {"target object", "object"}:
+        return "navigate toward the target object" if visible_any else "turn to search for the target object"
+    return f"navigate toward the {name}" if visible_any else f"turn to search for the {name}"
+
+
 def _get_multi_object_episode_meta(env: LeKiwiNavEnv, env_id: int) -> dict[str, object]:
     meta = {
         "object_name": "target object",
@@ -513,6 +529,62 @@ def resolve_state_preprocessor(agent, allow_missing: bool):
     )
 
 
+def load_agent_checkpoint_with_policy_fallback(agent, policy_model: PolicyNet, checkpoint_path: str) -> bool:
+    """Load checkpoint into agent.
+
+    Returns:
+        True  -> full agent load succeeded (agent.act path usable)
+        False -> policy/state_preprocessor fallback load only (disable agent.act path)
+    """
+    try:
+        agent.load(checkpoint_path)
+        return True
+    except RuntimeError as exc:
+        msg = str(exc)
+        msg_l = msg.lower()
+        # Navigate AAC checkpoints can have critic obs dim != actor obs dim.
+        # In that case, fallback to policy-only load for rollout collection.
+        is_value_shape_mismatch = ("size mismatch" in msg_l) and (
+            "value" in msg_l or "valuenet" in msg_l or "net.0.weight" in msg_l
+        )
+        if not is_value_shape_mismatch:
+            raise
+
+        print("  [WARN] value net shape mismatch during agent.load; fallback to policy-only load")
+        print(f"         reason: {msg.splitlines()[0] if msg else 'runtime error'}")
+
+        try:
+            payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            payload = torch.load(checkpoint_path, map_location="cpu")
+
+        if not isinstance(payload, dict) or "policy" not in payload:
+            raise RuntimeError("checkpoint payload에 policy state가 없어 fallback 로드에 실패했습니다.")
+
+        policy_model.load_state_dict(payload["policy"], strict=True)
+        print("  [WARN] policy weights loaded without critic weights")
+
+        pre = next(
+            (
+                c
+                for c in [
+                    getattr(agent, "_state_preprocessor", None),
+                    getattr(agent, "state_preprocessor", None),
+                ]
+                if callable(c)
+            ),
+            None,
+        )
+        if pre is not None and "state_preprocessor" in payload:
+            try:
+                pre.load_state_dict(payload["state_preprocessor"])
+                print("  [WARN] state_preprocessor restored from checkpoint")
+            except Exception as pre_exc:  # noqa: BLE001
+                print(f"  [WARN] state_preprocessor restore skipped: {pre_exc}")
+
+        return False
+
+
 def extract_robot_state_9d(env) -> torch.Tensor:
     """
     VLA용 robot_state 9D:
@@ -568,13 +640,23 @@ def resolve_checkpoint_path(path: str) -> str:
     raise FileNotFoundError(f"Checkpoint not found: {path}")
 
 
-def _clear_buffers(idx, ep_obs, ep_act, ep_base_img, ep_wrist_img, ep_robot_state, ep_subtask_ids):
+def _clear_buffers(
+    idx,
+    ep_obs,
+    ep_act,
+    ep_base_img,
+    ep_wrist_img,
+    ep_robot_state,
+    ep_subtask_ids,
+    ep_visible,
+):
     ep_obs[idx].clear()
     ep_act[idx].clear()
     ep_base_img[idx].clear()
     ep_wrist_img[idx].clear()
     ep_robot_state[idx].clear()
     ep_subtask_ids[idx].clear()
+    ep_visible[idx].clear()
 
 
 def main():
@@ -778,13 +860,11 @@ def main():
         action_space=wrapped.action_space,
         device=device,
     )
-    try:
-        agent.load(checkpoint_path)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "체크포인트와 현재 환경 observation 차원이 맞지 않습니다. "
-            "현재 환경에서 다시 학습한 PPO 체크포인트를 사용하세요."
-        ) from exc
+    agent_load_full = load_agent_checkpoint_with_policy_fallback(
+        agent=agent,
+        policy_model=models["policy"],
+        checkpoint_path=checkpoint_path,
+    )
 
     agent.set_running_mode("eval")
     state_preprocessor = resolve_state_preprocessor(
@@ -792,6 +872,8 @@ def main():
     )
     if state_preprocessor is not None:
         print("  상태 전처리기: RunningStandardScaler")
+    if not agent_load_full:
+        print("  [WARN] agent.act 경로를 비활성화하고 policy-only 추론을 사용합니다.")
     print("  정책 로드 완료\n")
 
     obs, info = env.reset()
@@ -802,8 +884,15 @@ def main():
         spawn_mgr.spawn_all(env.object_pos_w)
         print(f"  초기 물체 스폰 완료 ({args.num_envs} envs)\n")
 
-    if args.annotate_subtasks and not hasattr(env, "phase"):
-        raise RuntimeError("annotate_subtasks=True 이지만 env.phase가 없습니다.")
+    annotate_subtasks = bool(args.annotate_subtasks)
+    if annotate_subtasks and not hasattr(env, "phase"):
+        print("  [WARN] annotate_subtasks=True 이지만 env.phase가 없어 주석 저장을 비활성화합니다.")
+        annotate_subtasks = False
+    apply_visibility_gate = bool(use_camera and args.skill in ("approach_and_grasp", "carry_and_place"))
+    if apply_visibility_gate:
+        print("  Visibility gate: ON (episode prefix trim, middle frames preserved)")
+    else:
+        print("  Visibility gate: OFF")
 
     ep_obs = [[] for _ in range(args.num_envs)]
     ep_act = [[] for _ in range(args.num_envs)]
@@ -811,6 +900,7 @@ def main():
     ep_wrist_img = [[] for _ in range(args.num_envs)]
     ep_robot_state = [[] for _ in range(args.num_envs)]
     ep_subtask_ids = [[] for _ in range(args.num_envs)]
+    ep_visible = [[] for _ in range(args.num_envs)]
 
     ep_object_name = ["" for _ in range(args.num_envs)]
     ep_spawn_meta = [{} for _ in range(args.num_envs)]
@@ -826,14 +916,18 @@ def main():
 
     hdf5_file = h5py.File(output_path, "w")
     hdf5_file.attrs["has_camera"] = use_camera
-    hdf5_file.attrs["has_subtask_annotation"] = bool(args.annotate_subtasks)
+    hdf5_file.attrs["has_subtask_annotation"] = bool(annotate_subtasks)
+    hdf5_file.attrs["visibility_gate_prefix_trim"] = bool(apply_visibility_gate)
     hdf5_file.attrs["has_robot_state"] = True
     hdf5_file.attrs["obs_dim"] = int(env.observation_space.shape[0])
     hdf5_file.attrs["action_dim"] = int(env.action_space.shape[0])
     hdf5_file.attrs["has_spawn_metadata"] = bool(use_spawn)
     hdf5_file.attrs["subtask_id_to_text_json"] = json.dumps(SUBTASK_ID_TO_TEXT_STATIC, ensure_ascii=False)
     hdf5_file.attrs["full_task_id"] = int(FULL_TASK_ID)
-    hdf5_file.attrs["full_task_text"] = FULL_TASK_TEXT_STATIC
+    if args.skill == "navigate":
+        hdf5_file.attrs["full_task_text"] = "navigate toward the target object"
+    else:
+        hdf5_file.attrs["full_task_text"] = FULL_TASK_TEXT_STATIC
     if use_camera:
         hdf5_file.attrs["base_rgb_shape"] = [args.base_cam_height, args.base_cam_width, 3]
         hdf5_file.attrs["wrist_rgb_shape"] = [args.wrist_cam_height, args.wrist_cam_width, 3]
@@ -869,7 +963,7 @@ def main():
         while saved < args.num_demos and attempts < args.max_attempts:
             step_robot_state = extract_robot_state_9d(env)
             step_subtask_ids = None
-            if args.annotate_subtasks:
+            if annotate_subtasks:
                 step_subtask_ids = env.phase.clone()
 
             # obs/action과 동일 시점(t)의 이미지를 먼저 캡처한다.
@@ -884,7 +978,7 @@ def main():
                     obs_policy=obs["policy"],
                     policy_model=models["policy"],
                     state_preprocessor=state_preprocessor,
-                    agent=agent,
+                    agent=agent if agent_load_full else None,
                 )
 
             next_obs, reward, terminated, truncated, info = env.step(action)
@@ -904,8 +998,12 @@ def main():
                     action_to_save[5] = 1.0 if action_to_save[5].item() > 0.5 else 0.0
                 ep_act[i].append(action_to_save.cpu().numpy())
                 ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
-                if args.annotate_subtasks and step_subtask_ids is not None:
+                if annotate_subtasks and step_subtask_ids is not None:
                     ep_subtask_ids[i].append(int(step_subtask_ids[i].item()))
+                if hasattr(env, "object_visible"):
+                    ep_visible[i].append(bool(env.object_visible[i].item()))
+                else:
+                    ep_visible[i].append(False)
                 if use_camera:
                     if base_rgb is not None:
                         ep_base_img[i].append(base_rgb[i].cpu().numpy())
@@ -918,7 +1016,16 @@ def main():
             for idx in done_ids.tolist():
                 attempts += 1
                 if len(ep_obs[idx]) < 5:
-                    _clear_buffers(idx, ep_obs, ep_act, ep_base_img, ep_wrist_img, ep_robot_state, ep_subtask_ids)
+                    _clear_buffers(
+                        idx,
+                        ep_obs,
+                        ep_act,
+                        ep_base_img,
+                        ep_wrist_img,
+                        ep_robot_state,
+                        ep_subtask_ids,
+                        ep_visible,
+                    )
                     if use_spawn and spawn_mgr is not None:
                         spawn_mgr.respawn_for_env(idx, env.object_pos_w[idx])
                         ep_object_name[idx] = spawn_mgr.get_object_name(idx)
@@ -929,7 +1036,10 @@ def main():
                 target = env.object_pos_w[idx, :2].cpu().numpy()
                 dist = float(np.linalg.norm(root - target))
 
-                if hasattr(env, "task_success"):
+                if args.skill == "navigate":
+                    # Skill-1 is direction-tracking: task_success is intentionally unused.
+                    success = bool(truncated[idx].item())
+                elif hasattr(env, "task_success"):
                     success = bool(env.task_success[idx].item())
                 else:
                     success = bool(truncated[idx].item() and dist < 0.3)
@@ -939,7 +1049,7 @@ def main():
                     quality_reason = "ok"
                     physics_obj_meta = None
 
-                    if use_spawn and spawn_mgr is not None and args.annotate_subtasks:
+                    if use_spawn and spawn_mgr is not None and annotate_subtasks:
                         quality_ok, quality_reason = spawn_mgr.check_quality(
                             env_id=idx,
                             subtask_ids=ep_subtask_ids[idx],
@@ -950,7 +1060,54 @@ def main():
                         skipped += 1
                         if skipped <= 10 or skipped % 50 == 0:
                             print(f"  Skip #{skipped} | env={idx} | {quality_reason}")
-                        _clear_buffers(idx, ep_obs, ep_act, ep_base_img, ep_wrist_img, ep_robot_state, ep_subtask_ids)
+                        _clear_buffers(
+                            idx,
+                            ep_obs,
+                            ep_act,
+                            ep_base_img,
+                            ep_wrist_img,
+                            ep_robot_state,
+                            ep_subtask_ids,
+                            ep_visible,
+                        )
+                        if use_spawn and spawn_mgr is not None:
+                            spawn_mgr.respawn_for_env(idx, env.object_pos_w[idx])
+                            ep_object_name[idx] = spawn_mgr.get_object_name(idx)
+                            ep_spawn_meta[idx] = spawn_mgr.get_spawn_metadata(idx)
+                        continue
+
+                    trim_start = 0
+                    if apply_visibility_gate and len(ep_visible[idx]) == len(ep_obs[idx]) and len(ep_visible[idx]) > 0:
+                        vis_hist = np.asarray(ep_visible[idx], dtype=np.bool_)
+                        if bool(vis_hist.any()):
+                            trim_start = int(np.argmax(vis_hist))
+
+                    obs_to_save = ep_obs[idx][trim_start:]
+                    act_to_save = ep_act[idx][trim_start:]
+                    robot_state_to_save = ep_robot_state[idx][trim_start:]
+                    subtask_to_save = ep_subtask_ids[idx][trim_start:] if annotate_subtasks else []
+                    base_img_to_save = ep_base_img[idx][trim_start:] if use_camera else []
+                    wrist_img_to_save = ep_wrist_img[idx][trim_start:] if use_camera else []
+                    visible_hist = ep_visible[idx][trim_start:]
+                    visible_any = bool(np.any(np.asarray(visible_hist, dtype=np.bool_))) if len(visible_hist) > 0 else False
+                    nav_cmd_vec = None
+                    if args.skill == "navigate" and hasattr(env, "_direction_cmd"):
+                        nav_cmd_vec = env._direction_cmd[idx].detach().cpu().numpy()
+
+                    if len(obs_to_save) < 5:
+                        skipped += 1
+                        if skipped <= 10 or skipped % 50 == 0:
+                            print(f"  Skip #{skipped} | env={idx} | too_short_after_trim(len={len(obs_to_save)})")
+                        _clear_buffers(
+                            idx,
+                            ep_obs,
+                            ep_act,
+                            ep_base_img,
+                            ep_wrist_img,
+                            ep_robot_state,
+                            ep_subtask_ids,
+                            ep_visible,
+                        )
                         if use_spawn and spawn_mgr is not None:
                             spawn_mgr.respawn_for_env(idx, env.object_pos_w[idx])
                             ep_object_name[idx] = spawn_mgr.get_object_name(idx)
@@ -958,13 +1115,13 @@ def main():
                         continue
 
                     grp = hdf5_file.create_group(f"episode_{saved}")
-                    grp.create_dataset("obs", data=np.array(ep_obs[idx]))
-                    grp.create_dataset("actions", data=np.array(ep_act[idx]))
-                    robot_state_np = np.array(ep_robot_state[idx], dtype=np.float32)
+                    grp.create_dataset("obs", data=np.array(obs_to_save))
+                    grp.create_dataset("actions", data=np.array(act_to_save))
+                    robot_state_np = np.array(robot_state_to_save, dtype=np.float32)
                     grp.create_dataset("robot_state", data=robot_state_np)
 
-                    if args.annotate_subtasks:
-                        subtask_ids_np = np.array(ep_subtask_ids[idx], dtype=np.int64)
+                    if annotate_subtasks:
+                        subtask_ids_np = np.array(subtask_to_save, dtype=np.int64)
                         grp.create_dataset("subtask_ids", data=subtask_ids_np)
 
                         if use_spawn:
@@ -974,10 +1131,7 @@ def main():
                             obj_name_for_transition = str(physics_obj_meta.get("object_name", ""))
                         else:
                             obj_name_for_transition = ""
-                        transitions = build_subtask_transitions(
-                            ep_subtask_ids[idx],
-                            object_name=obj_name_for_transition,
-                        )
+                        transitions = build_subtask_transitions(subtask_to_save, object_name=obj_name_for_transition)
                         grp.attrs["subtask_transitions"] = json.dumps(transitions, ensure_ascii=False)
                         grp.attrs["num_subtask_transitions"] = len(transitions)
                         if len(subtask_ids_np) > 0:
@@ -986,33 +1140,35 @@ def main():
 
                     if use_camera:
                         img_grp = grp.create_group("images")
-                        if len(ep_base_img[idx]) > 0:
+                        if len(base_img_to_save) > 0:
                             img_grp.create_dataset(
                                 "base_rgb",
-                                data=np.array(ep_base_img[idx], dtype=np.uint8),
+                                data=np.array(base_img_to_save, dtype=np.uint8),
                                 compression="gzip",
                                 compression_opts=4,
                                 chunks=(1, args.base_cam_height, args.base_cam_width, 3),
                             )
-                        if len(ep_wrist_img[idx]) > 0:
+                        if len(wrist_img_to_save) > 0:
                             img_grp.create_dataset(
                                 "wrist_rgb",
-                                data=np.array(ep_wrist_img[idx], dtype=np.uint8),
+                                data=np.array(wrist_img_to_save, dtype=np.uint8),
                                 compression="gzip",
                                 compression_opts=4,
                                 chunks=(1, args.wrist_cam_height, args.wrist_cam_width, 3),
                             )
 
-                    grp.attrs["num_steps"] = len(ep_obs[idx])
+                    grp.attrs["num_steps"] = len(obs_to_save)
                     grp.attrs["final_object_dist"] = dist
                     # Legacy alias for backward compatibility with old analysis scripts.
                     grp.attrs["final_dist"] = dist
                     grp.attrs["success"] = True
                     grp.attrs["has_images"] = bool(use_camera)
-                    grp.attrs["has_subtask_annotation"] = bool(args.annotate_subtasks)
-                    grp.attrs["num_base_imgs"] = len(ep_base_img[idx])
-                    grp.attrs["num_wrist_imgs"] = len(ep_wrist_img[idx])
+                    grp.attrs["has_subtask_annotation"] = bool(annotate_subtasks)
+                    grp.attrs["num_base_imgs"] = len(base_img_to_save)
+                    grp.attrs["num_wrist_imgs"] = len(wrist_img_to_save)
                     grp.attrs["quality_check"] = quality_reason
+                    grp.attrs["visibility_trim_start"] = int(trim_start)
+                    grp.attrs["visibility_seen"] = bool(visible_any)
 
                     if hasattr(env, "phase"):
                         grp.attrs["final_phase"] = int(env.phase[idx].item())
@@ -1033,7 +1189,12 @@ def main():
                     if use_spawn and spawn_mgr is not None:
                         obj_name = ep_object_name[idx]
                         grp.attrs["object_name"] = obj_name
-                        grp.attrs["instruction"] = spawn_mgr.get_full_task_instruction(idx)
+                        if args.skill == "navigate":
+                            grp.attrs["instruction"] = _navigate_instruction_for_object(
+                                obj_name, visible_any=visible_any, cmd_vec=nav_cmd_vec
+                            )
+                        else:
+                            grp.attrs["instruction"] = spawn_mgr.get_full_task_instruction(idx)
                         grp.attrs["spawn_meta_json"] = json.dumps(ep_spawn_meta[idx], ensure_ascii=False)
                         grp.attrs["object_usd"] = str(ep_spawn_meta[idx].get("object_usd", ""))
                         grp.attrs["object_scale"] = float(ep_spawn_meta[idx].get("object_scale", args.object_scale))
@@ -1050,7 +1211,12 @@ def main():
                             physics_obj_meta = _get_multi_object_episode_meta(env, idx)
 
                         obj_name = str(physics_obj_meta.get("object_name", "target object"))
-                        instruction = str(physics_obj_meta.get("instruction", FULL_TASK_TEXT_STATIC))
+                        if args.skill == "navigate":
+                            instruction = _navigate_instruction_for_object(
+                                obj_name, visible_any=visible_any, cmd_vec=nav_cmd_vec
+                            )
+                        else:
+                            instruction = str(physics_obj_meta.get("instruction", FULL_TASK_TEXT_STATIC))
                         grp.attrs["object_name"] = obj_name
                         grp.attrs["instruction"] = instruction
                         grp.attrs["object_usd"] = str(physics_obj_meta.get("object_usd", ""))
@@ -1063,7 +1229,12 @@ def main():
                         subtask_map[str(FULL_TASK_ID)] = instruction
                         grp.attrs["subtask_id_to_text_json"] = json.dumps(subtask_map, ensure_ascii=False)
                     else:
-                        grp.attrs["instruction"] = FULL_TASK_TEXT_STATIC
+                        if args.skill == "navigate":
+                            grp.attrs["instruction"] = _navigate_instruction_for_object(
+                                "target object", visible_any=visible_any, cmd_vec=nav_cmd_vec
+                            )
+                        else:
+                            grp.attrs["instruction"] = FULL_TASK_TEXT_STATIC
                         grp.attrs["subtask_id_to_text_json"] = json.dumps(
                             SUBTASK_ID_TO_TEXT_STATIC,
                             ensure_ascii=False,
@@ -1074,7 +1245,7 @@ def main():
                     saved += 1
                     dists.append(dist)
 
-                    img_info = f" | imgs={len(ep_base_img[idx])}" if use_camera else ""
+                    img_info = f" | imgs={len(base_img_to_save)}" if use_camera else ""
                     if use_spawn:
                         obj_info = f" | obj={ep_object_name[idx]}"
                     elif multi_object_mode:
@@ -1085,11 +1256,20 @@ def main():
                         obj_info = ""
                     print(
                         f"  Demo {saved:>3}/{args.num_demos} | "
-                        f"steps={len(ep_obs[idx]):>4} | dist={dist:.3f}m | "
+                        f"steps={len(obs_to_save):>4} | dist={dist:.3f}m | "
                         f"att={attempts}{img_info}{obj_info}"
                     )
 
-                _clear_buffers(idx, ep_obs, ep_act, ep_base_img, ep_wrist_img, ep_robot_state, ep_subtask_ids)
+                _clear_buffers(
+                    idx,
+                    ep_obs,
+                    ep_act,
+                    ep_base_img,
+                    ep_wrist_img,
+                    ep_robot_state,
+                    ep_subtask_ids,
+                    ep_visible,
+                )
 
                 if use_spawn and spawn_mgr is not None:
                     if use_dr_lighting:
@@ -1122,7 +1302,7 @@ def main():
         print(f"  물체 다양성: {stats['total_objects_used']}/{stats['total_library']}종 사용")
         if stats["top_5"]:
             print(f"  Top 5: {stats['top_5']}")
-    print(f"  Annotation: {'ON' if args.annotate_subtasks else 'OFF'}")
+    print(f"  Annotation: {'ON' if annotate_subtasks else 'OFF'}")
     print(f"  파일: {output_path}")
     if os.path.exists(output_path):
         size_mb = os.path.getsize(output_path) / (1024 * 1024)

@@ -9,11 +9,15 @@ BC 가중치를 PPO Actor에 그대로 로드할 수 있음.
 Usage:
     cd ~/IsaacLab/scripts/lekiwi_nav_env
 
-    # 37D 텔레옵 데모(BC->RL 37D 메인 실험용) 학습
-    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37
+    # Navigate(20D) 데모 학습
+    python train_bc.py --demo_dir demos_nav/ --epochs 200 --expected_obs_dim 20
+
+    # Skill-2(30D) / Skill-3(29D) 데모 학습
+    python train_bc.py --demo_dir demos_skill2/ --epochs 200 --expected_obs_dim 30
+    python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29
 
     # 검증 포함
-    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37 --eval
+    python train_bc.py --demo_dir demos_nav/ --epochs 200 --expected_obs_dim 20 --eval
 
 결과:
     checkpoints/bc_nav.pt          — BC 가중치 (net + mean_layer)
@@ -72,14 +76,19 @@ class BCPolicy(nn.Module):
 #  데모 로드
 # ═══════════════════════════════════════════════════════════════════════
 
-def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
+def load_demos(demo_dir: str, filter_active: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """
     record_teleop.py가 생성한 HDF5에서 (obs, action) 추출.
 
     Expected HDF5 구조:
-        /episode_0/obs      → (T, obs_dim)
-        /episode_0/actions  → (T, 9)
+        /episode_0/obs            → (T, obs_dim)
+        /episode_0/actions        → (T, 9)
+        /episode_0/teleop_active  → (T,) int8, optional
         /episode_1/...
+
+    Args:
+        demo_dir: HDF5 파일이 있는 디렉토리 경로
+        filter_active: True면 teleop_active=1인 스텝만 사용 (idle 프레임 제거)
     """
     demo_dir = Path(demo_dir)
     hdf5_files = sorted(demo_dir.glob("*.hdf5")) + sorted(demo_dir.glob("*.h5"))
@@ -88,6 +97,7 @@ def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
         raise FileNotFoundError(f"No HDF5 files found in {demo_dir}")
 
     obs_list, act_list = [], []
+    total_filtered = 0
 
     for fpath in hdf5_files:
         file_episode_count = 0
@@ -97,8 +107,16 @@ def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
             if episode_keys:
                 for key in episode_keys:
                     grp = f[key]
-                    obs_list.append(grp["obs"][:])
-                    act_list.append(grp["actions"][:])
+                    obs_data = grp["obs"][:]
+                    act_data = grp["actions"][:]
+                    if filter_active and "teleop_active" in grp:
+                        mask = grp["teleop_active"][:].astype(bool)
+                        n_before = len(obs_data)
+                        obs_data = obs_data[mask]
+                        act_data = act_data[mask]
+                        total_filtered += n_before - len(obs_data)
+                    obs_list.append(obs_data)
+                    act_list.append(act_data)
                     file_episode_count += 1
             elif "obs" in f and "actions" in f:
                 obs_list.append(f["obs"][:])
@@ -114,6 +132,8 @@ def load_demos(demo_dir: str) -> tuple[np.ndarray, np.ndarray]:
     act_all = np.concatenate(act_list, axis=0)
 
     print(f"\n  총 {len(obs_list)} 에피소드, {len(obs_all)} 스텝")
+    if filter_active and total_filtered > 0:
+        print(f"  (idle 프레임 {total_filtered}개 제거됨)")
     print(f"  obs shape: {obs_all.shape}, action shape: {act_all.shape}")
 
     return obs_all, act_all
@@ -143,6 +163,8 @@ def main():
                             help="deprecated: obs 정규화 비활성화 (기본값과 동일)")
     parser.add_argument("--eval", action="store_true",
                         help="학습 후 간단한 평가")
+    parser.add_argument("--filter_active", action="store_true",
+                        help="teleop_active=True 프레임만 사용 (idle 제거, 텔레옵 데이터 권장)")
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
@@ -150,7 +172,7 @@ def main():
     print("=" * 60)
 
     # —— 데모 로드 ————————————————————————————————————————————
-    obs_data, act_data = load_demos(args.demo_dir)
+    obs_data, act_data = load_demos(args.demo_dir, filter_active=args.filter_active)
     obs_dim = obs_data.shape[-1]
     act_dim = act_data.shape[-1]
 

@@ -872,6 +872,11 @@ def main():
 
             action = torch.tensor(action_np, dtype=torch.float32, device=env.device).unsqueeze(0)
 
+            # Combined Phase 1: PRE-step Skill-2 obs 캡처 (off-by-one 방지)
+            s2_obs_pre = None
+            if is_combined and current_phase == 1:
+                s2_obs_pre = env._compute_skill2_actor_obs()
+
             # 환경 step
             next_obs, reward, terminated, truncated, info = env.step(action)
             step_count += 1
@@ -891,9 +896,8 @@ def main():
                 heading_to_home = math.atan2(home_rel_b[0].item(), home_rel_b[1].item())  # +y forward
 
                 if current_phase == 1:
-                    # Phase 1: Skill-2 (30D obs) 레코딩
-                    s2_obs = env._compute_skill2_actor_obs()
-                    phase1_obs.append(s2_obs[0].cpu().numpy())
+                    # Phase 1: Skill-2 (30D obs) 레코딩 — PRE-step obs 사용
+                    phase1_obs.append(s2_obs_pre[0].cpu().numpy())
                     phase1_actions.append(action_s)
                     phase1_active.append(bool(is_active))
                     phase1_robot_state.append(rs)
@@ -988,9 +992,9 @@ def main():
                     grasp_hold_counter = 0
                     current_phase = 1
                     obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+                    if _home_marker is not None:
+                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+                        _home_marker.visualize(translations=_hm)
                     step_count = 0
                 elif key == 'right':
                     if current_phase == 1:
@@ -1012,9 +1016,9 @@ def main():
                             grasp_hold_counter = 0
                             current_phase = 1
                             obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+                            if _home_marker is not None:
+                                _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+                                _home_marker.visualize(translations=_hm)
                             step_count = 0
                     elif current_phase == 2:
                         print(f"\n  [→] Phase 2 수동 완료: Transit 건너뜀, Skill-3 기록 시작")
@@ -1034,9 +1038,9 @@ def main():
                         current_phase = 1
                         grasp_hold_counter = 0
                         obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+                        if _home_marker is not None:
+                            _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+                            _home_marker.visualize(translations=_hm)
                         step_count = 0
                         saved_count = min(skill2_saved, skill3_saved)
                         if saved_count >= max_demos:
@@ -1090,9 +1094,9 @@ def main():
                     episode_obs.clear(); episode_actions.clear()
                     episode_active.clear(); episode_robot_state.clear()
                     obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+                    if _home_marker is not None:
+                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+                        _home_marker.visualize(translations=_hm)
                     step_count = 0
                     if saved_count >= max_demos:
                         break
@@ -1102,9 +1106,9 @@ def main():
                     episode_obs.clear(); episode_actions.clear()
                     episode_active.clear(); episode_robot_state.clear()
                     obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+                    if _home_marker is not None:
+                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
+                        _home_marker.visualize(translations=_hm)
                     step_count = 0
                 else:
                     obs = next_obs

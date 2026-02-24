@@ -229,6 +229,7 @@ class AAC_PPO(PPO):
         cumulative_policy_loss = 0
         cumulative_entropy_loss = 0
         cumulative_value_loss = 0
+        cumulative_bc_loss = 0
 
         for epoch in range(self._learning_epochs):
             kl_divergences = []
@@ -287,6 +288,19 @@ class AAC_PPO(PPO):
                     )
                     policy_loss = -torch.min(surrogate, surrogate_clipped).mean()
 
+                    # BC auxiliary loss (Skill-2/3 BC+RL)
+                    bc_loss = torch.tensor(0.0, device=self.device)
+                    if hasattr(self, '_bc_policy_frozen') and self._bc_policy_frozen is not None:
+                        lambda_bc = self._get_lambda_bc(timestep)
+                        if lambda_bc > 1e-6:
+                            with torch.no_grad():
+                                bc_target = self._bc_policy_frozen(sampled_states)
+                            actor_mean = self.policy.act(
+                                {"states": pp_states}, role="policy",
+                            )[0]  # (N, action_dim)
+                            bc_loss = lambda_bc * F.mse_loss(actor_mean, bc_target)
+                            policy_loss = policy_loss + bc_loss
+
                     # Value loss — CRITIC obs 사용
                     predicted_values, _, _ = self.value.act(
                         {"states": pp_critic}, role="value",
@@ -331,6 +345,8 @@ class AAC_PPO(PPO):
                 cumulative_value_loss += value_loss.item()
                 if self._entropy_loss_scale:
                     cumulative_entropy_loss += entropy_loss.item()
+                if torch.is_tensor(bc_loss):
+                    cumulative_bc_loss += bc_loss.item()
 
             # LR scheduler
             if self._learning_rate_scheduler:
@@ -349,6 +365,10 @@ class AAC_PPO(PPO):
         self.track_data("Loss / Value loss", cumulative_value_loss / n)
         if self._entropy_loss_scale:
             self.track_data("Loss / Entropy loss", cumulative_entropy_loss / n)
+        if hasattr(self, '_bc_policy_frozen') and self._bc_policy_frozen is not None:
+            lambda_bc = self._get_lambda_bc(timestep)
+            self.track_data("Loss / BC loss", cumulative_bc_loss / n)
+            self.track_data("Loss / Lambda BC", lambda_bc)
 
         self.track_data(
             "Policy / Standard deviation",

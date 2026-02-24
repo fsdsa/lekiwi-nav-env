@@ -129,8 +129,8 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 | 환경 | 용도 | Phase | Conda 경로 |
 |------|------|-------|-----------|
 | `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | `~/miniconda3/` |
-| `inference` | Qwen2.5-VL-7B 추론 | Phase 5 | `~/miniconda3/` |
-| `lerobotpi0` | pi0-FAST + LeRobot (VLA 파인튜닝) | Phase 4 | `~/miniconda3/` |
+| `inference` | Qwen2.5-VL-7B 추론 | Phase 4.5 + Phase 5 | `~/miniconda3/` |
+| `lerobotpi0` | pi0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | `~/miniconda3/` |
 | `groot` | GR00T N1.6 (VLA 파인튜닝) | Phase 4 | `~/miniconda3/` |
 
 ---
@@ -145,6 +145,7 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 | Phase 2: 데이터 수집 | 3090 Desktop | 카메라 렌더링, RT Core |
 | Phase 3: 데이터 변환 | 어디든 | CPU 작업 |
 | Phase 4: VLA 파인튜닝 | A100 서버 | VRAM 40GB |
+| Phase 4.5: Sim Full-System | 3090 Desktop + A100 서버 | Desktop=sim 렌더링+실행, A100=VLM+VLA 추론 |
 | Phase 5: 배포 | A100 서버 + Jetson | VLM + VLA 추론 |
 
 ### 서버 하드웨어 스펙
@@ -203,19 +204,28 @@ source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
 export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
 
-# Skill-2
-python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 30
+# Skill-2 (텔레옵 데이터: --filter_active로 idle 프레임 제거)
+python train_bc.py --demo_dir demos_skill2/ --epochs 200 --expected_obs_dim 30 --filter_active
 
-# Skill-3
-python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29
+# Skill-3 (텔레옵 데이터: --filter_active로 idle 프레임 제거)
+python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29 --filter_active
 ```
 
 ### RL 학습 (서버)
 
-#### Skill-1 Navigate (BC 없이 from scratch) — 학습 완료 (2026-02-22)
+#### Skill-1 Navigate (BC 없이 from scratch) — v6g 비교 실험 중 (2026-02-24)
 
-> **결과**: 8192 envs, ~10500 steps (~20분)에 수렴. direction_compliance 93.8% (평균), collision_rate 1.1%.
-> best_agent.pt: `logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt`
+> **v6g 비교 실험**: 전후진 drift 해결을 위한 ortho penalty 최적 설정 탐색.
+> - **v6g2** (`ortho_drift_weight=-1.0`, linear penalty): 현재 코드 상태. v6g2_full 서버에서 처음부터 완주 학습 진행중.
+> - **v6g3** (`ortho_drift_weight=-15.0`, quadratic penalty): 완주됨 → `backup/best_agent_v6g3.pt`
+> - 좌우이동(strafe)과 회전은 정상 동작. 전후진 drift가 핵심 이슈.
+> - collision/proximity reward 제거, 장애물 회피는 VLA가 담당, RL은 방향 충실 실행만 수행.
+>
+> **체크포인트 백업**:
+> - `backup/best_agent_v6e.pt` — v6e 완주
+> - `backup/best_agent_v6g2.pt` — v6g2 17K steps 중간
+> - `backup/best_agent_v6g3.pt` — v6g3 완주
+> - `logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt` — 현재 학습중 (v6g2_full)
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
@@ -225,18 +235,16 @@ mkdir -p logs && \
 nohup python train_lekiwi.py \
     --skill navigate \
     --num_envs 8192 \
-    --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
-    --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
-    --headless > logs/train_navigate.log 2>&1 &
+    --headless > logs/train_navigate_v6g2_full.log 2>&1 &
 ```
 
-**Early stopping** (navigate는 자동 활성): `direction_compliance` rolling avg >= 0.93 (window=500)이면 자동 중단.
+**Early stopping** (navigate는 자동 활성): `rew_track_ang` rolling avg >= 1.35 **AND** `ang_vel_error` <= 0.02 (window=500)이면 자동 중단.
 수동 설정:
 ```bash
---early_stop_metric direction_compliance --early_stop_threshold 0.93 --early_stop_window 500
+--early_stop_metric rew_track_ang --early_stop_threshold 1.35 --early_stop_metric2 ang_vel_error --early_stop_threshold2 0.02 --early_stop_window 500
 ```
 
-#### Skill-2 ApproachAndGrasp (BC warm-start)
+#### Skill-2 ApproachAndGrasp (BC warm-start + BC auxiliary loss)
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
 export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd && \
@@ -246,13 +254,15 @@ nohup python train_lekiwi.py \
     --skill approach_and_grasp \
     --num_envs 2048 \
     --bc_checkpoint checkpoints/bc_skill2.pt \
+    --lambda_bc_init 0.5 \
+    --bc_anneal_ratio 0.6 \
     --multi_object_json object_catalog.json \
     --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
     --headless > logs/train_skill2.log 2>&1 &
 ```
 
-#### Skill-3 CarryAndPlace (BC warm-start + handoff buffer)
+#### Skill-3 CarryAndPlace (BC warm-start + BC auxiliary loss + handoff buffer)
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
 export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd && \
@@ -262,11 +272,61 @@ nohup python train_lekiwi.py \
     --skill carry_and_place \
     --num_envs 2048 \
     --bc_checkpoint checkpoints/bc_skill3.pt \
+    --lambda_bc_init 0.5 \
+    --bc_anneal_ratio 0.6 \
     --handoff_buffer handoff_buffer.pkl \
     --multi_object_json object_catalog.json \
     --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
     --headless > logs/train_skill3.log 2>&1 &
+```
+
+### Sim Full-System 평가 (Phase 4.5)
+
+#### A100 서버: 추론 서버 시작
+
+VLM 추론 서버:
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate inference && \
+cd ~/IsaacLab/scripts/lekiwi_nav_env && \
+python vlm_inference_server.py --port 8001
+```
+
+VLA 추론 서버:
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate lerobotpi0 && \
+cd ~/IsaacLab/scripts/lekiwi_nav_env && \
+python vla_inference_server.py \
+    --checkpoint ~/datasets/lekiwi_vla/best_model/ \
+    --port 8002
+```
+
+#### 3090 Desktop: sim 평가 실행
+
+```bash
+conda activate env_isaaclab
+source ~/isaacsim/setup_conda_env.sh
+cd ~/IsaacLab/scripts/lekiwi_nav_env
+
+# VLM + VLA 통합 평가 (전체 task)
+python eval_full_system.py \
+    --vlm_server http://<A100_IP>:8001 \
+    --vla_server http://<A100_IP>:8002 \
+    --num_trials 30 \
+    --task "bring the red cup" \
+    --multi_object_json object_catalog.json \
+    --dynamics_json calibration/tuned_dynamics.json \
+    --arm_limit_json calibration/arm_limits_measured.json
+
+# Skill별 단독 평가 (VLM 없이)
+python eval_full_system.py \
+    --vla_server http://<A100_IP>:8002 \
+    --eval_mode skill_only --skill approach_and_grasp \
+    --instruction "pick up the red cup" \
+    --num_trials 50 \
+    --multi_object_json object_catalog.json \
+    --dynamics_json calibration/tuned_dynamics.json \
+    --arm_limit_json calibration/arm_limits_measured.json
 ```
 
 ### 학습 모니터링
@@ -279,7 +339,7 @@ ps aux | grep train_lekiwi | grep -v grep
 nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader
 
 # 로그 진행 확인 (tqdm은 버퍼링되어 실시간 안 보일 수 있음)
-tail -5 logs/train_navigate.log
+tail -5 logs/train_navigate_v6g2_full.log
 
 # 체크포인트 확인 (500 step 간격으로 저장됨)
 ls -lt logs/ppo_navigate/ppo_navigate_scratch/checkpoints/ | head -5
@@ -315,6 +375,8 @@ Skill별 디렉토리:
 | **Info** | `rew_direction/collision/proximity/smooth` | 개별 보상 항목 |
 | **Reward** | `Total reward (mean/max/min)` | 에피소드 누적 보상 |
 | **Loss** | `Policy/Value/Entropy loss` | PPO 손실 |
+| **Loss** | `BC loss` | BC auxiliary loss (Skill-2/3, λ_bc > 0일 때만) |
+| **Loss** | `Lambda BC` | 현재 BC loss weight (λ annealing 추적) |
 | **Policy** | `Standard deviation` | 탐색 분산 (수렴 시 감소) |
 | **Learning** | `Learning rate` | KLAdaptiveLR 현재값 |
 
@@ -460,9 +522,9 @@ ln -s ~/IsaacLab/calibration/arm_limits_measured.json calibration/arm_limits_mea
 | 파라미터 | 값 | 설명 |
 |---------|-----|------|
 | **핸드오프 지점** | **0.7m** | Navigate→ApproachAndGrasp 전환 거리 (VLM 판단) |
-| Navigate 방식 | Direction-Conditioned RL | VLM 방향 명령 추종 + 장애물 회피 |
+| Navigate 방식 | Direction-Conditioned RL | VLM 방향 명령 추종 (velocity tracker + ortho drift penalty, 장애물 회피는 VLA 담당) |
 | Navigate 방향 명령 | 6가지 cardinal | forward/backward/left/right/turn_left/turn_right |
-| Navigate rewards | direction=3.0, collision=-2.0, proximity=-0.5, smooth=-0.005 | |
+| Navigate rewards (v6g) | lin_track=1.5(exp,lin_std=0.25), ang_track=1.5(exp,ang_std=0.20), ortho_drift=-1.0, smooth=-0.005 | v6f base + orthogonal drift penalty. collision/proximity 제거. ortho_speed TensorBoard 로그. **비교 실험중**: v6g2(ortho=-1.0,linear) vs v6g3(ortho=-15.0,quadratic) |
 | Navigate episode | 10초 | 도착 조건 없음, timeout까지 방향 추종 |
 | Navigate PPO | entropy=0.005, dead dims 0:6 frozen, clip_values=False | |
 | Skill-2 object_dist_min | 0.7m | ApproachAndGrasp curriculum 시작 거리 |

@@ -118,7 +118,7 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     object_scale: float = 1.0
     object_prim_path: str = "/World/envs/env_.*/Object"
     multi_object_json: str = ""
-    num_object_categories: int = 6
+    num_object_categories: int = 12
 
     # === Obstacle (tensor-based, no USD prims) ===
     num_obstacles_min: int = 3
@@ -134,13 +134,15 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     lidar_num_rays: int = 8
     lidar_max_range: float = 2.0
 
-    # === Reward ===
+    # === Reward (along/ortho split tracking) ===
     rew_time_penalty: float = -0.01
-    rew_direction_weight: float = 3.0       # dot(cmd, vel_norm) — main reward
-    rew_collision_penalty: float = -2.0     # hard penalty on obstacle collision
-    rew_obstacle_proximity_weight: float = -0.5  # soft penalty near obstacles
-    obstacle_proximity_safe_dist: float = 0.5    # distance below which proximity penalty kicks in
-    rew_action_smoothness: float = -0.005   # delta_action² penalty
+    rew_track_along_weight: float = 1.0    # along-command speed tracking (exp kernel)
+    rew_track_ortho_weight: float = 1.0    # orthogonal drift suppression (exp kernel, tight)
+    rew_track_ang_weight: float = 1.5      # angular velocity tracking (exp kernel)
+    rew_track_along_std: float = 0.25      # m/s (lenient — speed tracking)
+    rew_track_ortho_std: float = 0.05      # m/s (strict — drift kills reward)
+    rew_track_ang_std: float = 0.20        # rad/s
+    rew_action_smoothness: float = -0.005  # delta_action² penalty
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
@@ -911,18 +913,19 @@ class Skill1Env(DirectRLEnv):
     #  Direction command sampling
     # ═══════════════════════════════════════════════════════════════════
 
-    # 6 cardinal direction commands (+y = robot forward)
+    # 6 cardinal direction commands (body frame: vy=forward, vx=right, wz>0=CCW)
+    # Isaac Sim root_ang_vel_b[:, 2] uses right-hand rule: positive = CCW
     _DIRECTION_COMMANDS: torch.Tensor | None = None
 
     def _get_direction_commands(self) -> torch.Tensor:
         if Skill1Env._DIRECTION_COMMANDS is None or Skill1Env._DIRECTION_COMMANDS.device != self.device:
             Skill1Env._DIRECTION_COMMANDS = torch.tensor([
-                [0.0, 1.0, 0.0],    # forward (+y)
-                [0.0, -1.0, 0.0],   # backward (-y)
-                [-1.0, 0.0, 0.0],   # strafe left (-x)
-                [1.0, 0.0, 0.0],    # strafe right (+x)
-                [0.0, 0.0, 1.0],    # turn left (CCW)
-                [0.0, 0.0, -1.0],   # turn right (CW)
+                [0.0, 1.0, 0.0],    # forward  (vy_body > 0) — teleop W
+                [0.0, -1.0, 0.0],   # backward (vy_body < 0) — teleop S
+                [-1.0, 0.0, 0.0],   # strafe left (vx_body < 0) — teleop A
+                [1.0, 0.0, 0.0],    # strafe right (vx_body > 0) — teleop D
+                [0.0, 0.0, 0.33],   # turn left CCW — 0.33 × 3.0 = 1.0 rad/s
+                [0.0, 0.0, -0.33],  # turn right CW — 0.33 × 3.0 = 1.0 rad/s
             ], dtype=torch.float32, device=self.device)
         return Skill1Env._DIRECTION_COMMANDS
 
@@ -971,6 +974,7 @@ class Skill1Env(DirectRLEnv):
             "base_body_vel": base_body_vel,
             "lin_speed": lin_speed,
             "direction_compliance": direction_compliance,
+            "vel_norm": vel_norm,
             "min_obs_dist": min_obs_dist,
             "closest_obs_angle": closest_obs_angle,
         }
@@ -991,14 +995,20 @@ class Skill1Env(DirectRLEnv):
             self.actions = raw
 
     def _apply_action(self):
-        # Base control from RL action [6:9]
-        base_vx = self.actions[:, 6] * self.cfg.max_lin_vel
-        base_vy = self.actions[:, 7] * self.cfg.max_lin_vel
-        base_wz = self.actions[:, 8] * self.cfg.max_ang_vel
+        # Action [6:9] is in body frame (same as obs base_body_vel & direction_cmd)
+        # body frame: vx=right, vy=forward, wz>0=CCW (Isaac Sim right-hand rule)
+        body_vx = self.actions[:, 6] * self.cfg.max_lin_vel
+        body_vy = self.actions[:, 7] * self.cfg.max_lin_vel
+        body_wz = self.actions[:, 8] * self.cfg.max_ang_vel
+
+        # Body frame → IK frame
+        ik_vx = body_vy       # IK vx+ = body vy+ (forward)
+        ik_vy = -body_vx      # IK vy+ = body vx- (left)
+        ik_wz = body_wz       # IK wz+ = CCW = body wz+ (same convention)
 
         # Kiwi Drive IK
-        body_cmd = torch.stack([base_vx, base_vy, base_wz], dim=-1)
-        wheel_radps = body_cmd @ self.kiwi_M.T / self.wheel_radius
+        ik_cmd = torch.stack([ik_vx, ik_vy, ik_wz], dim=-1)
+        wheel_radps = ik_cmd @ self.kiwi_M.T / self.wheel_radius
         vel_target = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         vel_target[:, self.wheel_idx] = wheel_radps
         self.robot.set_joint_velocity_target(vel_target)
@@ -1069,36 +1079,71 @@ class Skill1Env(DirectRLEnv):
 
         reward = torch.full((self.num_envs,), self.cfg.rew_time_penalty, device=self.device)
 
-        # 1. Direction following (main reward): dot(cmd, vel_normalized)
-        compliance = metrics["direction_compliance"]
-        rew_direction = self.cfg.rew_direction_weight * compliance
+        cmd = self._direction_cmd                    # (N, 3): [cmd_vx, cmd_vy, cmd_wz]
+        base_vel = metrics["base_body_vel"]          # (N, 3): [vx, vy, wz] in m/s, rad/s
 
-        # 2. Collision penalty (hard)
-        min_obs_dist = metrics["min_obs_dist"]
-        collision = min_obs_dist < self.cfg.collision_dist
-        rew_collision = torch.where(collision, self.cfg.rew_collision_penalty, 0.0)
+        target_lin = cmd[:, :2] * self.cfg.max_lin_vel   # (N, 2) m/s
+        target_wz  = cmd[:, 2]  * self.cfg.max_ang_vel   # (N,)   rad/s
+        actual_lin = base_vel[:, :2]                      # (N, 2) m/s
+        actual_wz  = base_vel[:, 2]                       # (N,)   rad/s
 
-        # 3. Obstacle proximity (soft, continuous penalty near obstacles)
-        safe_dist = self.cfg.obstacle_proximity_safe_dist
-        proximity_factor = (1.0 - min_obs_dist / safe_dist).clamp(0.0, 1.0)
-        rew_proximity = self.cfg.rew_obstacle_proximity_weight * proximity_factor
+        # --- Along / Ortho split for linear tracking ---
+        target_speed = target_lin.pow(2).sum(dim=-1).sqrt()          # (N,)
+        is_lin_cmd = (target_speed > 0.01)                            # (N,) bool
+        is_turn = ~is_lin_cmd                                         # (N,) bool
+
+        # Command direction unit vector (safe for zero-cmd)
+        cmd_dir = target_lin / target_speed.unsqueeze(-1).clamp(min=1e-6)  # (N, 2)
+
+        # Project actual velocity onto command direction
+        along_speed = (actual_lin * cmd_dir).sum(dim=-1)              # (N,) signed
+        ortho_speed = (actual_lin - along_speed.unsqueeze(-1) * cmd_dir).pow(2).sum(dim=-1).sqrt()  # (N,)
+
+        # For turn commands: along = 0, ortho = total linear speed
+        lin_speed = actual_lin.pow(2).sum(dim=-1).sqrt()              # (N,)
+        along_speed = torch.where(is_lin_cmd, along_speed, torch.zeros_like(along_speed))
+        ortho_speed = torch.where(is_lin_cmd, ortho_speed, lin_speed)
+
+        # 1. Along-command tracking (lenient std)
+        along_error = (along_speed - target_speed).pow(2)
+        rew_track_along = self.cfg.rew_track_along_weight * torch.exp(
+            -along_error / (self.cfg.rew_track_along_std ** 2)
+        )
+
+        # 2. Ortho drift suppression (tight std — works for both linear and turn)
+        ortho_error = ortho_speed.pow(2)
+        rew_track_ortho = self.cfg.rew_track_ortho_weight * torch.exp(
+            -ortho_error / (self.cfg.rew_track_ortho_std ** 2)
+        )
+
+        # 3. Angular velocity tracking
+        ang_vel_error = (target_wz - actual_wz).pow(2)
+        rew_track_ang = self.cfg.rew_track_ang_weight * torch.exp(
+            -ang_vel_error / (self.cfg.rew_track_ang_std ** 2)
+        )
 
         # 4. Action smoothness
         delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]
         rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
 
-        total = reward + rew_direction + rew_collision + rew_proximity + rew_smooth
+        total = reward + rew_track_along + rew_track_ortho + rew_track_ang + rew_smooth
+
+        # Direction compliance (for logging & early stopping)
+        vel_norm = metrics["vel_norm"]
+        direction_compliance = (cmd * vel_norm).sum(dim=-1)
 
         # Logging
         self.extras["log"] = {
-            "rew_direction": rew_direction.mean(),
-            "rew_collision": rew_collision.mean(),
-            "rew_proximity": rew_proximity.mean(),
+            "rew_track_along": rew_track_along.mean(),
+            "rew_track_ortho": rew_track_ortho.mean(),
+            "rew_track_ang": rew_track_ang.mean(),
             "rew_smooth": rew_smooth.mean(),
-            "direction_compliance": compliance.mean(),
-            "min_obstacle_dist": min_obs_dist.mean(),
-            "collision_rate": collision.float().mean(),
+            "direction_compliance": direction_compliance.mean(),
+            "along_speed": along_speed.mean(),
+            "ortho_speed": ortho_speed.mean(),
+            "ang_vel_error": ang_vel_error.mean(),
             "avg_speed": metrics["lin_speed"].mean(),
+            "turn_lin_speed": (lin_speed * is_turn.float()).sum() / is_turn.float().sum().clamp(min=1),
         }
 
         self.episode_reward_sum += total

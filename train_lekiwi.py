@@ -86,10 +86,18 @@ parser.add_argument("--skill", type=str, default="approach_and_grasp",
                     help="학습할 skill (navigate = Skill-1 base-only, legacy = v8 monolithic env)")
 parser.add_argument("--handoff_buffer", type=str, default=None,
                     help="Skill-3용 handoff buffer pickle 경로")
+parser.add_argument("--lambda_bc_init", type=float, default=0.5,
+                    help="BC auxiliary loss 초기 가중치 (Skill-2/3 BC+RL)")
+parser.add_argument("--bc_anneal_ratio", type=float, default=0.6,
+                    help="전체 학습의 몇 %까지 BC loss annealing (0.6 = 60%)")
 parser.add_argument("--early_stop_metric", type=str, default="",
                     help="Early stopping metric key from extras['log'] (e.g. direction_compliance)")
 parser.add_argument("--early_stop_threshold", type=float, default=0.93,
                     help="Rolling avg threshold for early stopping (default 0.93)")
+parser.add_argument("--early_stop_metric2", type=str, default="",
+                    help="Secondary early stop metric — stop when rolling avg <= threshold2")
+parser.add_argument("--early_stop_threshold2", type=float, default=0.05,
+                    help="Upper bound for secondary metric (default 0.05)")
 parser.add_argument("--early_stop_window", type=int, default=500,
                     help="Rolling window size in rollout steps (default 500)")
 AppLauncher.add_app_launcher_args(parser)
@@ -100,6 +108,7 @@ sim_app = launcher.app
 
 # —— 나머지 import ——————————————————————————————————————————————
 import torch
+import torch.nn.functional as F
 
 from models import PolicyNet, ValueNet, CriticNet
 
@@ -519,6 +528,16 @@ def main():
     if mode == "resume":
         agent.load(args.checkpoint)
         print(f"  ✅ PPO 체크포인트 로드: {args.checkpoint}")
+    else:
+        # Fresh start: clear old checkpoints to avoid confusion
+        ckpt_dir = os.path.join(log_dir, exp_name, "checkpoints")
+        if os.path.isdir(ckpt_dir):
+            import glob
+            old_ckpts = glob.glob(os.path.join(ckpt_dir, "*.pt"))
+            if old_ckpts:
+                for f in old_ckpts:
+                    os.remove(f)
+                print(f"  Cleared {len(old_ckpts)} old checkpoints from {ckpt_dir}")
 
     # Navigate: freeze log_std for dead action dims (arm/gripper = dims 0:6).
     # These dims are overwritten in env, so their entropy gradient has no
@@ -533,6 +552,33 @@ def main():
             )
             print(f"  Navigate: frozen log_std for dead action dims 0:6")
 
+    # —— BC Auxiliary Loss (Skill-2/3 BC+RL) ——————————————————
+    bc_policy_frozen = None
+    if args.bc_checkpoint and os.path.isfile(args.bc_checkpoint) and args.skill != "navigate":
+        from train_bc import BCPolicy
+        bc_obs_dim = infer_bc_obs_dim(args.bc_checkpoint)
+        bc_policy_frozen = BCPolicy(obs_dim=bc_obs_dim, act_dim=9).to(device)
+        bc_policy_frozen.load_state_dict(
+            torch.load(args.bc_checkpoint, map_location=device, weights_only=True)
+        )
+        bc_policy_frozen.eval()
+        for p in bc_policy_frozen.parameters():
+            p.requires_grad_(False)
+
+        total_train_steps = args.max_iterations * cfg_ppo["rollouts"]
+        bc_anneal_steps = int(total_train_steps * args.bc_anneal_ratio)
+
+        def get_lambda_bc(current_step: int) -> float:
+            ratio = min(current_step / max(bc_anneal_steps, 1), 1.0)
+            return args.lambda_bc_init * (1.0 - ratio)
+
+        # Inject into AAC_PPO agent for use in _update()
+        if hasattr(agent, '_update'):
+            agent._bc_policy_frozen = bc_policy_frozen
+            agent._get_lambda_bc = get_lambda_bc
+        print(f"  [BC Aux] frozen policy loaded (obs_dim={bc_obs_dim}), "
+              f"λ_init={args.lambda_bc_init}, anneal={args.bc_anneal_ratio}")
+
     # —— Trainer ——————————————————————————————————————————————
     trainer_cfg = {
         # vectorized env: env.step() processes all envs in parallel
@@ -546,17 +592,26 @@ def main():
     from aac_trainer import EarlyStopCfg
     early_stop = None
     es_metric = args.early_stop_metric
-    # Navigate defaults: auto-enable early stopping on direction_compliance
+    # Navigate defaults: rew_track_ang >= 1.35 (90% of weight 1.5) AND ang_vel_error <= 0.02
+    es_metric2 = args.early_stop_metric2
     if not es_metric and args.skill == "navigate":
-        es_metric = "direction_compliance"
+        es_metric = "rew_track_ang"
+        args.early_stop_threshold = 1.35
+        if not es_metric2:
+            es_metric2 = "ang_vel_error"
+            args.early_stop_threshold2 = 0.02
     if es_metric:
         early_stop = EarlyStopCfg(
             metric=es_metric,
             threshold=args.early_stop_threshold,
+            metric2=es_metric2,
+            threshold2=args.early_stop_threshold2,
             window=args.early_stop_window,
         )
-        print(f"  Early stopping: {es_metric} rolling avg >= {args.early_stop_threshold} "
-              f"(window={args.early_stop_window})")
+        cond_str = f"{es_metric} avg >= {args.early_stop_threshold}"
+        if es_metric2:
+            cond_str += f" AND {es_metric2} avg <= {args.early_stop_threshold2}"
+        print(f"  Early stopping: {cond_str} (window={args.early_stop_window})")
 
     if use_aac and env._aac_state_space is not None:
         trainer = AACSequentialTrainer(
