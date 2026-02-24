@@ -140,7 +140,7 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     rew_track_ortho_weight: float = 1.0    # orthogonal drift suppression (exp kernel, tight)
     rew_track_ang_weight: float = 1.5      # angular velocity tracking (exp kernel)
     rew_track_along_std: float = 0.25      # m/s (lenient — speed tracking)
-    rew_track_ortho_std: float = 0.05      # m/s (strict — drift kills reward)
+    rew_track_ortho_std: float = 0.10      # m/s (tight but learnable)
     rew_track_ang_std: float = 0.20        # rad/s
     rew_action_smoothness: float = -0.005  # delta_action² penalty
 
