@@ -134,15 +134,13 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     lidar_num_rays: int = 8
     lidar_max_range: float = 2.0
 
-    # === Reward (along/ortho split tracking) ===
+    # === Reward (v8: simple tracking + action masking) ===
     rew_time_penalty: float = -0.01
-    rew_track_along_weight: float = 1.0    # along-command speed tracking (exp kernel)
-    rew_track_ortho_weight: float = 1.0    # orthogonal drift suppression (exp kernel, tight)
+    rew_track_lin_weight: float = 1.5      # linear velocity tracking (exp kernel)
     rew_track_ang_weight: float = 1.5      # angular velocity tracking (exp kernel)
-    rew_track_along_std: float = 0.25      # m/s (lenient — speed tracking)
-    rew_track_ortho_std: float = 0.10      # m/s (tight but learnable)
-    rew_track_ang_std: float = 0.20        # rad/s
-    rew_action_smoothness: float = -0.005  # delta_action² penalty
+    rew_track_lin_std: float = 0.25        # m/s
+    rew_track_ang_std: float = 0.25        # rad/s
+    rew_action_smoothness: float = -0.005  # delta_action² penalty (masked actions)
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
@@ -233,6 +231,8 @@ class Skill1Env(DirectRLEnv):
         # Action / metrics buffers
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self.prev_actions = torch.zeros_like(self.actions)
+        self._masked_actions = torch.zeros_like(self.actions)
+        self._prev_masked_actions = torch.zeros_like(self.actions)
         self.episode_reward_sum = torch.zeros(self.num_envs, device=self.device)
 
         # Action delay
@@ -985,6 +985,7 @@ class Skill1Env(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.prev_actions = self.actions.clone()
+        self._prev_masked_actions = getattr(self, "_masked_actions", self.actions).clone()
         raw = actions.clone().clamp(-1.0, 1.0)
         if self._action_delay_buf is not None:
             self.actions = self._action_delay_buf[0].clone()
@@ -997,9 +998,25 @@ class Skill1Env(DirectRLEnv):
     def _apply_action(self):
         # Action [6:9] is in body frame (same as obs base_body_vel & direction_cmd)
         # body frame: vx=right, vy=forward, wz>0=CCW (Isaac Sim right-hand rule)
-        body_vx = self.actions[:, 6] * self.cfg.max_lin_vel
-        body_vy = self.actions[:, 7] * self.cfg.max_lin_vel
-        body_wz = self.actions[:, 8] * self.cfg.max_ang_vel
+
+        # --- Action masking: zero out irrelevant dims per command ---
+        cmd = self._direction_cmd  # (N, 3): [cmd_vx, cmd_vy, cmd_wz]
+        fwd_bwd = (cmd[:, 1].abs() > 0.5)   # forward/backward → only vy
+        strafe  = (cmd[:, 0].abs() > 0.5)   # strafe L/R → only vx
+        turn    = (cmd[:, 2].abs() > 0.1)   # turn L/R → only wz
+
+        masked = self.actions.clone()
+        masked[fwd_bwd, 6] = 0.0   # fwd/bwd: body_vx = 0
+        masked[fwd_bwd, 8] = 0.0   # fwd/bwd: body_wz = 0
+        masked[strafe, 7] = 0.0    # strafe:  body_vy = 0
+        masked[strafe, 8] = 0.0    # strafe:  body_wz = 0
+        masked[turn, 6] = 0.0      # turn:    body_vx = 0
+        masked[turn, 7] = 0.0      # turn:    body_vy = 0
+        self._masked_actions = masked
+
+        body_vx = masked[:, 6] * self.cfg.max_lin_vel
+        body_vy = masked[:, 7] * self.cfg.max_lin_vel
+        body_wz = masked[:, 8] * self.cfg.max_ang_vel
 
         # Body frame → IK frame
         ik_vx = body_vy       # IK vx+ = body vy+ (forward)
@@ -1087,60 +1104,39 @@ class Skill1Env(DirectRLEnv):
         actual_lin = base_vel[:, :2]                      # (N, 2) m/s
         actual_wz  = base_vel[:, 2]                       # (N,)   rad/s
 
-        # --- Along / Ortho split for linear tracking ---
-        target_speed = target_lin.pow(2).sum(dim=-1).sqrt()          # (N,)
-        is_lin_cmd = (target_speed > 0.01)                            # (N,) bool
-        is_turn = ~is_lin_cmd                                         # (N,) bool
-
-        # Command direction unit vector (safe for zero-cmd)
-        cmd_dir = target_lin / target_speed.unsqueeze(-1).clamp(min=1e-6)  # (N, 2)
-
-        # Project actual velocity onto command direction
-        along_speed = (actual_lin * cmd_dir).sum(dim=-1)              # (N,) signed
-        ortho_speed = (actual_lin - along_speed.unsqueeze(-1) * cmd_dir).pow(2).sum(dim=-1).sqrt()  # (N,)
-
-        # For turn commands: along = 0, ortho = total linear speed
-        lin_speed = actual_lin.pow(2).sum(dim=-1).sqrt()              # (N,)
-        along_speed = torch.where(is_lin_cmd, along_speed, torch.zeros_like(along_speed))
-        ortho_speed = torch.where(is_lin_cmd, ortho_speed, lin_speed)
-
-        # 1. Along-command tracking (lenient std)
-        along_error = (along_speed - target_speed).pow(2)
-        rew_track_along = self.cfg.rew_track_along_weight * torch.exp(
-            -along_error / (self.cfg.rew_track_along_std ** 2)
+        # 1. Linear velocity tracking (exp kernel)
+        lin_vel_error = (target_lin - actual_lin).pow(2).sum(dim=-1)
+        rew_track_lin = self.cfg.rew_track_lin_weight * torch.exp(
+            -lin_vel_error / (self.cfg.rew_track_lin_std ** 2)
         )
 
-        # 2. Ortho drift suppression (tight std — works for both linear and turn)
-        ortho_error = ortho_speed.pow(2)
-        rew_track_ortho = self.cfg.rew_track_ortho_weight * torch.exp(
-            -ortho_error / (self.cfg.rew_track_ortho_std ** 2)
-        )
-
-        # 3. Angular velocity tracking
+        # 2. Angular velocity tracking (exp kernel)
         ang_vel_error = (target_wz - actual_wz).pow(2)
         rew_track_ang = self.cfg.rew_track_ang_weight * torch.exp(
             -ang_vel_error / (self.cfg.rew_track_ang_std ** 2)
         )
 
-        # 4. Action smoothness
-        delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]
+        # 3. Action smoothness (masked actions — no penalty on structurally zeroed dims)
+        masked = getattr(self, "_masked_actions", self.actions)
+        prev_masked = getattr(self, "_prev_masked_actions", self.prev_actions)
+        delta_action = masked[:, 6:9] - prev_masked[:, 6:9]
         rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
 
-        total = reward + rew_track_along + rew_track_ortho + rew_track_ang + rew_smooth
+        total = reward + rew_track_lin + rew_track_ang + rew_smooth
 
         # Direction compliance (for logging & early stopping)
         vel_norm = metrics["vel_norm"]
         direction_compliance = (cmd * vel_norm).sum(dim=-1)
 
         # Logging
+        lin_speed = actual_lin.pow(2).sum(dim=-1).sqrt()
+        is_turn = (cmd[:, :2].abs().sum(dim=-1) < 0.01)
         self.extras["log"] = {
-            "rew_track_along": rew_track_along.mean(),
-            "rew_track_ortho": rew_track_ortho.mean(),
+            "rew_track_lin": rew_track_lin.mean(),
             "rew_track_ang": rew_track_ang.mean(),
             "rew_smooth": rew_smooth.mean(),
             "direction_compliance": direction_compliance.mean(),
-            "along_speed": along_speed.mean(),
-            "ortho_speed": ortho_speed.mean(),
+            "lin_vel_error": lin_vel_error.mean(),
             "ang_vel_error": ang_vel_error.mean(),
             "avg_speed": metrics["lin_speed"].mean(),
             "turn_lin_speed": (lin_speed * is_turn.float()).sum() / is_turn.float().sum().clamp(min=1),
@@ -1267,6 +1263,8 @@ class Skill1Env(DirectRLEnv):
         self.episode_reward_sum[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
+        self._masked_actions[env_ids] = 0.0
+        self._prev_masked_actions[env_ids] = 0.0
         if self._action_delay_buf is not None:
             self._action_delay_buf[:, env_ids] = 0.0
 
