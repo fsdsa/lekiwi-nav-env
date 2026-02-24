@@ -22,10 +22,9 @@ from skrl.trainers.torch import SequentialTrainer
 class EarlyStopCfg:
     """Early stopping configuration (rolling window average).
 
-    metric: extras["log"]에서 추적할 키 (예: "direction_compliance")
-    threshold: rolling average가 이 값 이상이면 수렴으로 판정
-    metric2: (optional) 두 번째 조건 — rolling avg가 threshold2 이하일 때 만족
-    threshold2: metric2의 상한 임계값
+    metric: extras["log"]에서 추적할 키 — rolling avg >= threshold
+    metric2: (optional) rolling avg <= threshold2
+    extra_ge: (optional) 추가 >= 조건 리스트 [(metric, threshold), ...]
     window: rolling average 윈도우 크기 (rollout steps)
     min_timesteps: 최소 학습 timestep (너무 빠른 중단 방지)
     """
@@ -33,6 +32,7 @@ class EarlyStopCfg:
     threshold: float = 0.93
     metric2: str = ""
     threshold2: float = 0.05
+    extra_ge: list = None  # [(metric_name, threshold), ...]
     window: int = 500
     min_timesteps: int = 2000
 
@@ -47,8 +47,13 @@ class AACSequentialTrainer(SequentialTrainer):
     def __init__(self, *args, early_stop: EarlyStopCfg | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.early_stop_cfg = early_stop
-        self._es_buffer: deque = deque(maxlen=early_stop.window if early_stop else 1)
-        self._es_buffer2: deque = deque(maxlen=early_stop.window if early_stop else 1)
+        w = early_stop.window if early_stop else 1
+        self._es_buffer: deque = deque(maxlen=w)
+        self._es_buffer2: deque = deque(maxlen=w)
+        self._es_extra_buffers: dict[str, deque] = {}
+        if early_stop and early_stop.extra_ge:
+            for name, _ in early_stop.extra_ge:
+                self._es_extra_buffers[name] = deque(maxlen=w)
         self._es_triggered = False
 
     def single_agent_train(self) -> None:
@@ -117,24 +122,39 @@ class AACSequentialTrainer(SequentialTrainer):
                             if isinstance(val2, torch.Tensor):
                                 val2 = val2.item()
                             self._es_buffer2.append(val2)
+                        # Extra >= metrics
+                        for name, buf in self._es_extra_buffers.items():
+                            if name in log_dict:
+                                v = log_dict[name]
+                                buf.append(v.item() if isinstance(v, torch.Tensor) else v)
                         # Check convergence
                         if len(self._es_buffer) >= es.window:
                             avg = sum(self._es_buffer) / len(self._es_buffer)
                             cond1 = avg >= es.threshold
                             cond2 = True
-                            avg2_str = ""
+                            detail = f"{es.metric} avg = {avg:.4f} >= {es.threshold}"
                             if es.metric2 and len(self._es_buffer2) >= es.window:
                                 avg2 = sum(self._es_buffer2) / len(self._es_buffer2)
                                 cond2 = avg2 <= es.threshold2
-                                avg2_str = f", {es.metric2} avg = {avg2:.4f} <= {es.threshold2}"
+                                detail += f", {es.metric2} avg = {avg2:.4f} <= {es.threshold2}"
                             elif es.metric2:
-                                cond2 = False  # not enough data yet
-                            if cond1 and cond2:
+                                cond2 = False
+                            cond_extra = True
+                            if es.extra_ge:
+                                for name, thr in es.extra_ge:
+                                    buf = self._es_extra_buffers.get(name)
+                                    if buf and len(buf) >= es.window:
+                                        a = sum(buf) / len(buf)
+                                        ok = a >= thr
+                                        detail += f", {name} avg = {a:.4f} >= {thr}"
+                                        if not ok:
+                                            cond_extra = False
+                                    else:
+                                        cond_extra = False
+                            if cond1 and cond2 and cond_extra:
                                 self._es_triggered = True
                                 print(
-                                    f"\n  Early stop: {es.metric} avg "
-                                    f"= {avg:.4f} >= {es.threshold}"
-                                    f"{avg2_str}"
+                                    f"\n  Early stop: {detail}"
                                     f" (window={es.window}, timestep {timestep}). "
                                     f"Saving final checkpoint."
                                 )

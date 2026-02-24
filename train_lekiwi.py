@@ -44,7 +44,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="LeKiwi Nav PPO Training")
 parser.add_argument("--num_envs", type=int, default=2048)
-parser.add_argument("--max_iterations", type=int, default=3000)
+parser.add_argument("--max_iterations", type=int, default=216000)
 parser.add_argument("--resume", action="store_true",
                     help="이전 PPO 체크포인트에서 학습 재개")
 parser.add_argument("--checkpoint", type=str, default=None,
@@ -496,7 +496,8 @@ def main():
     # Logging
     skill_tag = args.skill.replace("_", "")
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"ppo_{skill_tag}")
-    exp_name = f"ppo_{skill_tag}_{mode}"
+    # resume 시에도 동일 디렉토리에 이어서 기록
+    exp_name = f"ppo_{skill_tag}_scratch"
     cfg_ppo["experiment"] = {
         "directory": log_dir,
         "experiment_name": exp_name,
@@ -525,9 +526,15 @@ def main():
             device=device,
         )
 
+    resume_timestep = 0
     if mode == "resume":
         agent.load(args.checkpoint)
-        print(f"  ✅ PPO 체크포인트 로드: {args.checkpoint}")
+        # 체크포인트 파일명에서 timestep 파싱 (agent_9500.pt → 9500)
+        import re
+        m = re.search(r'agent_(\d+)\.pt', os.path.basename(args.checkpoint))
+        if m:
+            resume_timestep = int(m.group(1))
+        print(f"  ✅ PPO 체크포인트 로드: {args.checkpoint} (timestep={resume_timestep})")
     else:
         # Fresh start: clear old checkpoints to avoid confusion
         ckpt_dir = os.path.join(log_dir, exp_name, "checkpoints")
@@ -584,6 +591,7 @@ def main():
         # vectorized env: env.step() processes all envs in parallel
         # so timesteps = iterations * rollouts (NOT * num_envs)
         "timesteps": args.max_iterations * cfg_ppo["rollouts"],
+        "initial_timestep": resume_timestep,
         "headless": args.headless,
         "environment_info": "log",  # Isaac Lab puts custom metrics in extras["log"]
     }
@@ -592,25 +600,30 @@ def main():
     from aac_trainer import EarlyStopCfg
     early_stop = None
     es_metric = args.early_stop_metric
-    # Navigate defaults: rew_track_ang >= 1.35 (90% of weight 1.5) AND ang_vel_error <= 0.02
     es_metric2 = args.early_stop_metric2
+    es_extra_ge = None
     if not es_metric and args.skill == "navigate":
         es_metric = "rew_track_ang"
         args.early_stop_threshold = 1.35
         if not es_metric2:
             es_metric2 = "ang_vel_error"
             args.early_stop_threshold2 = 0.02
+        es_extra_ge = [("avg_speed", 0.25), ("direction_compliance", 0.55)]
     if es_metric:
         early_stop = EarlyStopCfg(
             metric=es_metric,
             threshold=args.early_stop_threshold,
             metric2=es_metric2,
             threshold2=args.early_stop_threshold2,
+            extra_ge=es_extra_ge,
             window=args.early_stop_window,
         )
         cond_str = f"{es_metric} avg >= {args.early_stop_threshold}"
         if es_metric2:
             cond_str += f" AND {es_metric2} avg <= {args.early_stop_threshold2}"
+        if es_extra_ge:
+            for name, thr in es_extra_ge:
+                cond_str += f" AND {name} avg >= {thr}"
         print(f"  Early stopping: {cond_str} (window={args.early_stop_window})")
 
     if use_aac and env._aac_state_space is not None:
@@ -621,6 +634,11 @@ def main():
         trainer = SequentialTrainer(cfg=trainer_cfg, env=env, agents=agent)
         if early_stop:
             print("  ⚠ Early stopping only supported with AACSequentialTrainer (AAC mode)")
+
+    # Resume: timestep 이어서 진행
+    if resume_timestep > 0:
+        trainer.initial_timestep = resume_timestep
+        print(f"  Resume: starting from timestep {resume_timestep}")
 
     # —— Train! ——————————————————————————————————————————————
     print(f"\n  Training started ({mode_label})...")
