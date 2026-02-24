@@ -134,13 +134,15 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     lidar_num_rays: int = 8
     lidar_max_range: float = 2.0
 
-    # === Reward (v8: simple tracking + action masking) ===
+    # === Reward (v6c: simple tracking, no action masking) ===
     rew_time_penalty: float = -0.01
     rew_track_lin_weight: float = 1.5      # linear velocity tracking (exp kernel)
     rew_track_ang_weight: float = 1.5      # angular velocity tracking (exp kernel)
     rew_track_lin_std: float = 0.25        # m/s
     rew_track_ang_std: float = 0.25        # rad/s
-    rew_action_smoothness: float = -0.005  # delta_action² penalty (masked actions)
+    rew_action_smoothness: float = -0.005  # delta_action² penalty
+    rew_collision: float = -2.0            # obstacle collision penalty
+    rew_proximity: float = -0.5            # obstacle proximity penalty
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
@@ -231,8 +233,6 @@ class Skill1Env(DirectRLEnv):
         # Action / metrics buffers
         self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
         self.prev_actions = torch.zeros_like(self.actions)
-        self._masked_actions = torch.zeros_like(self.actions)
-        self._prev_masked_actions = torch.zeros_like(self.actions)
         self.episode_reward_sum = torch.zeros(self.num_envs, device=self.device)
 
         # Action delay
@@ -985,7 +985,6 @@ class Skill1Env(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor):
         self.prev_actions = self.actions.clone()
-        self._prev_masked_actions = getattr(self, "_masked_actions", self.actions).clone()
         raw = actions.clone().clamp(-1.0, 1.0)
         if self._action_delay_buf is not None:
             self.actions = self._action_delay_buf[0].clone()
@@ -999,24 +998,9 @@ class Skill1Env(DirectRLEnv):
         # Action [6:9] is in body frame (same as obs base_body_vel & direction_cmd)
         # body frame: vx=right, vy=forward, wz>0=CCW (Isaac Sim right-hand rule)
 
-        # --- Action masking: zero out irrelevant dims per command ---
-        cmd = self._direction_cmd  # (N, 3): [cmd_vx, cmd_vy, cmd_wz]
-        fwd_bwd = (cmd[:, 1].abs() > 0.5)   # forward/backward → only vy
-        strafe  = (cmd[:, 0].abs() > 0.5)   # strafe L/R → only vx
-        turn    = (cmd[:, 2].abs() > 0.1)   # turn L/R → only wz
-
-        masked = self.actions.clone()
-        masked[fwd_bwd, 6] = 0.0   # fwd/bwd: body_vx = 0
-        masked[fwd_bwd, 8] = 0.0   # fwd/bwd: body_wz = 0
-        masked[strafe, 7] = 0.0    # strafe:  body_vy = 0
-        masked[strafe, 8] = 0.0    # strafe:  body_wz = 0
-        masked[turn, 6] = 0.0      # turn:    body_vx = 0
-        masked[turn, 7] = 0.0      # turn:    body_vy = 0
-        self._masked_actions = masked
-
-        body_vx = masked[:, 6] * self.cfg.max_lin_vel
-        body_vy = masked[:, 7] * self.cfg.max_lin_vel
-        body_wz = masked[:, 8] * self.cfg.max_ang_vel
+        body_vx = self.actions[:, 6] * self.cfg.max_lin_vel
+        body_vy = self.actions[:, 7] * self.cfg.max_lin_vel
+        body_wz = self.actions[:, 8] * self.cfg.max_ang_vel
 
         # Body frame → IK frame
         ik_vx = body_vy       # IK vx+ = body vy+ (forward)
@@ -1116,13 +1100,19 @@ class Skill1Env(DirectRLEnv):
             -ang_vel_error / (self.cfg.rew_track_ang_std ** 2)
         )
 
-        # 3. Action smoothness (masked actions — no penalty on structurally zeroed dims)
-        masked = getattr(self, "_masked_actions", self.actions)
-        prev_masked = getattr(self, "_prev_masked_actions", self.prev_actions)
-        delta_action = masked[:, 6:9] - prev_masked[:, 6:9]
+        # 3. Action smoothness
+        delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]
         rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
 
-        total = reward + rew_track_lin + rew_track_ang + rew_smooth
+        # 4. Collision & proximity (obstacle avoidance)
+        closest_obs_dist = metrics.get("closest_obs_dist",
+            torch.full((self.num_envs,), 999.0, device=self.device))
+        collision = (closest_obs_dist < self.cfg.collision_dist).float()
+        rew_collision = self.cfg.rew_collision * collision
+        proximity = torch.clamp(1.0 - closest_obs_dist / self.cfg.lidar_max_range, min=0.0)
+        rew_proximity = self.cfg.rew_proximity * proximity
+
+        total = reward + rew_track_lin + rew_track_ang + rew_smooth + rew_collision + rew_proximity
 
         # Direction compliance (for logging & early stopping)
         vel_norm = metrics["vel_norm"]
@@ -1135,10 +1125,13 @@ class Skill1Env(DirectRLEnv):
             "rew_track_lin": rew_track_lin.mean(),
             "rew_track_ang": rew_track_ang.mean(),
             "rew_smooth": rew_smooth.mean(),
+            "rew_collision": rew_collision.mean(),
+            "rew_proximity": rew_proximity.mean(),
             "direction_compliance": direction_compliance.mean(),
             "lin_vel_error": lin_vel_error.mean(),
             "ang_vel_error": ang_vel_error.mean(),
             "avg_speed": metrics["lin_speed"].mean(),
+            "collision_rate": collision.mean(),
             "turn_lin_speed": (lin_speed * is_turn.float()).sum() / is_turn.float().sum().clamp(min=1),
         }
 
@@ -1263,8 +1256,6 @@ class Skill1Env(DirectRLEnv):
         self.episode_reward_sum[env_ids] = 0.0
         self.actions[env_ids] = 0.0
         self.prev_actions[env_ids] = 0.0
-        self._masked_actions[env_ids] = 0.0
-        self._prev_masked_actions[env_ids] = 0.0
         if self._action_delay_buf is not None:
             self._action_delay_buf[:, env_ids] = 0.0
 
