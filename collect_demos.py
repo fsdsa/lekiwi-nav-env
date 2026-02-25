@@ -981,6 +981,14 @@ def main():
                     agent=agent if agent_load_full else None,
                 )
 
+                # Inference-time masking (navigate only): zero out cross-axis residuals
+                if args.skill == "navigate" and hasattr(env, "_direction_cmd"):
+                    _cmd = env._direction_cmd
+                    fwd_bwd = (_cmd[:, 1].abs() > 0.5)
+                    strafe  = (_cmd[:, 0].abs() > 0.5)
+                    action[fwd_bwd, 6] = 0.0; action[fwd_bwd, 8] = 0.0
+                    action[strafe, 7] = 0.0;  action[strafe, 8] = 0.0
+
             next_obs, reward, terminated, truncated, info = env.step(action)
 
             if use_spawn and spawn_mgr is not None:
