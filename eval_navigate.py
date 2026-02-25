@@ -38,6 +38,7 @@ parser.add_argument("--num_envs", type=int, default=1, help="병렬 환경 수 (
 parser.add_argument("--dynamics_json", type=str, default=None, help="dynamics calibration JSON")
 parser.add_argument("--arm_limit_json", type=str, default=None, help="arm joint limit JSON")
 parser.add_argument("--max_steps", type=int, default=0, help="최대 step 수 (0=무한)")
+parser.add_argument("--no_masking", action="store_true", help="inference-time masking 비활성화")
 parser.add_argument("--print_interval", type=int, default=200, help="메트릭 출력 간격 (steps)")
 parser.add_argument("--sequential", action="store_true", default=True,
                     help="6방향을 순서대로 평가 (fwd→bwd→left→right→turnL→turnR, 기본값)")
@@ -124,6 +125,9 @@ def main():
     if args.arm_limit_json:
         env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
     
+    env_cfg.eval_cardinal_yaw = True
+    
+
     # 환경 초기화 중 발생하는 C++ 에러도 차단
     with SuppressCLogs():
         raw_env = Skill1Env(cfg=env_cfg)
@@ -249,6 +253,14 @@ def main():
                 proc = pre(obs["policy"], train=False) if callable(pre) else obs["policy"]
                 feat = policy_model.net(proc)
                 action = policy_model.mean_layer(feat).clamp(-1.0, 1.0).contiguous()
+
+                # Inference-time masking: zero out cross-axis residuals
+                if not args.no_masking:
+                    _cmd = raw_env._direction_cmd
+                    fwd_bwd = (_cmd[:, 1].abs() > 0.5)
+                    strafe  = (_cmd[:, 0].abs() > 0.5)
+                    action[fwd_bwd, 6] = 0.0; action[fwd_bwd, 8] = 0.0
+                    action[strafe, 7] = 0.0;  action[strafe, 8] = 0.0
 
             # 엔진 스텝이 실행되는 동안 발생하는 모든 에러 출력을 하드웨어 수준에서 버림
             with SuppressCLogs():

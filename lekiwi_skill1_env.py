@@ -144,6 +144,9 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     rew_collision: float = -2.0            # obstacle collision penalty
     rew_proximity: float = -0.5            # obstacle proximity penalty
 
+    # === Eval ===
+    eval_cardinal_yaw: bool = False  # snap yaw to 0/90/180/270° at reset
+
     # === Termination ===
     max_dist_from_origin: float = 6.0
 
@@ -1176,7 +1179,12 @@ class Skill1Env(DirectRLEnv):
         root_xy_std = float(self.cfg.dr_root_xy_noise_std) if bool(self.cfg.enable_domain_randomization) else 0.1
         default_root_state[:, 0:2] += torch.randn(num, 2, device=self.device) * root_xy_std
 
-        random_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+        if self.cfg.eval_cardinal_yaw:
+            # Snap to 0, π/2, π, -π/2 (facing +X, +Y, -X, -Y)
+            cardinal = torch.tensor([0.0, math.pi / 2, math.pi, -math.pi / 2], device=self.device)
+            random_yaw = cardinal[torch.randint(4, (num,), device=self.device)]
+        else:
+            random_yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
         if bool(self.cfg.enable_domain_randomization) and float(self.cfg.dr_root_yaw_jitter_rad) > 0.0:
             random_yaw += torch.randn(num, device=self.device) * float(self.cfg.dr_root_yaw_jitter_rad)
             random_yaw = torch.atan2(torch.sin(random_yaw), torch.cos(random_yaw))
