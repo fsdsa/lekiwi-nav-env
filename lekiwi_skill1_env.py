@@ -3,11 +3,11 @@ LeKiwi Skill-1 — Navigate (Direction-Conditioned) Isaac Lab DirectRLEnv.
 
 3-Skill pipeline first skill: execute VLM direction commands while avoiding obstacles.
 Direction commands: forward/backward/left/right/turn_left/turn_right.
-Arm held at TUCKED_POSE, gripper open. RL controls base only (3D effective action).
+Arm held at TUCKED_POSE, gripper tucked (closed). RL controls base only (3D effective action).
 
 Observation (Actor 20D):
   [0:5]   arm joint pos (5) — fixed TUCKED_POSE, included for VLA format
-  [5:6]   gripper pos (1) — fixed open
+  [5:6]   gripper pos (1) — fixed tucked (closed)
   [6:9]   base body velocity (vx, vy, wz) (3)
   [9:12]  direction command (cmd_vx, cmd_vy, cmd_wz) (3)
   [12:20] pseudo-lidar scan (8 rays, normalized)
@@ -18,7 +18,7 @@ Observation (Critic 25D, AAC):
 
 Action (9D — lekiwi_v6 order):
   [0:5]   arm joint target (IGNORED — forced to TUCKED_POSE)
-  [5]     gripper target (IGNORED — forced to open)
+  [5]     gripper target (IGNORED — forced to tucked)
   [6:8]   base linear velocity (vx, vy)
   [8]     base angular velocity (wz)
 """
@@ -61,7 +61,6 @@ _TUCKED_POSE_RAD = [
     0.058418,    # wrist_roll
 ]
 _TUCKED_GRIPPER_RAD = -0.201554  # gripper joint value at tucked (closed-ish)
-_GRIPPER_OPEN_RAD = 1.0  # Navigate: gripper fully open
 
 
 @configclass
@@ -1021,7 +1020,7 @@ class Skill1Env(DirectRLEnv):
         pos_target = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
         tucked = self._tucked_pose.unsqueeze(0).expand(self.num_envs, -1)  # (N, 5)
         pos_target[:, self.arm_idx[:5]] = tucked
-        pos_target[:, self.arm_idx[5]] = _GRIPPER_OPEN_RAD  # gripper open
+        pos_target[:, self.arm_idx[5]] = _TUCKED_GRIPPER_RAD  # gripper tucked (closed)
         self.robot.set_joint_position_target(pos_target)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1050,7 +1049,7 @@ class Skill1Env(DirectRLEnv):
         # Actor Observation (20D)
         actor_obs = torch.cat([
             arm_pos[:, :5],       # [0:5]   arm joint pos (fixed TUCKED_POSE)
-            arm_pos[:, 5:6],      # [5:6]   gripper pos (fixed open)
+            arm_pos[:, 5:6],      # [5:6]   gripper pos (fixed tucked/closed)
             base_body_vel,        # [6:9]   base body velocity (vx, vy, wz)
             direction_cmd,        # [9:12]  direction command (cmd_vx, cmd_vy, cmd_wz)
             lidar_scan,           # [12:20] pseudo-lidar (8 rays, normalized)
@@ -1199,7 +1198,7 @@ class Skill1Env(DirectRLEnv):
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         for i in range(5):
             joint_pos[:, self.arm_idx[i]] = self._tucked_pose[i]
-        joint_pos[:, self.arm_idx[5]] = _GRIPPER_OPEN_RAD
+        joint_pos[:, self.arm_idx[5]] = _TUCKED_GRIPPER_RAD
         joint_vel = torch.zeros_like(joint_pos)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
@@ -1221,9 +1220,9 @@ class Skill1Env(DirectRLEnv):
             self.object_pos_w[env_ids, 2] = self.home_pos_w[env_ids, 2] + torch.clamp(
                 self.object_bbox[env_ids, 2] * 0.5, min=float(self.cfg.object_height),
             )
-            for rigid in self.object_rigids:
+            for oi, rigid in enumerate(self.object_rigids):
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
-                hide_pose[:, 2] = -100.0
+                hide_pose[:, 2] = -100.0 - oi * 2.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 rigid.write_root_velocity_to_sim(torch.zeros((num, 6), device=self.device), env_ids=env_ids)
             for oi, rigid in enumerate(self.object_rigids):

@@ -26,7 +26,7 @@ Desktop에서 서버로 전송 완료된 파일 목록:
 | `calibration_latest.json` | `~/IsaacLab/calibration/` | 974KB | 실로봇 캘리브레이션 참조 |
 | 프로젝트 코드 (41 py) | `~/IsaacLab/scripts/lekiwi_nav_env/` | - | 전체 학습/수집 코드 |
 | 텔레옵 HDF5 (10개) | `~/IsaacLab/scripts/lekiwi_nav_env/demos/` | 92KB | BC 학습 데이터 |
-| `object_catalog.json` | `~/IsaacLab/scripts/lekiwi_nav_env/` | 5KB | 대표 12종 물체 |
+| `object_catalog.json` | `~/IsaacLab/scripts/lekiwi_nav_env/` | 5KB | 대표 22종 물체 |
 | `object_catalog_all.json` | `~/IsaacLab/scripts/lekiwi_nav_env/` | 445KB | 전체 1030종 물체 |
 | 물체 USD (1030종) | `~/isaac-objects/` | 3.8GB | 다중 물체 RL 학습 |
 
@@ -95,18 +95,18 @@ git checkout v2.2.0
 
 ### 3-5. 물체 USD 심볼릭 링크
 
-`object_catalog.json`의 USD 경로가 `/home/yubin/isaac-objects/`를 참조함.
+`object_catalog.json`의 USD 경로가 `/home/yubin11/isaac-objects/`를 참조함.
 서버에서는 `/home/jovyan/isaac-objects/`에 있으므로 심링크 생성 필요:
 
 ```bash
 sudo mkdir -p /home/yubin
-sudo ln -s /home/jovyan/isaac-objects /home/yubin/isaac-objects
+sudo ln -s /home/jovyan/isaac-objects /home/yubin11/isaac-objects
 ```
 
 sudo 권한 없으면 `object_catalog.json`의 경로를 직접 수정:
 ```bash
-sed -i 's|/home/yubin/|/home/jovyan/|g' ~/IsaacLab/scripts/lekiwi_nav_env/object_catalog.json
-sed -i 's|/home/yubin/|/home/jovyan/|g' ~/IsaacLab/scripts/lekiwi_nav_env/object_catalog_all.json
+sed -i 's|/home/yubin11/|/home/jovyan/|g' ~/IsaacLab/scripts/lekiwi_nav_env/object_catalog.json
+sed -i 's|/home/yubin11/|/home/jovyan/|g' ~/IsaacLab/scripts/lekiwi_nav_env/object_catalog_all.json
 ```
 
 ### 3-6. 로봇 USD 환경변수
@@ -204,28 +204,31 @@ source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
 export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
 
-# Skill-2 (텔레옵 데이터: --filter_active로 idle 프레임 제거)
-python train_bc.py --demo_dir demos_skill2/ --epochs 200 --expected_obs_dim 30 --filter_active
+# Skill-2 (GMM 기본, mean regression 방지)
+python train_bc.py --demo_dir demos_skill2/ --epochs 300 \
+    --expected_obs_dim 30 --filter_active \
+    --loss gmm --n_components 5 --eval \
+    --save_dir checkpoints/skill2/
 
-# Skill-3 (텔레옵 데이터: --filter_active로 idle 프레임 제거)
-python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29 --filter_active
+# Skill-3 (GMM 기본)
+python train_bc.py --demo_dir demos_skill3/ --epochs 300 \
+    --expected_obs_dim 29 --filter_active \
+    --loss gmm --n_components 5 --eval \
+    --save_dir checkpoints/skill3/
 ```
 
 ### RL 학습 (서버)
 
-#### Skill-1 Navigate (BC 없이 from scratch) — v6g 비교 실험 중 (2026-02-24)
+#### Skill-1 Navigate (BC 없이 from scratch) — v6c 확정 (2026-02-25)
 
-> **v6g 비교 실험**: 전후진 drift 해결을 위한 ortho penalty 최적 설정 탐색.
-> - **v6g2** (`ortho_drift_weight=-1.0`, linear penalty): 현재 코드 상태. v6g2_full 서버에서 처음부터 완주 학습 진행중.
-> - **v6g3** (`ortho_drift_weight=-15.0`, quadratic penalty): 완주됨 → `backup/best_agent_v6g3.pt`
-> - 좌우이동(strafe)과 회전은 정상 동작. 전후진 drift가 핵심 이슈.
-> - collision/proximity reward 제거, 장애물 회피는 VLA가 담당, RL은 방향 충실 실행만 수행.
+> **v6c 확정**: simple tracking + collision/proximity 보상. action masking 없음, inference-time masking으로 대체.
+> - **보상**: lin_track(1.5, std=0.25) + ang_track(1.5, std=0.25) + collision(-2.0) + proximity(-0.5) + smooth(-0.005) + time(-0.01)
+> - **inference-time masking**: `collect_demos.py`에서만 적용. fwd/bwd→vx,wz=0, strafe→vy,wz=0
+> - **폐기**: v8(action masking 정체), v7(along/ortho), v6g(ortho drift penalty), v6e/v6f(비교 대상)
 >
 > **체크포인트 백업**:
-> - `backup/best_agent_v6e.pt` — v6e 완주
-> - `backup/best_agent_v6g2.pt` — v6g2 17K steps 중간
-> - `backup/best_agent_v6g3.pt` — v6g3 완주
-> - `logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt` — 현재 학습중 (v6g2_full)
+> - `backup/best_agent_v6c.pt`, `backup/best_agent_v6e.pt`, `backup/best_agent_v6f.pt`
+> - `backup/best_agent_v6g2.pt`, `backup/best_agent_v6g3.pt`, `backup/best_agent_v8.pt`
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
@@ -235,7 +238,7 @@ mkdir -p logs && \
 nohup python train_lekiwi.py \
     --skill navigate \
     --num_envs 8192 \
-    --headless > logs/train_navigate_v6g2_full.log 2>&1 &
+    --headless > logs/train_navigate_v6c.log 2>&1 &
 ```
 
 **Early stopping** (navigate는 자동 활성): `rew_track_ang` rolling avg >= 1.35 **AND** `ang_vel_error` <= 0.02 (window=500)이면 자동 중단.
@@ -257,7 +260,6 @@ nohup python train_lekiwi.py \
     --lambda_bc_init 0.5 \
     --bc_anneal_ratio 0.6 \
     --multi_object_json object_catalog.json \
-    --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
     --headless > logs/train_skill2.log 2>&1 &
 ```
@@ -276,7 +278,6 @@ nohup python train_lekiwi.py \
     --bc_anneal_ratio 0.6 \
     --handoff_buffer handoff_buffer.pkl \
     --multi_object_json object_catalog.json \
-    --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
     --headless > logs/train_skill3.log 2>&1 &
 ```
@@ -315,7 +316,6 @@ python eval_full_system.py \
     --num_trials 30 \
     --task "bring the red cup" \
     --multi_object_json object_catalog.json \
-    --dynamics_json calibration/tuned_dynamics.json \
     --arm_limit_json calibration/arm_limits_measured.json
 
 # Skill별 단독 평가 (VLM 없이)
@@ -325,7 +325,6 @@ python eval_full_system.py \
     --instruction "pick up the red cup" \
     --num_trials 50 \
     --multi_object_json object_catalog.json \
-    --dynamics_json calibration/tuned_dynamics.json \
     --arm_limit_json calibration/arm_limits_measured.json
 ```
 
@@ -451,7 +450,6 @@ python train_lekiwi.py \
     --skill navigate \
     --num_envs 4 \
     --max_iterations 10 \
-    --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json
 # → Isaac Sim GUI 창에서 로봇의 방향 이동 + 장애물 회피 행동을 시각적으로 확인
 
@@ -459,7 +457,6 @@ python train_lekiwi.py \
 python collect_demos.py \
     --checkpoint logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt \
     --skill navigate \
-    --dynamics_json ~/IsaacLab/calibration/tuned_dynamics.json \
     --arm_limit_json ~/IsaacLab/calibration/arm_limits_measured.json \
     --num_envs 1 --num_demos 5
 ```
@@ -483,14 +480,12 @@ python collect_demos.py \
     --checkpoint logs/ppo_lekiwi/skill2/checkpoints/best_agent.pt \
     --skill approach_and_grasp \
     --multi_object_json object_catalog.json \
-    --dynamics_json calibration/tuned_dynamics.json \
     --arm_limit_json calibration/arm_limits_measured.json \
     --num_envs 4 --num_demos 1000 --headless
 ```
 
-**주의**: Desktop에서 `--dynamics_json`, `--arm_limit_json` 경로는 상대경로 `calibration/`을 쓰는데, 이 파일들은 `~/IsaacLab/calibration/`에 있음. Desktop에서는 심링크를 만들거나 절대경로 사용:
+**주의**: Desktop에서 `--arm_limit_json` 경로는 상대경로 `calibration/`을 쓰는데, 이 파일은 `~/IsaacLab/calibration/`에 있음. Desktop에서는 심링크를 만들거나 절대경로 사용:
 ```bash
-ln -s ~/IsaacLab/calibration/tuned_dynamics.json calibration/tuned_dynamics.json
 ln -s ~/IsaacLab/calibration/arm_limits_measured.json calibration/arm_limits_measured.json
 ```
 
@@ -522,14 +517,14 @@ ln -s ~/IsaacLab/calibration/arm_limits_measured.json calibration/arm_limits_mea
 | 파라미터 | 값 | 설명 |
 |---------|-----|------|
 | **핸드오프 지점** | **0.7m** | Navigate→ApproachAndGrasp 전환 거리 (VLM 판단) |
-| Navigate 방식 | Direction-Conditioned RL | VLM 방향 명령 추종 (velocity tracker + ortho drift penalty, 장애물 회피는 VLA 담당) |
+| Navigate 방식 | Direction-Conditioned RL | VLM 방향 명령 추종 (velocity tracker, inference-time masking) |
 | Navigate 방향 명령 | 6가지 cardinal | forward/backward/left/right/turn_left/turn_right |
-| Navigate rewards (v6g) | lin_track=1.5(exp,lin_std=0.25), ang_track=1.5(exp,ang_std=0.20), ortho_drift=-1.0, smooth=-0.005 | v6f base + orthogonal drift penalty. collision/proximity 제거. ortho_speed TensorBoard 로그. **비교 실험중**: v6g2(ortho=-1.0,linear) vs v6g3(ortho=-15.0,quadratic) |
+| Navigate rewards (v6c 확정) | lin_track=1.5(std=0.25), ang_track=1.5(std=0.25), collision=-2.0, proximity=-0.5, smooth=-0.005, time=-0.01 | simple tracking + obstacle avoidance. action masking 없음, inference-time masking으로 대체 |
 | Navigate episode | 10초 | 도착 조건 없음, timeout까지 방향 추종 |
 | Navigate PPO | entropy=0.005, dead dims 0:6 frozen, clip_values=False | |
-| Skill-2 object_dist_min | 0.7m | ApproachAndGrasp curriculum 시작 거리 |
-| Skill-2 curriculum_current_max_dist | 0.7m | Curriculum 런타임 시작값 |
-| Skill-2 curriculum → max | 2.5m | Curriculum 최대 거리 |
+| Skill-2 object_dist_min | 0.8m | ApproachAndGrasp 스폰 최소 거리 |
+| Skill-2 object_dist_max | 1.2m | 스폰 최대 거리 |
+| Skill-2 curriculum_current_max_dist | 1.2m | 처음부터 전체 범위(0.8~1.2m) 사용 |
 
 ---
 
@@ -593,12 +588,10 @@ PhysX error: Patch buffer overflow detected, please increase its size to at leas
 
 1. **Isaac Lab clone 시 프로젝트 코드 보존**: `./isaaclab.sh --install`은 `scripts/` 안의 기존 파일을 건드리지 않지만, `git clone` 시 덮어쓸 수 있음. 프로젝트 코드(`scripts/lekiwi_nav_env/`)를 별도 백업 후 clone, 다시 복사 권장.
 
-2. **`--dynamics_json` 경로**: 서버에서는 절대경로 `~/IsaacLab/calibration/tuned_dynamics.json` 사용. Desktop에서 프로젝트 내 `calibration/` 안에는 이 파일이 없음.
+2. **A100 렌더링 제한**: A100에는 RT Core가 없으므로 카메라 렌더링이 필요한 데이터 수집(Phase 2)은 반드시 Desktop(3090)에서 수행.
 
-3. **A100 렌더링 제한**: A100에는 RT Core가 없으므로 카메라 렌더링이 필요한 데이터 수집(Phase 2)은 반드시 Desktop(3090)에서 수행.
+3. **물체 USD 경로**: `object_catalog.json`이 `/home/yubin11/isaac-objects/`를 참조. 서버에서 심링크 또는 sed 수정 필요 (섹션 3-5 참조).
 
-4. **물체 USD 경로**: `object_catalog.json`이 `/home/yubin/isaac-objects/`를 참조. 서버에서 심링크 또는 sed 수정 필요 (섹션 3-5 참조).
+4. **non-interactive shell**: `nohup`, `ssh user@host "command"` 모두 non-interactive. conda, 환경변수, `.bashrc` 내용이 자동 로드되지 않으므로 명령에 직접 포함해야 한다.
 
-5. **non-interactive shell**: `nohup`, `ssh user@host "command"` 모두 non-interactive. conda, 환경변수, `.bashrc` 내용이 자동 로드되지 않으므로 명령에 직접 포함해야 한다.
-
-6. **logs 디렉토리**: 학습 전 `mkdir -p logs` 필요. 없으면 nohup 리다이렉트 실패.
+5. **logs 디렉토리**: 학습 전 `mkdir -p logs` 필요. 없으면 nohup 리다이렉트 실패.

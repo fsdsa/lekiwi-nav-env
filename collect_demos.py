@@ -69,6 +69,7 @@ parser.add_argument(
 parser.add_argument("--arm_limit_json", type=str, default=None, help="optional arm joint limit JSON (real2sim calibration)")
 parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0, help="margin added to arm limits from --arm_limit_json")
 parser.add_argument("--object_usd", type=str, default="", help="physics grasp object USD path (empty = legacy proximity grasp)")
+parser.add_argument("--dest_object_usd", type=str, default="", help="destination object USD path (배경 스폰, carry_and_place에서 place 기준점)")
 parser.add_argument("--multi_object_json", type=str, default="", help="multi-object catalog JSON path for privileged 37D teacher obs")
 parser.add_argument("--object_mass", type=float, default=0.3, help="physics grasp object mass (kg)")
 parser.add_argument("--object_scale_phys", type=float, default=1.0, help="physics grasp object uniform scale")
@@ -172,7 +173,7 @@ SUBTASK_ID_TO_TEXT_STATIC = {
     3: "return to the starting position",
 }
 FULL_TASK_ID = 10
-FULL_TASK_TEXT_STATIC = "find the target and bring it back"
+FULL_TASK_TEXT_STATIC = "find the target and place it next to the destination"
 
 
 def _sanitize_object_name(raw: object) -> str:
@@ -189,7 +190,7 @@ def _full_task_text_for_object(object_name: object) -> str:
     lowered = name.lower()
     if lowered in {"target object", "object"}:
         return FULL_TASK_TEXT_STATIC
-    return f"find the {name} and bring it back"
+    return f"find the {name} and place it next to the red cup"
 
 
 def _navigate_instruction_for_object(
@@ -771,6 +772,8 @@ def main():
         env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
     if multi_object_mode:
         env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+    if str(getattr(args, "dest_object_usd", "")).strip():
+        env_cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
     if physics_grasp_mode:
         env_cfg.object_usd = os.path.expanduser(args.object_usd)
         env_cfg.object_mass = float(args.object_mass)
@@ -1001,9 +1004,7 @@ def main():
                     # Navigate: arm stays at TUCKED_POSE (zero action = no movement), gripper open
                     action_to_save[0:5] = 0.0
                     action_to_save[5] = 1.0
-                else:
-                    # Gripper binary 변환 (VLA 데이터용: continuous -> 0/1)
-                    action_to_save[5] = 1.0 if action_to_save[5].item() > 0.5 else 0.0
+                # Skill-2/3: gripper continuous 값 그대로 유지 (이진화 하지 않음)
                 ep_act[i].append(action_to_save.cpu().numpy())
                 ep_robot_state[i].append(step_robot_state[i].cpu().numpy())
                 if annotate_subtasks and step_subtask_ids is not None:
@@ -1184,9 +1185,11 @@ def main():
                         grp.attrs["final_object_visible"] = bool(env.object_visible[idx].item())
                     if hasattr(env, "object_grasped"):
                         grp.attrs["final_object_grasped"] = bool(env.object_grasped[idx].item())
-                    if hasattr(env, "home_pos_w"):
-                        home = env.home_pos_w[idx, :2].cpu().numpy()
-                        grp.attrs["final_home_dist"] = float(np.linalg.norm(root - home))
+                    # 목적지 거리: dest_object_pos_w 우선, 없으면 home_pos_w
+                    _dest = "dest_object_pos_w" if hasattr(env, "dest_object_pos_w") else "home_pos_w"
+                    if hasattr(env, _dest):
+                        dest = getattr(env, _dest)[idx, :2].cpu().numpy()
+                        grp.attrs["final_dest_dist"] = float(np.linalg.norm(root - dest))
                     if hasattr(env, "object_bbox"):
                         grp.attrs["object_bbox_xyz"] = env.object_bbox[idx].detach().cpu().numpy().astype(np.float32).tolist()
                     if hasattr(env, "object_category_id"):

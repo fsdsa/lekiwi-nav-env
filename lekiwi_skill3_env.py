@@ -1,7 +1,8 @@
 """
 LeKiwi Skill-3 — CarryAndPlace Isaac Lab DirectRLEnv.
 
-3-Skill 파이프라인의 세 번째 스킬: 잡은 물체를 들고 home까지 운반 후 놓기(Place).
+3-Skill 파이프라인의 세 번째 스킬: 잡은 물체를 들고 목적지 물체(destination object)
+옆까지 운반 후 내려놓기(Place).
 Handoff Buffer에서 초기 상태(물체가 이미 잡힌 상태)를 로드하여 시작.
 
 Observation (Actor 29D):
@@ -11,7 +12,7 @@ Observation (Actor 29D):
   [9:12]  base linear vel body (3)
   [12:15] base angular vel body (3)
   [15:21] arm+grip joint vel (6)
-  [21:24] home relative pos body (3)
+  [21:24] dest object relative pos body (3)
   [24:25] grip force (1)
   [25:28] object bbox normalized (3)
   [28:29] object category normalized (1)
@@ -28,6 +29,7 @@ Action (9D — lekiwi_v6 순서):
 from __future__ import annotations
 
 import math
+import os
 import pickle
 from typing import Dict
 
@@ -46,9 +48,14 @@ class Skill3EnvCfg(Skill2EnvCfg):
     state_space: int = 36
 
     # Task
-    return_thresh: float = 0.30
-    place_dist_thresh: float = 0.05
-    place_gripper_threshold: float = 0.3  # gripper pos > 이 값이면 open 판정
+    place_gripper_threshold: float = 0.6  # gripper pos > 이 값이면 open 판정
+
+    # Destination object — Skill2EnvCfg의 기본값 override
+    dest_object_usd: str = "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd"
+    dest_object_fixed: bool = True       # kinematic — RL 학습 시 밀림 방지
+    # Place 판정 (Skill-3 전용)
+    place_radius: float = 0.20           # "옆에" 판정 반경 (XY 20cm 이내)
+    place_height_tolerance: float = 0.10  # 높이 허용 오차
 
     # Handoff
     handoff_buffer_path: str = ""
@@ -78,7 +85,6 @@ class Skill3Env(Skill2Env):
         # Handoff buffer 로드
         self.handoff_buffer = None
         if cfg.handoff_buffer_path:
-            import os
             buf_path = os.path.expanduser(cfg.handoff_buffer_path)
             if os.path.isfile(buf_path):
                 with open(buf_path, "rb") as f:
@@ -89,8 +95,8 @@ class Skill3Env(Skill2Env):
 
         super().__init__(cfg, render_mode, **kwargs)
 
-        # Skill-3 추가 버퍼
-        self.prev_home_dist = torch.zeros(self.num_envs, device=self.device)
+        # Skill-3 추가 버퍼 (dest_object_pos_w는 Skill2Env에서 생성됨)
+        self.prev_dest_dist = torch.zeros(self.num_envs, device=self.device)
         self.intentional_placed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Fallback: handoff buffer 없을 때 매 step teleport carry 사용
         self._fallback_teleport_carry = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -101,6 +107,8 @@ class Skill3Env(Skill2Env):
         self._handoff_object_ori[:, 0] = 1.0  # qw=1 identity
 
         print(f"  [Skill3Env] obs={self.cfg.observation_space} act={self.cfg.action_space} critic={self.cfg.state_space}")
+
+    # _create_extra_scene_objects()는 Skill2Env에서 상속 (dest_object_usd 설정 시 자동 스폰)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Action — teleport carry (fallback 모드)
@@ -128,23 +136,24 @@ class Skill3Env(Skill2Env):
                 self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=tc_ids)
 
     # ═══════════════════════════════════════════════════════════════════
-    #  Metrics — home 관련 추가
+    #  Metrics — destination object 관련
     # ═══════════════════════════════════════════════════════════════════
 
     def _compute_metrics(self) -> Dict[str, torch.Tensor]:
         metrics = super()._compute_metrics()
+        # dest_object_pos_w는 Skill2Env._compute_metrics()에서 이미 갱신됨
 
         root_pos_w = self.robot.data.root_pos_w
         root_quat_w = self.robot.data.root_quat_w
 
-        home_delta_w = self.home_pos_w - root_pos_w
-        home_pos_b = quat_apply_inverse(root_quat_w, home_delta_w)
-        home_dist = torch.norm(home_pos_b[:, :2], dim=-1)
-        heading_home = torch.atan2(home_pos_b[:, 1], home_pos_b[:, 0])
+        dest_delta_w = self.dest_object_pos_w - root_pos_w
+        dest_pos_b = quat_apply_inverse(root_quat_w, dest_delta_w)
+        dest_dist = torch.norm(dest_pos_b[:, :2], dim=-1)
+        heading_dest = torch.atan2(dest_pos_b[:, 1], dest_pos_b[:, 0])
 
-        metrics["home_pos_b"] = home_pos_b
-        metrics["home_dist"] = home_dist
-        metrics["heading_home"] = heading_home
+        metrics["dest_pos_b"] = dest_pos_b
+        metrics["dest_dist"] = dest_dist
+        metrics["heading_dest"] = heading_dest
         return metrics
 
     # ═══════════════════════════════════════════════════════════════════
@@ -154,7 +163,7 @@ class Skill3Env(Skill2Env):
     def _update_grasp_state(self, metrics: Dict[str, torch.Tensor]):
         """Skill-3 grasp state: 부모 로직 + intentional place 메커니즘.
 
-        Home 근처에서 gripper를 열면 FixedJoint를 해제하여 물체를 의도적으로
+        목적지 물체 근처에서 gripper를 열면 FixedJoint를 해제하여 물체를 의도적으로
         내려놓는다. 이때 just_dropped=False를 유지하여 place_success 조건이
         충족될 수 있도록 한다 (accidental drop과 구분).
         """
@@ -163,18 +172,18 @@ class Skill3Env(Skill2Env):
         # 부모(Skill2) grasp 로직 실행 (can_grasp, lift, drop detection)
         super()._update_grasp_state(metrics)
 
-        # Intentional place: 물체를 잡은 상태 + gripper open + home 근처
+        # Intentional place: 물체를 잡은 상태 + gripper open + 목적지 근처
         if self.object_grasped.any():
             gripper_pos = self.robot.data.joint_pos[:, self.gripper_idx]
             gripper_open = gripper_pos > float(self.cfg.place_gripper_threshold)
-            home_dist = metrics.get("home_dist", None)
-            if home_dist is None:
-                home_delta_w = self.home_pos_w - self.robot.data.root_pos_w
-                home_pos_b = quat_apply_inverse(self.robot.data.root_quat_w, home_delta_w)
-                home_dist = torch.norm(home_pos_b[:, :2], dim=-1)
-            near_home = home_dist < self.cfg.return_thresh
+            dest_dist = metrics.get("dest_dist", None)
+            if dest_dist is None:
+                dest_delta_w = self.dest_object_pos_w - self.robot.data.root_pos_w
+                dest_pos_b = quat_apply_inverse(self.robot.data.root_quat_w, dest_delta_w)
+                dest_dist = torch.norm(dest_pos_b[:, :2], dim=-1)
+            near_dest = dest_dist < (self.cfg.place_radius * 3.0)
 
-            intentional_place = self.object_grasped & gripper_open & near_home
+            intentional_place = self.object_grasped & gripper_open & near_dest
             if intentional_place.any():
                 place_ids = intentional_place.nonzero(as_tuple=False).squeeze(-1)
                 if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
@@ -196,9 +205,9 @@ class Skill3Env(Skill2Env):
         lin_vel = metrics["lin_vel_b"]
         ang_vel = metrics["ang_vel_b"]
 
-        # home_rel: body-frame 상대 벡터 3D
-        home_delta_w = self.home_pos_w - self.robot.data.root_pos_w
-        home_rel = quat_apply_inverse(self.robot.data.root_quat_w, home_delta_w)
+        # dest_object_rel: body-frame 상대 벡터 3D (목적지 물체)
+        dest_delta_w = self.dest_object_pos_w - self.robot.data.root_pos_w
+        dest_object_rel = quat_apply_inverse(self.robot.data.root_quat_w, dest_delta_w)
 
         # grip_force: 스칼라 1D
         contact_force = self._contact_force_per_env()
@@ -216,7 +225,7 @@ class Skill3Env(Skill2Env):
                 lin_vel = lin_vel + torch.randn_like(lin_vel) * bv_noise
                 ang_vel = ang_vel + torch.randn_like(ang_vel) * bv_noise
             if or_noise > 0:
-                home_rel = home_rel + torch.randn_like(home_rel) * or_noise
+                dest_object_rel = dest_object_rel + torch.randn_like(dest_object_rel) * or_noise
 
         # BBox / Category
         bbox_norm = self.object_bbox / float(self._bbox_norm_scale)
@@ -230,7 +239,7 @@ class Skill3Env(Skill2Env):
             lin_vel,                    # [9:12]  base_lin_vel 3D
             ang_vel,                    # [12:15] base_ang_vel 3D
             arm_vel,                    # [15:21] arm+grip vel 6D
-            home_rel,                   # [21:24] home relative 3D
+            dest_object_rel,            # [21:24] dest object relative 3D
             grip_force,                 # [24:25] grip force 1D
             bbox_norm,                  # [25:28] bbox 3D
             cat_norm,                   # [28:29] category 1D
@@ -319,10 +328,10 @@ class Skill3Env(Skill2Env):
         action_delta = self.actions - self.prev_actions
         reward += self.cfg.rew_action_smoothness_weight * (action_delta ** 2).sum(dim=-1)
 
-        # Carry: home까지 거리 줄이기
-        home_progress = torch.clamp(self.prev_home_dist - metrics["home_dist"], -0.2, 0.2)
-        reward += self.cfg.rew_carry_progress_weight * home_progress
-        reward += self.cfg.rew_carry_heading_weight * torch.cos(metrics["heading_home"])
+        # Carry: 목적지 물체까지 거리 줄이기
+        dest_progress = torch.clamp(self.prev_dest_dist - metrics["dest_dist"], -0.2, 0.2)
+        reward += self.cfg.rew_carry_progress_weight * dest_progress
+        reward += self.cfg.rew_carry_heading_weight * torch.cos(metrics["heading_dest"])
 
         # Hold bonus — 물체를 아직 들고 있을 때만
         reward += self.cfg.rew_hold_bonus * self.object_grasped.float()
@@ -330,10 +339,8 @@ class Skill3Env(Skill2Env):
         # Drop penalty — grasp break 감지 시 즉시 발동
         reward += self.just_dropped.float() * self.cfg.rew_drop_penalty
 
-        # Place 성공: home 근처에서 의도적으로 놓음 (drop이 아닌 경우)
-        place_dist = torch.norm(self.object_pos_w[:, :2] - self.home_pos_w[:, :2], dim=-1)
-        near_home = place_dist < self.cfg.return_thresh
-        place_success = (~self.object_grasped) & near_home & (~self.just_dropped)
+        # Place 성공: 목적지 물체 옆에 source 물체 안착 + gripper open (drop이 아닌 경우)
+        place_success = self._check_place_success()
         reward += place_success.float() * self.cfg.rew_place_success_bonus
         self.task_success = place_success
 
@@ -341,13 +348,26 @@ class Skill3Env(Skill2Env):
         reward += self.cfg.rew_effort_weight * (self.actions[:, 6:9] ** 2).sum(dim=-1)
         reward += self.cfg.rew_arm_move_weight * (metrics["arm_vel"] ** 2).sum(dim=-1)
 
-        self.prev_home_dist[:] = metrics["home_dist"]
+        self.prev_dest_dist[:] = metrics["dest_dist"]
         self.episode_reward_sum += reward
         return reward
 
     # ═══════════════════════════════════════════════════════════════════
     #  Dones
     # ═══════════════════════════════════════════════════════════════════
+
+    def _check_place_success(self) -> torch.Tensor:
+        """Place 성공 판정: source 물체가 dest 물체 옆(XY+Z) + gripper open + 의도적 놓기."""
+        obj_pos = self.object_pos_w           # source object (약병)
+        dest_pos = self.dest_object_pos_w     # dest object (빨간 컵)
+
+        xy_dist = torch.norm(obj_pos[:, :2] - dest_pos[:, :2], dim=-1)
+        z_diff = torch.abs(obj_pos[:, 2] - dest_pos[:, 2])
+
+        in_range = (xy_dist < self.cfg.place_radius) & (z_diff < self.cfg.place_height_tolerance)
+        gripper_open = self.robot.data.joint_pos[:, self.gripper_idx] > self.cfg.place_gripper_threshold
+
+        return in_range & gripper_open & (~self.object_grasped) & (~self.just_dropped)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = self._compute_metrics()
@@ -357,15 +377,12 @@ class Skill3Env(Skill2Env):
         # ── CRITICAL-2 Fix: Override parent's lift-based task_success ──
         # Parent sets task_success=True for lifted objects, but Skill-3
         # starts with already-lifted objects from handoff buffer.
-        # Use place_success (intentional place near home) instead.
-        place_dist = torch.norm(
-            self.object_pos_w[:, :2] - self.home_pos_w[:, :2], dim=-1
-        )
-        near_home = place_dist < self.cfg.return_thresh
-        place_success = (~self.object_grasped) & near_home & (~self.just_dropped)
+        # Use place_success (목적지 물체 옆 판정) instead.
+        place_success = self._check_place_success()
         self.task_success = place_success
 
         root_pos = metrics["root_pos_w"]
+        # out_of_bounds: env origin (home_pos_w) 기준
         out_of_bounds = torch.norm(
             root_pos[:, :2] - self.home_pos_w[:, :2], dim=-1
         ) > self.cfg.max_dist_from_origin
@@ -389,18 +406,21 @@ class Skill3Env(Skill2Env):
     #  Reset — Handoff Buffer 기반
     # ═══════════════════════════════════════════════════════════════════
 
+    # _spawn_dest_object()는 Skill2Env에서 상속
+
     def _reset_idx(self, env_ids: torch.Tensor):
         if self._combined_mode:
             # Combined mode: Skill-2 리셋 사용 (물체 거리에 배치, 미파지 상태)
             Skill2Env._reset_idx(self, env_ids)
             # Skill-3 전용 버퍼 리셋 (Skill2._reset_idx가 모르는 것들)
-            self.prev_home_dist[env_ids] = 10.0
+            self.prev_dest_dist[env_ids] = 10.0
             self.intentional_placed[env_ids] = False
             self._fallback_teleport_carry[env_ids] = False
-            # home = env origin
+            # home = env origin (out_of_bounds용)
             env_origins = self.scene.env_origins[env_ids]
             self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
             self.home_pos_w[env_ids, 2] = self.robot.data.root_pos_w[env_ids, 2]
+            # dest object는 Skill2Env._reset_idx()에서 이미 스폰됨
             return
 
         # DirectRLEnv._reset_idx (Skill2Env._reset_idx를 건너뜀)
@@ -499,16 +519,18 @@ class Skill3Env(Skill2Env):
         joint_vel = torch.zeros_like(joint_positions)
         self.robot.write_joint_state_to_sim(joint_positions, joint_vel, env_ids=env_ids)
 
-        # home = destination env의 origin (env_origin XY + robot Z)
+        # home = env origin (out_of_bounds 판정용)
         self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
         self.home_pos_w[env_ids, 2] = root_states[:, 2]
+        # 목적지 물체 스폰
+        self._spawn_dest_object(env_ids)
 
         # Multi-object hide/show
         if self._multi_object and len(self.object_rigids) > 0:
             zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
-            for rigid in self.object_rigids:
+            for oi, rigid in enumerate(self.object_rigids):
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
-                hide_pose[:, 2] = -100.0
+                hide_pose[:, 2] = -100.0 - oi * 2.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
 
@@ -526,7 +548,8 @@ class Skill3Env(Skill2Env):
         self.object_grasped[env_ids] = True
         # DR을 joint attach 전에 실행 → break_force DR이 적용된 joint 생성
         self._apply_domain_randomization(env_ids)
-        self._attach_grasp_fixed_joint_for_envs(env_ids)
+        # Pure friction grasp: FixedJoint 없이 마찰만으로 유지
+        # self._attach_grasp_fixed_joint_for_envs(env_ids)
         # Handoff buffer 사용 시 teleport carry 비활성화
         self._fallback_teleport_carry[env_ids] = False
 
@@ -548,7 +571,6 @@ class Skill3Env(Skill2Env):
         default_root_state[:, 6] = torch.sin(half_yaw)
 
         # Arm: tucked pose + gripper closed (carrying configuration)
-        # tucked_pose.json에서 가져온 값 + gripper를 closed(0.5)로 변경
         joint_pos = self.robot.data.default_joint_pos[env_ids].clone()
         carry_joints = [-0.03, -0.21, 0.09, 0.12, 0.06, 0.50]  # tucked + gripper closed
         for i, val in enumerate(carry_joints):
@@ -558,13 +580,14 @@ class Skill3Env(Skill2Env):
         self.robot.write_root_state_to_sim(default_root_state, env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
-        # Home = 2m 전방 (+y body frame) — place 목적지
+        # home = env origin (out_of_bounds 판정용)
         env_origins = self.scene.env_origins[env_ids] if hasattr(self.scene, "env_origins") else torch.zeros(num, 3, device=self.device)
         self.home_pos_w[env_ids, 0:2] = env_origins[:, 0:2]
         self.home_pos_w[env_ids, 2] = default_root_state[:, 2]
+        # 목적지 물체 스폰
+        self._spawn_dest_object(env_ids)
 
         # 물체를 gripper 근처에 배치 (tucked pose에서 gripper는 base 바로 위)
-        # LeKiwi forward = +Y: tucked pose에서 EE는 base 중심 바로 위 ~15cm
         self.object_pos_w[env_ids, :2] = default_root_state[:, :2]
         self.object_pos_w[env_ids, 2] = default_root_state[:, 2] + float(self.cfg.grasp_attach_height)
 
@@ -578,8 +601,8 @@ class Skill3Env(Skill2Env):
 
         self.object_grasped[env_ids] = True
         self._apply_domain_randomization(env_ids)
-        # Fallback: fixed joint 대신 매 step teleport carry (stale USD transform 문제 우회)
-        self._fallback_teleport_carry[env_ids] = True
+        # Pure friction grasp: teleport carry도 비활성화
+        self._fallback_teleport_carry[env_ids] = False
 
         self._finish_reset(env_ids, num)
 
@@ -589,7 +612,7 @@ class Skill3Env(Skill2Env):
         self.just_grasped[env_ids] = False
         self.just_dropped[env_ids] = False
         self.intentional_placed[env_ids] = False
-        self.prev_home_dist[env_ids] = 10.0
+        self.prev_dest_dist[env_ids] = 10.0
         self.prev_object_dist[env_ids] = 10.0
         self.grasp_entry_step[env_ids] = 0
         self.episode_reward_sum[env_ids] = 0.0

@@ -103,6 +103,10 @@ parser.add_argument("--early_stop_window", type=int, default=500,
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 
+# GUI 모드에서 PhysX joint-limit 경고가 축적되어 시뮬레이션이 멈추는 것 방지
+# Kit CLI arg를 sys.argv에 삽입하여 PhysX 초기화 시점에 적용
+sys.argv.append("--/physics/maxNumberOfPhysXErrors=1000000")
+
 launcher = AppLauncher(args)
 sim_app = launcher.app
 

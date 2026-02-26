@@ -118,7 +118,6 @@ python tune_sim_dynamics.py \
 python replay_in_sim.py \
   --calibration calibration/calibration_latest.json \
   --mode command \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --report_path calibration/replay_command_report.json \
   --series_path calibration/replay_command_series.json --headless
@@ -126,7 +125,6 @@ python replay_in_sim.py \
 python replay_in_sim.py \
   --calibration calibration/calibration_latest.json \
   --mode arm_command \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --report_path calibration/replay_arm_report.json \
   --series_path calibration/replay_arm_series.json --headless
@@ -170,7 +168,7 @@ python check_calibration_gate.py \
   - `vx_real = vx_sim / 1.0166`, `vy_real = vy_sim / 1.0166`, `wz_real = wz_sim / (-1.2360)`
 - **SysID/replay**: 실측 command 로그를 sim에서 재생할 때 `real → sim` 변환 적용.
 
-주의: 같은 경로에 dynamics_json 명령 스케일과 위 보정을 중복 적용하지 않는다.
+주의: 같은 경로에 명령 스케일과 위 보정을 중복 적용하지 않는다.
 
 ```bash
 # 빠른 검증
@@ -260,15 +258,15 @@ TUCKED_POSE = [-0.02966, -0.213839, 0.09066, 0.120177, 0.058418, -0.201554]  # r
 
 ### 3-0. 대표 물체 카탈로그 생성
 
-기존 `build_object_catalog.py`로 1030종 USD에서 bbox 추출 + k-means → 대표 12종 선별:
+기존 `build_object_catalog.py`로 1030종 USD에서 bbox 추출 + k-means → 대표 22종 선별:
 
 ```bash
 python build_object_catalog.py \
   --index_jsonl ~/isaac-objects/mujoco_obj_usd_index_all.jsonl \
   --output_json object_catalog.json \
   --all_objects_json object_catalog_all.json \
-  --num_representatives 12 \
-  --scale 1.0 \
+  --num_representatives 22 \
+  --scale 0.7 \
   --mass_mode volume_density \
   --density_kg_m3 350
 ```
@@ -282,7 +280,7 @@ Skill-1(Navigate), Skill-2(ApproachAndGrasp), Skill-3(CarryAndPlace) 각각에 �
 **기존 v8 코드와의 관계**: v8의 `lekiwi_nav_env.py`는 37D obs + 4-phase FSM(SEARCH→APPROACH→GRASP→RETURN)으로 전체 task를 단일 환경에서 처리한다. 3-Skill 분리는 이 환경을 Skill-2 env(ApproachAndGrasp)와 Skill-3 env(CarryAndPlace)로 분리 리팩토링하는 것이다. v8의 핵심 컴포넌트들은 재사용한다:
 - 물리 grasp (FixedJoint attach/detach) → break_force 조정 (Skill-2/3)
 - Dynamics DR (reset-time wheel/arm/object randomization)
-- 캘리브레이션 연동 (`--dynamics_json`, `--arm_limit_json`)
+- 캘리브레이션 연동 (`--arm_limit_json`)
 - `models.py`의 PolicyNet/ValueNet/CriticNet 구조 + AAC 파일(`aac_wrapper.py`, `aac_ppo.py`, `aac_trainer.py`)
 - Contact sensor 기반 grasp 판정 (Skill-2/3)
 - GRASP timeout 메커니즘 (75 steps, Skill-2/3)
@@ -297,7 +295,7 @@ Skill-1(Navigate), Skill-2(ApproachAndGrasp), Skill-3(CarryAndPlace) 각각에 �
 - 폐기: v8(action masking, compliance 0.34 정체 — 1/3 sample efficiency), v7(along/ortho), v6g(ortho penalty)
 - **체크포인트 백업**: `best_agent_v6c.pt`, `best_agent_v6e.pt`, `best_agent_v6f.pt`, `best_agent_v6g2.pt`, `best_agent_v6g3.pt`, `best_agent_v8.pt`
 
-**모든 학습/수집 명령에서 `--dynamics_json`과 `--arm_limit_json`을 반드시 사용한다.**
+**모든 학습/수집 명령에서 `--arm_limit_json`을 반드시 사용한다.**
 
 > **⚠️ arm_limit_json은 반드시 `arm_limits_measured.json`(신버전)을 사용할 것.**
 > 기존 `arm_limits_real2sim.json`(구버전, encoder 캘리브레이션 기반, 대칭 ±1.745)은 더 이상 사용하지 않는다.
@@ -328,7 +326,6 @@ python record_teleop.py --num_demos 20 \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json
 ```
 
@@ -340,17 +337,18 @@ Skill-3의 fallback reset은 물체를 gripper에 물리적으로 고정하지 �
 
 **3-Phase 전환 메커니즘:**
 - **Phase 1 (Skill-2 기록)**: 접근 + 파지 → 30D obs 레코딩
-- **Phase 1→2 전환**: `object_grasped == True` **연속 600스텝** (10초 @ 60Hz) 유지
-  - `grasp_gripper_threshold`를 0.7 → **0.5**로 낮춤 (확실한 파지만 인정)
-  - 중간에 `object_grasped == False` 되면 카운터 리셋
+- **Phase 1→2 전환**: contact sensor + gripper_closed 조건 **연속 450스텝** (7.5초 @ 60Hz) 유지
+  - `gripper_pos < grasp_gripper_threshold(0.5)` AND `contact_force > grasp_contact_threshold(0.1)` 동시 충족
+  - friction grasp에서 `object_grasped`는 한번 True 되면 리셋 안 되므로, contact sensor를 직접 체크
+  - 중간에 contact 또는 gripper_closed 조건 미충족 시 카운터 리셋
   - Skill-2 에피소드 저장
-- **Phase 2 (Transit, 미기록)**: 사람이 키보드로 home 근처까지 base 이동
+- **Phase 2 (Transit, 미기록)**: 사람이 키보드로 목적지 물체(빨간 컵) 근처까지 base 이동
   - `episode_length_buf = 0` 매 스텝 (timeout 방지)
   - 데이터 기록하지 않음 (실배포 시 Skill-1 Navigate가 이 역할)
-- **Phase 2→3 전환**: `home_dist < 0.7m` AND `|heading_to_home| < 0.76rad` (home이 FOV 내)
+- **Phase 2→3 전환**: `dest_dist < 0.7m` AND `|heading_to_dest| < 0.76rad` (목적지 물체가 FOV 내)
   - Skill-1→Skill-2 전환과 동일한 근접+FOV 조건
 - **Phase 3 (Skill-3 기록)**: 목적지 접근 + place → 29D obs 레코딩
-  - **Home 마커**: 초록 구체가 home 위치에 표시됨 (리셋 시 자동 갱신)
+  - **목적지 마커**: 초록 구체가 목적지 물체(빨간 컵) 위치에 표시됨 (리셋 시 자동 갱신)
 - **수동 종료**: → 화살표(저장+다음), ← 화살표(폐기+리셋). 모든 Phase에서 작동
 - Phase 3 종료 (→ 화살표/drop/timeout) → 리셋 → Phase 1로
 
@@ -385,23 +383,41 @@ bash run_teleop.sh
 
 # 또는 직접 실행 — 다중 물체 권장
 python record_teleop.py --num_demos 10 \
-  --skill combined --grasp_hold_steps 600 \
+  --skill combined --grasp_hold_steps 450 \
   --home_dist_thresh 0.7 --home_fov_thresh 0.76 \
   --multi_object_json object_catalog.json \
+  --dest_object_usd "/path/to/ACE_Coffee_Mug_.../model_clean.usd" \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --arm_limit_json calibration/arm_limits_measured.json
 
 # 단일 물체 사용 시 (비권장: obj_category=0 고정)
 OBJ="/path/to/object/model_clean.usd"
 python record_teleop.py --num_demos 10 \
-  --skill combined --grasp_hold_steps 600 \
+  --skill combined --grasp_hold_steps 450 \
   --home_dist_thresh 0.7 --home_fov_thresh 0.76 \
   --object_usd "$OBJ" \
+  --dest_object_usd "/path/to/ACE_Coffee_Mug_.../model_clean.usd" \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
   --arm_limit_json calibration/arm_limits_measured.json
 ```
 
 종료 조건: `min(skill2_saved, skill3_saved) >= num_demos`.
+
+**Resume (이어서 녹화)**: `--resume` 옵션으로 중단된 세션을 이어서 녹화할 수 있다. 기존 HDF5를 append 모드로 열고, 저장된 에피소드 수를 카운트하여 이어서 번호를 매긴다. `--num_demos`는 **총 목표** 수로, 기존 에피소드를 포함한다. 단일 skill 모드에서는 `--output`으로 기존 파일을 지정하고, combined 모드에서는 `--output` 없이 `demos/` 내 최신 `combined_skill2_*.hdf5`를 자동 탐색한다.
+
+```bash
+# 단일 skill 중단 후 이어서 녹화 (--output 필수)
+python record_teleop.py --num_demos 10 --skill approach_and_grasp \
+  --output demos/teleop_20260225_143000.hdf5 --resume \
+  --multi_object_json object_catalog.json \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1"
+
+# Combined 모드 resume (--output 불필요, demos/ 내 최신 파일 자동 탐색)
+python record_teleop.py --num_demos 10 --skill combined --resume \
+  --grasp_hold_steps 450 --home_dist_thresh 0.7 --home_fov_thresh 0.76 \
+  --multi_object_json object_catalog.json \
+  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1"
+```
 
 **핵심: 텔레옵 시 sim에서 privileged obs(rel_object, contact)를 동시에 기록한다.** 이렇게 해야 BC의 obs가 RL Actor와 동일한 형태가 되어 weight transfer가 매끄럽다. "사후 추출" 방식은 replay 파이프라인이 추가로 필요하므로, sim 텔레옵 시 동시 기록을 기본으로 한다.
 
@@ -434,15 +450,20 @@ BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + rel_ob
 
 **Action 출력**: 9D (arm target 5D + gripper cmd 1D + base cmd 3D).
 
-**학습 설정**: 기존 `train_bc.py` 사용. `--normalize` OFF가 기본(PPO RunningStandardScaler와 호환). lr=1e-3, batch_size=256, 200 epochs. 목표 성공률 30~40%. 텔레옵 데이터 사용 시 `--filter_active`로 idle 프레임 제거 권장.
+**학습 설정**: 기존 `train_bc.py` 사용. `--normalize` OFF가 기본(PPO RunningStandardScaler와 호환). **GMM loss가 기본** (`--loss gmm --n_components 5`) — MSE의 mean regression 문제를 해결한다. lr=1e-3, batch_size=256, 300 epochs. 목표 성공률 30~40%. 텔레옵 데이터 사용 시 `--filter_active`로 idle 프레임 제거 권장.
 
 ```bash
-# 텔레옵 데이터 (idle 프레임 제거)
-python train_bc.py --demo_dir demos_skill2/ --epochs 200 --expected_obs_dim 30 --filter_active
+# 텔레옵 데이터 (GMM 기본, idle 프레임 제거)
+python train_bc.py --demo_dir demos_skill2/ --epochs 300 --expected_obs_dim 30 \
+    --filter_active --loss gmm --n_components 5 --eval \
+    --save_dir checkpoints/skill2/
 
 # RL Expert rollout 데이터 (teleop_active 없음, --filter_active 불필요)
-python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 30
+python train_bc.py --demo_dir demos/ --epochs 300 --expected_obs_dim 30 \
+    --loss gmm --n_components 5 --eval
 ```
+
+**출력 체크포인트**: `bc_nav.pt`(RL warm-start 호환) + `bc_nav_gmm.pt`(GMM 전체, eval_bc.py에서 자동 감지)
 
 #### 3-2-3. RL 학습
 
@@ -469,7 +490,7 @@ BC checkpoint로 PPO의 Actor를 초기화하고 RL 학습을 시작한다.
 
 **속도 정보(12D)가 필수인 이유**: v8의 37D obs에도 base_lin_vel(3) + base_ang_vel(3) + arm_joint_vel(6) + wheel_vel(3) = 15D 속도 정보가 포함되어 있었다. 속도가 없으면 Actor가 현재 운동 상태를 모르기 때문에, 접근 중 감속 타이밍, arm 도달 후 안정화, grasp 직전 미세 조정 등의 동적 제어가 불가능하다. 속도는 privileged가 아닌 real에서도 얻을 수 있는 정보(IMU, 휠 FK, 엔코더 미분)이지만, VLA 9D state에는 포함하지 않는다 — VLA는 이미지의 optical flow에서 암묵적으로 속도를 추론한다.
 
-obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된 설계다. 12종 다중 물체를 학습할 때, 물체 크기와 형태를 알아야 물체별로 다른 접근 각도, arm trajectory, gripper timing을 학습할 수 있다.
+obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된 설계다. 22종 다중 물체를 학습할 때, 물체 크기와 형태를 알아야 물체별로 다른 접근 각도, arm trajectory, gripper timing을 학습할 수 있다.
 
 **Critic Observation** (37D): Actor obs 30D + obj_bbox(3D, 비정규화) + obj_mass(1D) + obj_dist(1D) + heading_object(1D) + vel_toward_object(1D) = 37D.
 
@@ -479,7 +500,7 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 
 **GRASP timeout**: 기존 v8의 `grasp_timeout_steps=75` (~3초@25Hz) 유지. timeout 내 grasp 미성공 시 APPROACH로 복귀 재시도.
 
-**Grasp Break 감지**: FixedJoint 파손 시 `object_grasped`가 자동으로 False가 되지 않으므로, 매 step gripper body-object 거리를 체크하여 `grasp_drop_detect_dist`(0.30m) 초과 시 drop 판정 (`just_dropped=True`). gripper body 중심~물체 중심 자연 오프셋이 ~0.18m이므로 0.30m로 설정 (기존 0.15m은 정상 파지에서도 drop 오판). Skill-3에서 drop → terminated(에피소드 즉시 종료) + `rew_drop_penalty=-10`. 의도적 place(home 근처 gripper 열기)와 비의도적 drop(break_force 초과)은 `just_dropped` 플래그로 구분.
+**Grasp Break 감지**: Skill-2의 거리 기반 drop detection은 **제거**되었다 — gripper body 중심~물체 중심 자연 오프셋(~0.18m)으로 인해 정상 파지 상태에서도 drop으로 오판하는 문제가 있었다. `just_dropped` 필드는 Skill-3의 intentional place 판정에서 사용하므로 유지된다. Skill-3에서 의도적 place(목적지 물체 근처 `place_radius×3.0`=0.6m 이내 + gripper `place_gripper_threshold`(0.6) 이상 open)와 비의도적 drop은 `just_dropped` 플래그로 구분.
 
 **Reward 설계**:
 
@@ -493,9 +514,9 @@ obj_bbox/obj_category가 Actor에 들어가는 이유: 기존 v8에서 검증된
 | collision | -1 | 환경 충돌 |
 | time | -0.01/step | 시간 초과 방지 |
 
-**다중 물체 관리 (기존 v8 방식 유지)**: object_catalog.json의 12종 대표 물체를 환경 초기화 시 모두 pre-spawn한다. 매 에피소드 reset 시 12종 중 1종을 랜덤 선택하고, 선택된 물체만 로봇 근처에 배치하고 나머지는 z=-10에 숨긴다. 물체는 **바닥 위**에 배치되며(object_height = bbox_z × 0.5, 물체 크기에 맞게 지면 안착), 로봇 home에서 1.0~2.5m 거리에 360° 랜덤 방향으로 놓인다. 물체 yaw도 랜덤. 이렇게 하면 Teacher가 물체별로 다른 크기/형상에 적응한 grasp 전략을 학습한다.
+**다중 물체 관리 (기존 v8 방식 유지)**: object_catalog.json의 22종 대표 물체를 환경 초기화 시 모두 pre-spawn한다. 매 에피소드 reset 시 22종 중 1종을 랜덤 선택하고, 선택된 물체만 로봇 근처에 배치하고 나머지는 z=-10에 숨긴다. 물체는 **바닥 위**에 배치되며(object_height = bbox_z × 0.5, 물체 크기에 맞게 지면 안착), env origin에서 0.8~1.2m 거리에 360° 랜덤 방향으로 놓인다. 물체 yaw도 랜덤. 이렇게 하면 Teacher가 물체별로 다른 크기/형상에 적응한 grasp 전략을 학습한다. **목적지 물체(빨간 컵)도 background prop으로 함께 스폰한다** — RL 학습에는 영향을 주지 않으나, VLA 데이터 수집 시 카메라 이미지에 목적지 물체가 자연스럽게 포함되어 VLA가 장면 맥락을 학습할 수 있다.
 
-**Curriculum Learning**: 처음에는 물체를 로봇 앞 0.7m에 놓고, 성공률 70% 초과 시 거리를 점진적으로 2.5m까지 늘린다.
+**Curriculum Learning**: 처음부터 0.8~1.2m 범위에서 랜덤 스폰한다 (`curriculum_current_max_dist=1.2`). 성공률 70% 초과 시 점진적으로 거리를 늘리는 메커니즘은 유지되지만, 초기값이 이미 최대 범위이므로 사실상 비활성 상태다.
 
 **Domain Randomization (Dynamics, reset-time)**: 기존 v8 코드의 `enable_domain_randomization=True`를 그대로 사용.
 - Wheel: stiffness(0.75~1.5x), damping(0.3~3.0x), friction(0.7~1.3x)
@@ -520,7 +541,6 @@ python train_lekiwi.py \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --headless
 ```
@@ -563,16 +583,16 @@ env_origin 기준 상대 좌표로 저장되며, `_reset_from_handoff`에서 des
 
 #### 3-4-1. 텔레옵 수집
 
-**방법 A: Combined 모드 (권장)** — `record_teleop.py --skill combined`로 Skill-2와 동시에 수집. 3-phase 구조: Phase 1(접근+파지, 30D 기록) → Phase 2(Transit, 사람이 home 근처로 이동, 미기록) → Phase 3(목적지 접근+place, 29D 기록). home이 0.7m 이내 + FOV 내에 들어오면 Phase 3 기록이 자동 시작된다. Handoff Buffer 없이 물리 기반 grasp 상태를 그대로 이어받으므로 stale USD transform 문제가 없다. 자세한 사용법은 §3-2-1 "Combined 텔레옵 모드" 참조.
+**방법 A: Combined 모드 (권장)** — `record_teleop.py --skill combined`로 Skill-2와 동시에 수집. 3-phase 구조: Phase 1(접근+파지, 30D 기록) → Phase 2(Transit, 사람이 목적지 물체(빨간 컵) 근처로 이동, 미기록) → Phase 3(목적지 접근+place, 29D 기록). 목적지 물체가 0.7m 이내 + FOV 내에 들어오면 Phase 3 기록이 자동 시작된다. Handoff Buffer 없이 물리 기반 grasp 상태를 그대로 이어받으므로 stale USD transform 문제가 없다. 자세한 사용법은 §3-2-1 "Combined 텔레옵 모드" 참조.
 
-**방법 B: 단독 수집** — Handoff Buffer의 상태 중 하나를 sim에 로드하고, 사람이 10~20개 시범을 보인다. 물체를 이미 잡은 상태에서 시작하여 home으로 이동하고 내려놓는다. Handoff Buffer가 충분히 확보된 후 사용.
+**방법 B: 단독 수집** — Handoff Buffer의 상태 중 하나를 sim에 로드하고, 사람이 10~20개 시범을 보인다. 물체를 이미 잡은 상태에서 시작하여 목적지 물체(빨간 컵) 옆으로 이동하고 내려놓는다. Handoff Buffer가 충분히 확보된 후 사용.
 
 #### 3-4-2. BC 학습
 
 Skill-2와 동일한 방식이되, obs 구성이 다르다.
 
 ```
-BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + home_rel(3) + grip_force(1) + obj_bbox(3) + obj_category(1) = 29D
+BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + dest_object_rel(3) + grip_force(1) + obj_bbox(3) + obj_category(1) = 29D
 ```
 
 | 채널 | 차원 | 출처 |
@@ -583,12 +603,12 @@ BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + home_r
 | base_lin_vel | 3D | sim (real: IMU/휠 FK) |
 | base_ang_vel | 3D | sim (real: IMU/휠 FK) |
 | arm_joint_vel | 6D | sim (real: 엔코더 미분) |
-| home_rel | 3D | sim ground truth (real 불가) |
+| dest_object_rel | 3D | sim ground truth (real 불가) |
 | grip_force | 1D | sim force sensor (real 불가) |
 | obj_bbox | 3D | sim ground truth (real 불가) — 물체 크기 (normalized) |
 | obj_category | 1D | sim ground truth (real 불가) — 물체 종류 (normalized) |
 
-home_rel: home 위치의 body-frame 상대 벡터. grip_force: 그리퍼가 물체를 누르는 힘. obj_bbox/obj_category: 물체 크기와 종류를 알아야 운반 중 적절한 속도/자세 조절을 학습할 수 있다.
+dest_object_rel: 목적지 물체(빨간 컵) 위치의 body-frame 상대 벡터. grip_force: 그리퍼가 물체를 누르는 힘. obj_bbox/obj_category: 물체 크기와 종류를 알아야 운반 중 적절한 속도/자세 조절을 학습할 수 있다.
 
 네트워크 구조는 Skill-3 RL Actor와 동일 (`models.py` PolicyNet, 입력 차원 29D).
 
@@ -609,7 +629,7 @@ python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29 -
 | base_lin_vel | 3D | sim (real: IMU/휠 FK) | body-frame 선속도 |
 | base_ang_vel | 3D | sim (real: IMU/휠 FK) | body-frame 각속도 |
 | arm_joint_vel | 6D | sim (real: 엔코더 미분) | 관절 각속도 |
-| home_rel | 3D | sim ground truth (real 불가) | home의 body-frame 상대 벡터 |
+| dest_object_rel | 3D | sim ground truth (real 불가) | 목적지 물체(빨간 컵)의 body-frame 상대 벡터 |
 | grip_force | 1D | sim force sensor (real 불가) | 그리퍼 힘 |
 | obj_bbox | 3D | sim ground truth (real 불가) | 물체 크기 (normalized) |
 | obj_category | 1D | sim ground truth (real 불가) | 물체 종류 (normalized) |
@@ -624,13 +644,13 @@ python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29 -
 
 | 항목 | 값 | 설명 |
 |------|-----|------|
-| carry | -‖robot − home‖₂ | home까지 거리 줄이기 |
+| carry | -‖robot − dest_object‖₂ | 목적지 물체(빨간 컵)까지 거리 줄이기 |
 | hold | +0.1/step | 물체가 그리퍼에 있으면 |
-| place | +20 | home 근처에서 **의도적으로** 놓음 (gripper open) |
+| place | +20 | 목적지 물체 옆에서 **의도적으로** 놓음 (gripper open, XY 20cm 이내 + Z 차이 10cm 이내) |
 | drop | -10 | break_force 초과로 물체 낙하 (`just_dropped`) |
 | collision | -1 | 환경 충돌 |
 
-**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place와 비의도적 drop은 Skill-3의 `_update_grasp_state()` 오버라이드로 구분한다: gripper가 `place_gripper_threshold`(0.3) 이상 열리고 home 근처(`return_thresh` 내)이면 `intentional_placed=True`로 설정하여 FixedJoint를 해제하고 `just_dropped=False`를 유지한다. 반면 break_force 초과로 물체가 떨어진 경우 `just_dropped=True`가 된다. place는 `truncated`(성공, +20 보상), drop은 `terminated`(실패, -10 페널티)로 처리. `_get_dones()`는 부모의 lift 기반 task_success 대신 `place_success`를 직접 계산하여 오버라이드한다 (Skill-3는 handoff buffer에서 이미 grasped+lifted 상태로 시작하므로).
+**Termination**: drop 발생 시 에피소드를 즉시 `terminated`로 종료한다 (Skill-2와의 핵심 차이). 의도적 place와 비의도적 drop은 Skill-3의 `_update_grasp_state()` 오버라이드로 구분한다: gripper가 `place_gripper_threshold`(0.6) 이상 열리고 목적지 물체 근처(`place_radius × 3.0` = 0.6m 이내)이면 `intentional_placed=True`로 설정하여 FixedJoint를 해제하고 `just_dropped=False`를 유지한다. 반면 break_force 초과로 물체가 떨어진 경우 `just_dropped=True`가 된다. place는 `truncated`(성공, +20 보상), drop은 `terminated`(실패, -10 페널티)로 처리. `_get_dones()`는 부모의 lift 기반 task_success 대신 `_check_place_success()`(XY 20cm 이내 + Z 차이 10cm 이내 + gripper open + not dropped)를 사용하여 오버라이드한다 (Skill-3는 handoff buffer에서 이미 grasped+lifted 상태로 시작하므로).
 
 **Dynamics DR**: Skill-2와 동일 + **break_force DR** (`dr_grasp_break_force_range: 15~45N`). 주의: `_reset_idx()`에서 `_apply_domain_randomization()`을 `_attach_grasp_fixed_joint_for_envs()` **이전**에 호출.
 
@@ -644,7 +664,6 @@ python train_lekiwi.py \
   --handoff_buffer handoff_buffer.pkl \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --headless
 ```
@@ -665,7 +684,7 @@ RL Expert를 sim에서 실행하면서 **VLA가 실제로 받게 될 정보만 �
 - instruction: 자연어 텍스트
 
 **저장하지 않는 것:**
-- rel_object, contact, home_rel, grip_force (Actor privileged obs)
+- rel_object, contact, dest_object_rel, grip_force (Actor privileged obs)
 - obj_bbox, obj_mass, goal_dist (Critic 전용)
 
 기존 `collect_demos.py`의 robot_state 추출 로직(obs[18:24] + obs[30:33] → 9D)은 환경 obs 차원에 따라 재매핑이 필요하다.
@@ -686,7 +705,6 @@ sim에서 Isaac Sim의 `root_lin_vel_b`와 `root_ang_vel_b`로 body-frame veloci
 python collect_demos.py \
   --checkpoint logs/ppo_lekiwi/navigate/checkpoints/best_agent.pt \
   --skill navigate \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless
 ```
@@ -730,7 +748,6 @@ python collect_demos.py \
   --skill approach_and_grasp \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless \
   --annotate_subtasks
@@ -747,10 +764,10 @@ python collect_demos.py \
 - Action delay: 1 step (10-50ms 통신 지연 시뮬레이션)
 
 **Weak Visual DR (기본)**:
-- 물체 종류: object_catalog.json 12종 중 에피소드마다 1종 랜덤 선택 (나머지는 z=-10에 숨김)
-- 물체 위치: 로봇 home에서 1.0~2.5m 거리, 360° 랜덤 방향, **바닥 위** (object_height = bbox_z × 0.5)
+- 물체 종류: object_catalog.json 22종 중 에피소드마다 1종 랜덤 선택 (나머지는 z=-10에 숨김)
+- 물체 위치: env origin에서 0.7~0.9m 거리, 360° 랜덤 방향, **바닥 위** (object_height = bbox_z × 0.5)
 - 물체 회전(yaw 랜덤) / 스케일(±10%)
-- 로봇 시작 위치/방향: home 기준 랜덤
+- 로봇 시작 위치/방향: env origin 기준 랜덤
 
 **Strong Visual DR (추가, C5/C6/C7용)**:
 - 물체 종류: 1030개 USD 전체 (object_catalog_all.json 활용)
@@ -796,17 +813,16 @@ python collect_demos.py \
   --handoff_buffer handoff_buffer.pkl \
   --multi_object_json object_catalog.json \
   --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --dynamics_json calibration/tuned_dynamics.json \
   --arm_limit_json calibration/arm_limits_measured.json \
   --num_envs 4 --num_demos 1000 --headless \
   --annotate_subtasks
 ```
 
-초기 상태: Handoff Buffer에서 샘플. DR은 Skill-2와 동일 (물체 위치 DR 불필요, home 위치/방향 랜덤화).
+초기 상태: Handoff Buffer에서 샘플. DR은 Skill-2와 동일 (물체 위치 DR 불필요, 목적지 물체(빨간 컵) 위치 4.0~5.0m 랜덤 스폰, 물체와 최소 0.5m 분리). 목적지 물체는 에피소드마다 re-spawn된다 (handoff buffer에는 포함되지 않음).
 
-Instruction: "carry the mug back to the basket and place it", "bring the bottle to the home position".
+Instruction: "place the medicine bottle next to the red cup", "put the bottle beside the red cup".
 
-성공 판정: 물체가 목표 위치 5cm 이내 안착 + gripper open.
+성공 판정: 약병이 빨간 컵 XY 20cm 이내 + Z 차이 10cm 이내 안착 + gripper open.
 
 ---
 
@@ -928,11 +944,12 @@ VLM(~15GB) + VLA(~8GB) = ~23GB VRAM이 필요하므로, 3090 Desktop(24GB)에서
 
 `eval_full_system.py`는 sim 안에서 전체 task를 closed-loop으로 실행하는 평가 스크립트다.
 
-환경: `Skill2EnvWithCam` 기반 (base_cam + wrist_cam 포함). 물체를 랜덤 배치하고, 로봇은 home에서 시작. 전체 파이프라인 문서 섹션 4-4의 VLM 루프를 그대로 구현한다.
+환경: `Skill2EnvWithCam` 기반 (base_cam + wrist_cam 포함). 대상 물체(약병)를 랜덤 배치하고, 목적지 물체(빨간 컵)를 env origin 근처에 랜덤 스폰. 전체 파이프라인 문서 섹션 4-4의 VLM 루프를 그대로 구현한다.
 
 메인 루프:
+0. Task 시작: 사용자 명령을 VLM `/classify`로 전송 → 모드(relative_placement) + 대상 물체(grasp_object/dest_object) 분류 → RelativePlacementOrchestrator 선택
 1. 매 step (10Hz): sim에서 이미지 + 9D state 읽기 → VLA에 전송 → action chunk 수신 → sim에서 실행
-2. 매 0.3Hz (VLM 루프): base_cam 이미지를 VLM에 전송 → VLM이 상황 판단 → 새 instruction 반환 → VLA의 instruction 업데이트
+2. 매 0.3Hz (VLM 루프): base_cam 이미지를 VLM `/infer`에 전송 → VLM이 상황 판단 → 새 instruction + phase 반환 → VLA의 instruction 업데이트
 3. 종료: VLM이 "done" 출력 / timeout(120초) / 실패(충돌, 낙하 등)
 
 skill별 단독 평가도 지원: `--eval_mode skill_only --skill navigate` 등으로 VLA만 돌리고 VLM 없이 고정 instruction을 사용.
@@ -941,14 +958,14 @@ skill별 단독 평가도 지원: `--eval_mode skill_only --skill navigate` 등�
 
 **Skill별 단독 평가 (VLM 없이):**
 - Navigate: 고정 instruction("move forward", "turn left" 등) + VLA → 50회, 방향 충실도/장애물 회피 측정
-- ApproachAndGrasp: 고정 instruction("pick up the red cup") + VLA → 50회, 파지 성공률 측정
-- CarryAndPlace: 고정 instruction("carry to home and place") + VLA → 50회, 운반+놓기 성공률 측정
+- ApproachAndGrasp: 고정 instruction("pick up the medicine bottle") + VLA → 50회, 파지 성공률 측정
+- CarryAndPlace: 고정 instruction("place next to the red cup") + VLA → 50회, 운반+놓기 성공률 측정
 
 **VLM + VLA 통합 평가:**
-- 사용자 명령: "빨간 컵 가져와" / "bring the blue bottle"
-- 물체 12종 × 위치 랜덤 × DR 조건 (Weak/Strong)
+- 사용자 명령: "약병 찾아서 빨간 컵 옆에 놓아" / "find the medicine bottle and place it next to the red cup"
+- 물체 22종 × 위치 랜덤 × DR 조건 (Weak/Strong)
 - 각 조건(C1~C7) 30회+
-- 성공 판정: 물체가 home 5cm 이내 안착 + gripper open
+- 성공 판정: 약병이 빨간 컵 XY 20cm 이내 + Z 차이 10cm 이내 안착 + gripper open
 
 **Go 기준:**
 - Skill별 단독: 70%+ 성공률
@@ -1001,7 +1018,6 @@ Phase 1: RL Expert 학습 (텔레옵: 3090 Desktop, BC/RL: A100 서버)
     Skill-2 성공 상태 200~500개 저장 (A100)
   Skill-3 (CarryAndPlace):
     텔레옵 10~20개 (Desktop, combined 모드) → 파일 분리(demos_skill3/) → scp → BC (A100, --filter_active) → RL (A100, PPO+AAC + BC aux loss: --lambda_bc_init 0.5 --bc_anneal_ratio 0.6, 성공률 90%+)
-    텔레옵 10~20개 (Desktop) → scp → BC (A100) → RL (A100, PPO+AAC + BC aux loss, 성공률 90%+)
   Checkpoint: 서버 → scp → Desktop
 
 Phase 2: VLA 데이터 대량 수집 (RTX 3090 Desktop, 카메라 렌더링)

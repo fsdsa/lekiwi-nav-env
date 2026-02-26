@@ -79,6 +79,8 @@ parser.add_argument("--num_demos", type=int, default=10,
                     help="수집할 성공 에피소드 수")
 parser.add_argument("--output", type=str, default=None,
                     help="출력 HDF5 경로 (기본: demos/teleop_TIMESTAMP.hdf5)")
+parser.add_argument("--resume", action="store_true",
+                    help="기존 HDF5에 이어서 녹화 (--output 필수)")
 parser.add_argument("--arm_topic", type=str, default="/leader_joint_states",
                     help="팔 관절 ROS2 토픽")
 parser.add_argument("--wheel_topic", type=str, default="/wheel_cmds",
@@ -99,6 +101,8 @@ parser.add_argument("--arm_limit_margin_rad", type=float, default=0.0,
                     help="arm limit margin (rad)")
 parser.add_argument("--object_usd", type=str, default="",
                     help="physics grasp object USD path (empty = legacy proximity grasp)")
+parser.add_argument("--dest_object_usd", type=str, default="",
+                    help="destination object USD path (배경 스폰, combined 모드에서 place 기준점)")
 parser.add_argument("--multi_object_json", type=str, default="",
                     help="multi-object catalog JSON path (37D obs)")
 parser.add_argument("--object_mass", type=float, default=0.3,
@@ -109,7 +113,7 @@ parser.add_argument("--gripper_contact_prim_path", type=str, default="",
                     help="contact sensor prim path for gripper body (required in multi-object mode)")
 parser.add_argument("--grasp_gripper_threshold", type=float, default=0.7,
                     help="gripper joint position threshold for closed state")
-parser.add_argument("--grasp_contact_threshold", type=float, default=0.5,
+parser.add_argument("--grasp_contact_threshold", type=float, default=0.65,
                     help="minimum contact force magnitude for grasp success")
 parser.add_argument("--grasp_max_object_dist", type=float, default=0.25,
                     help="max object distance for contact-based grasp success")
@@ -132,8 +136,8 @@ parser.add_argument(
 parser.add_argument(
     "--grasp_hold_steps",
     type=int,
-    default=600,
-    help="combined mode: 파지 유지 스텝 수 (600 = 10s @ 60Hz)",
+    default=450,
+    help="combined mode: 파지 유지 스텝 수 (450 60Hz)",
 )
 parser.add_argument(
     "--home_dist_thresh",
@@ -373,7 +377,10 @@ class TcpTeleopSubscriber(TeleopInputBase):
     def get_latest(self) -> tuple[np.ndarray, np.ndarray, bool]:
         with self._lock:
             arm = self._arm_positions.copy()
-            body_cmd = self._base_cmd.copy()
+            # isaac_teleop sends IK frame (vx=forward, vy=left)
+            # Convert to body frame (vx=right, vy=forward) for _apply_action()
+            ik = self._base_cmd.copy()
+            body_cmd = np.array([-ik[1], ik[0], ik[2]])
             active = (time.time() - self._stamp) < 1.0
         return arm, body_cmd, active
 
@@ -538,6 +545,10 @@ def _check_arrow_key():
 
 def main():
     # —— 출력 경로 ——
+    if args.resume and not args.output and args.skill != "combined":
+        print("  ERROR: --resume 사용 시 --output으로 기존 파일을 지정해야 합니다. (combined 모드는 자동 검색)")
+        sys.exit(1)
+
     if args.output:
         output_path = args.output
     else:
@@ -550,6 +561,8 @@ def main():
     print("=" * 60)
     print(f"  목표: {args.num_demos} 에피소드")
     print(f"  저장: {output_path}")
+    if args.resume:
+        print(f"  모드: RESUME (기존 파일에 이어서 녹화)")
     print(f"  teleop source: {args.teleop_source}")
     print(f"  arm input unit: {args.arm_input_unit}")
     print(f"  ROS2 토픽: {args.arm_topic}, {args.wheel_topic}")
@@ -595,6 +608,8 @@ def main():
     multi_object_mode = bool(str(args.multi_object_json).strip())
     if multi_object_mode:
         env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+    if str(args.dest_object_usd).strip():
+        env_cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
     if physics_grasp_mode:
         env_cfg.object_usd = os.path.expanduser(args.object_usd)
         env_cfg.object_mass = float(args.object_mass)
@@ -604,13 +619,16 @@ def main():
         env_cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
         env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
         env_cfg.grasp_attach_height = float(args.grasp_attach_height)
+    # 텔레옵: break_force를 v8과 동일하게 (30N은 너무 낮아 grasp 시 에너지 방출로 폭발)
+    env_cfg.grasp_joint_break_force = 1e8
+    env_cfg.grasp_joint_break_torque = 1e8
     if multi_object_mode and not str(args.gripper_contact_prim_path).strip():
         raise ValueError(
             "multi-object(37D) 텔레옵 데모에는 --gripper_contact_prim_path가 필요합니다."
         )
     is_combined = (args.skill == "combined")
     if is_combined:
-        env_cfg.grasp_gripper_threshold = 0.5  # combined: 확실한 파지만 인정
+        env_cfg.grasp_gripper_threshold = 0.65  # combined: 확실한 파지만 인정
     if args.skill == "approach_and_grasp":
         env = Skill2Env(cfg=env_cfg)
     elif args.skill in ("carry_and_place", "combined"):
@@ -637,13 +655,16 @@ def main():
 
     env._get_dones = _teleop_get_dones
 
-    # Home 위치 마커 (초록 구체)
-    _home_marker = None
-    if hasattr(env, "home_pos_w"):
+    # 목적지 마커: dest object USD가 있으면 마커 불필요 (빨간 컵 자체가 보임)
+    #              dest object USD가 없으면 초록 구체로 위치 표시
+    _dest_marker = None
+    _dest_attr = "dest_object_pos_w" if hasattr(env, "dest_object_pos_w") else "home_pos_w"
+    _has_dest_rigid = getattr(env, "_dest_object_rigid", None) is not None
+    if hasattr(env, _dest_attr) and not _has_dest_rigid:
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
         import isaaclab.sim as sim_utils
-        _home_marker = VisualizationMarkers(VisualizationMarkersCfg(
-            prim_path="/World/Visuals/home_marker",
+        _dest_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/World/Visuals/dest_marker",
             markers={
                 "sphere": sim_utils.SphereCfg(
                     radius=0.08,
@@ -651,8 +672,8 @@ def main():
                 ),
             },
         ))
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+        _dm = getattr(env, _dest_attr)[:1].clone(); _dm[:, 2] = 0.08
+        _dest_marker.visualize(translations=_dm)
 
     base_radius = float(env.base_radius)
     wheel_radius = float(env.wheel_radius)
@@ -734,9 +755,9 @@ def main():
 
     # —— 녹화 루프 ——
     obs, info = env.reset()
-    if _home_marker is not None:
-        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-        _home_marker.visualize(translations=_hm)
+    if _dest_marker is not None:
+        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+        _dest_marker.visualize(translations=_hm)
 
     # 디버그: 물체 스폰 확인
     if hasattr(env, 'object_rigid') and env.object_rigid is not None:
@@ -751,6 +772,10 @@ def main():
     episode_actions = []
     episode_active = []
     episode_robot_state = []
+    episode_object_pos_w = []   # 물체 절대 world 좌표 (3D)
+    episode_object_quat_w = []  # 물체 절대 world 방향 (4D wxyz)
+    episode_robot_pos_w = []    # 로봇 절대 world 좌표 (3D)
+    episode_robot_quat_w = []   # 로봇 절대 world 방향 (4D wxyz)
     saved_count = 0
     step_count = 0
 
@@ -782,22 +807,44 @@ def main():
 
     if is_combined:
         os.makedirs("demos", exist_ok=True)
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        skill2_path = f"demos/combined_skill2_{timestamp}.hdf5"
-        skill3_path = f"demos/combined_skill3_{timestamp}.hdf5"
-        hdf5_skill2 = h5py.File(skill2_path, "w")
-        hdf5_skill3 = h5py.File(skill3_path, "w")
-        _write_hdf5_attrs(hdf5_skill2, 30, "approach_and_grasp")
-        _write_hdf5_attrs(hdf5_skill3, 29, "carry_and_place")
+
+        if args.resume:
+            # demos/에서 가장 최근 combined_skill2_*.hdf5 찾기
+            import glob as _glob
+            s2_files = sorted(_glob.glob("demos/combined_skill2_*.hdf5"))
+            if not s2_files:
+                print("  ERROR: --resume인데 demos/combined_skill2_*.hdf5 파일이 없습니다.")
+                sys.exit(1)
+            skill2_path = s2_files[-1]  # 가장 최근 (타임스탬프 정렬)
+            skill3_path = skill2_path.replace("skill2", "skill3")
+            if not os.path.isfile(skill3_path):
+                print(f"  ERROR: {skill3_path} 파일이 없습니다.")
+                sys.exit(1)
+            hdf5_skill2 = h5py.File(skill2_path, "a")
+            hdf5_skill3 = h5py.File(skill3_path, "a")
+            skill2_saved = sum(1 for k in hdf5_skill2.keys() if k.startswith("episode_"))
+            skill3_saved = sum(1 for k in hdf5_skill3.keys() if k.startswith("episode_"))
+            print(f"  Resume: {skill2_path}")
+            print(f"          Skill-2 {skill2_saved}개, Skill-3 {skill3_saved}개 에피소드에서 이어서 녹화")
+        else:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            skill2_path = f"demos/combined_skill2_{timestamp}.hdf5"
+            skill3_path = f"demos/combined_skill3_{timestamp}.hdf5"
+            hdf5_skill2 = h5py.File(skill2_path, "w")
+            hdf5_skill3 = h5py.File(skill3_path, "w")
+            _write_hdf5_attrs(hdf5_skill2, 30, "approach_and_grasp")
+            _write_hdf5_attrs(hdf5_skill3, 29, "carry_and_place")
+            skill2_saved = 0
+            skill3_saved = 0
         hdf5_file = None  # 단일 파일 미사용
 
         # Phase tracking: 1=Skill-2(기록), 2=Transit(미기록), 3=Skill-3(기록)
         current_phase = 1
         grasp_hold_counter = 0
-        skill2_saved = 0
-        skill3_saved = 0
         phase1_obs, phase1_actions, phase1_active, phase1_robot_state = [], [], [], []
+        phase1_object_pos_w, phase1_object_quat_w, phase1_robot_pos_w, phase1_robot_quat_w = [], [], [], []
         phase3_obs, phase3_actions, phase3_active, phase3_robot_state = [], [], [], []
+        phase3_object_pos_w, phase3_object_quat_w, phase3_robot_pos_w, phase3_robot_quat_w = [], [], [], []
         print(f"  Combined mode: Skill-2 -> Transit -> Skill-3 연속 레코딩")
         print(f"    grasp_hold_steps: {args.grasp_hold_steps} ({args.grasp_hold_steps/60:.1f}s)")
         print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
@@ -808,8 +855,15 @@ def main():
         print(f"    → (오른쪽 화살표): 현재 Phase 저장/진행")
         print(f"    ← (왼쪽 화살표): 현재 Phase 폐기, 리셋")
     else:
-        hdf5_file = h5py.File(output_path, "w")
-        _write_hdf5_attrs(hdf5_file, int(obs["policy"].shape[-1]), str(args.skill))
+        if args.resume and os.path.isfile(output_path):
+            hdf5_file = h5py.File(output_path, "a")
+            # 기존 에피소드 수 카운트
+            existing = sum(1 for k in hdf5_file.keys() if k.startswith("episode_"))
+            saved_count = existing
+            print(f"  Resume: 기존 {existing}개 에피소드 발견, episode_{existing}부터 이어서 녹화")
+        else:
+            hdf5_file = h5py.File(output_path, "w")
+            _write_hdf5_attrs(hdf5_file, int(obs["policy"].shape[-1]), str(args.skill))
 
     # 키보드 비차단 입력 설정
     _setup_keyboard()
@@ -825,20 +879,37 @@ def main():
         wz = env.robot.data.root_ang_vel_b[0, 2].item()
         return np.concatenate([arm_ps, np.array([vx, vy, wz], dtype=np.float32)])
 
-    # action 저장 헬퍼
+    # action 저장 헬퍼 — gripper 연속값 그대로 유지
     def _save_action(action_np_in):
-        a = action_np_in.copy()
-        if use_v6:
-            a[5] = 1.0 if a[5] > 0.5 else 0.0
-        return a
+        return action_np_in.copy()
 
     # HDF5 에피소드 저장 헬퍼
-    def _save_episode(hf, ep_idx, ep_obs, ep_actions, ep_active, ep_rs):
+    def _save_episode(hf, ep_idx, ep_obs, ep_actions, ep_active, ep_rs,
+                      ep_object_pos_w=None, ep_object_quat_w=None,
+                      ep_robot_pos_w=None, ep_robot_quat_w=None):
         grp = hf.create_group(f"episode_{ep_idx}")
         grp.create_dataset("obs", data=np.array(ep_obs))
         grp.create_dataset("actions", data=np.array(ep_actions))
         grp.create_dataset("robot_state", data=np.array(ep_rs, dtype=np.float32))
         grp.create_dataset("teleop_active", data=np.array(ep_active, dtype=np.int8))
+        # per-step world state (replay + 분석용)
+        if ep_object_pos_w and len(ep_object_pos_w) > 0:
+            grp.create_dataset("object_pos_w", data=np.array(ep_object_pos_w, dtype=np.float32))
+        if ep_object_quat_w and len(ep_object_quat_w) > 0:
+            grp.create_dataset("object_quat_w", data=np.array(ep_object_quat_w, dtype=np.float32))
+        if ep_robot_pos_w and len(ep_robot_pos_w) > 0:
+            grp.create_dataset("robot_pos_w", data=np.array(ep_robot_pos_w, dtype=np.float32))
+        if ep_robot_quat_w and len(ep_robot_quat_w) > 0:
+            grp.create_dataset("robot_quat_w", data=np.array(ep_robot_quat_w, dtype=np.float32))
+        # 초기 환경 상태 (리스트 첫 원소 = 에피소드 시작 시점)
+        if ep_robot_pos_w and len(ep_robot_pos_w) > 0:
+            grp.attrs["robot_init_pos"] = ep_robot_pos_w[0]
+        if ep_robot_quat_w and len(ep_robot_quat_w) > 0:
+            grp.attrs["robot_init_quat"] = ep_robot_quat_w[0]
+        if ep_object_pos_w and len(ep_object_pos_w) > 0:
+            grp.attrs["object_init_pos"] = ep_object_pos_w[0]
+        if ep_object_quat_w and len(ep_object_quat_w) > 0:
+            grp.attrs["object_init_quat"] = ep_object_quat_w[0]
         grp.attrs["num_steps"] = len(ep_obs)
         grp.attrs["num_active_steps"] = int(np.sum(np.asarray(ep_active, dtype=np.int32)))
         grp.attrs["success"] = True
@@ -888,12 +959,13 @@ def main():
                 action_s = _save_action(action_np)
                 rs = _read_robot_state_9d()
 
-                # home 거리/각도 계산 (Phase 2/3 전환 + 상태 출력용)
+                # 목적지(dest_object/home) 거리/각도 계산 (Phase 2/3 전환 + 상태 출력용)
                 from isaaclab.utils.math import quat_apply_inverse
-                home_delta_w = env.home_pos_w[0:1] - env.robot.data.root_pos_w[0:1]
-                home_rel_b = quat_apply_inverse(env.robot.data.root_quat_w[0:1], home_delta_w)[0]
-                home_dist = torch.norm(home_rel_b[:2]).item()
-                heading_to_home = math.atan2(home_rel_b[0].item(), home_rel_b[1].item())  # +y forward
+                _dest_pos = getattr(env, _dest_attr)
+                dest_delta_w = _dest_pos[0:1] - env.robot.data.root_pos_w[0:1]
+                dest_rel_b = quat_apply_inverse(env.robot.data.root_quat_w[0:1], dest_delta_w)[0]
+                home_dist = torch.norm(dest_rel_b[:2]).item()
+                heading_to_home = math.atan2(dest_rel_b[0].item(), dest_rel_b[1].item())  # +y forward
 
                 if current_phase == 1:
                     # Phase 1: Skill-2 (30D obs) 레코딩 — PRE-step obs 사용
@@ -901,9 +973,20 @@ def main():
                     phase1_actions.append(action_s)
                     phase1_active.append(bool(is_active))
                     phase1_robot_state.append(rs)
+                    phase1_object_pos_w.append(env.object_pos_w[0].cpu().numpy())
+                    phase1_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
+                    phase1_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
+                    phase1_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
 
-                    # 파지 유지 카운터
-                    if bool(env.object_grasped[0].item()):
+                    # 파지 유지 카운터: contact sensor + gripper 닫힘 직접 확인
+                    # (friction grasp라 object_grasped가 한번 True 되면 안 풀림)
+                    _grip_pos = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                    _grip_closed = _grip_pos < float(env.cfg.grasp_gripper_threshold)
+                    _has_contact = False
+                    if env.contact_sensor is not None:
+                        _cf = env._contact_force_per_env()[0].item()
+                        _has_contact = _cf > float(env.cfg.grasp_contact_threshold)
+                    if _grip_closed and _has_contact:
                         grasp_hold_counter += 1
                     else:
                         grasp_hold_counter = 0
@@ -911,11 +994,15 @@ def main():
                     # Phase 1→2 전환: grasp 유지 충분
                     if grasp_hold_counter >= args.grasp_hold_steps:
                         _save_episode(hdf5_skill2, skill2_saved,
-                                      phase1_obs, phase1_actions, phase1_active, phase1_robot_state)
+                                      phase1_obs, phase1_actions, phase1_active, phase1_robot_state,
+                                      phase1_object_pos_w, phase1_object_quat_w,
+                                      phase1_robot_pos_w, phase1_robot_quat_w)
                         skill2_saved += 1
                         print(f"\n  >>> Phase 1->2: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
                         phase1_obs.clear(); phase1_actions.clear()
                         phase1_active.clear(); phase1_robot_state.clear()
+                        phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
+                        phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                         current_phase = 2
                         grasp_hold_counter = 0
                         env.episode_length_buf[0] = 0  # Transit용 타이머 리셋
@@ -939,6 +1026,10 @@ def main():
                     phase3_actions.append(action_s)
                     phase3_active.append(bool(is_active))
                     phase3_robot_state.append(rs)
+                    phase3_object_pos_w.append(env.object_pos_w[0].cpu().numpy())
+                    phase3_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
+                    phase3_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
+                    phase3_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
 
                 # 상태 출력 (+ grasp 디버그 정보)
                 if step_count % 25 == 0:
@@ -987,25 +1078,33 @@ def main():
                     print(f"\n  [←] Phase {current_phase} 폐기, 리셋")
                     phase1_obs.clear(); phase1_actions.clear()
                     phase1_active.clear(); phase1_robot_state.clear()
+                    phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
+                    phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                     phase3_obs.clear(); phase3_actions.clear()
                     phase3_active.clear(); phase3_robot_state.clear()
+                    phase3_object_pos_w.clear(); phase3_object_quat_w.clear()
+                    phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
                     grasp_hold_counter = 0
                     current_phase = 1
                     obs, info = env.reset()
-                    if _home_marker is not None:
-                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-                        _home_marker.visualize(translations=_hm)
+                    if _dest_marker is not None:
+                        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+                        _dest_marker.visualize(translations=_hm)
                     step_count = 0
                 elif key == 'right':
                     if current_phase == 1:
                         grasped_now = bool(env.object_grasped[0].item())
                         if grasped_now and len(phase1_obs) > 10:
                             _save_episode(hdf5_skill2, skill2_saved,
-                                          phase1_obs, phase1_actions, phase1_active, phase1_robot_state)
+                                          phase1_obs, phase1_actions, phase1_active, phase1_robot_state,
+                                          phase1_object_pos_w, phase1_object_quat_w,
+                                          phase1_robot_pos_w, phase1_robot_quat_w)
                             skill2_saved += 1
                             print(f"\n  [→] Phase 1 수동 완료: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
                             phase1_obs.clear(); phase1_actions.clear()
                             phase1_active.clear(); phase1_robot_state.clear()
+                            phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
+                            phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                             current_phase = 2
                             grasp_hold_counter = 0
                             env.episode_length_buf[0] = 0
@@ -1013,12 +1112,14 @@ def main():
                             print(f"\n  [→] Phase 1: 파지 미완료 (grasped={grasped_now}, steps={len(phase1_obs)}) — 폐기, 리셋")
                             phase1_obs.clear(); phase1_actions.clear()
                             phase1_active.clear(); phase1_robot_state.clear()
+                            phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
+                            phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                             grasp_hold_counter = 0
                             current_phase = 1
                             obs, info = env.reset()
-                            if _home_marker is not None:
-                                _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-                                _home_marker.visualize(translations=_hm)
+                            if _dest_marker is not None:
+                                _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+                                _dest_marker.visualize(translations=_hm)
                             step_count = 0
                     elif current_phase == 2:
                         print(f"\n  [→] Phase 2 수동 완료: Transit 건너뜀, Skill-3 기록 시작")
@@ -1028,19 +1129,23 @@ def main():
                         active_s = int(np.sum(np.asarray(phase3_active, dtype=np.int32)))
                         if len(phase3_obs) > 10 and active_s > 10:
                             _save_episode(hdf5_skill3, skill3_saved,
-                                          phase3_obs, phase3_actions, phase3_active, phase3_robot_state)
+                                          phase3_obs, phase3_actions, phase3_active, phase3_robot_state,
+                                          phase3_object_pos_w, phase3_object_quat_w,
+                                          phase3_robot_pos_w, phase3_robot_quat_w)
                             skill3_saved += 1
                             print(f"\n  [→] Phase 3 수동 완료: Skill-3 저장 ({len(phase3_obs)} steps)")
                         else:
                             print(f"\n  [→] Phase 3: steps 부족 ({len(phase3_obs)}, active={active_s}) — 폐기")
                         phase3_obs.clear(); phase3_actions.clear()
                         phase3_active.clear(); phase3_robot_state.clear()
+                        phase3_object_pos_w.clear(); phase3_object_quat_w.clear()
+                        phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
                         current_phase = 1
                         grasp_hold_counter = 0
                         obs, info = env.reset()
-                        if _home_marker is not None:
-                            _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-                            _home_marker.visualize(translations=_hm)
+                        if _dest_marker is not None:
+                            _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+                            _dest_marker.visualize(translations=_hm)
                         step_count = 0
                         saved_count = min(skill2_saved, skill3_saved)
                         if saved_count >= max_demos:
@@ -1056,6 +1161,10 @@ def main():
                 episode_actions.append(_save_action(action_np))
                 episode_active.append(bool(is_active))
                 episode_robot_state.append(_read_robot_state_9d())
+                episode_object_pos_w.append(env.object_pos_w[0].cpu().numpy())
+                episode_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
+                episode_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
+                episode_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
 
                 # 상태 출력
                 if step_count % 25 == 0:
@@ -1086,17 +1195,21 @@ def main():
                     active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
                     if len(episode_obs) > 10 and active_steps > 10:
                         _save_episode(hdf5_file, saved_count,
-                                      episode_obs, episode_actions, episode_active, episode_robot_state)
+                                      episode_obs, episode_actions, episode_active, episode_robot_state,
+                                      episode_object_pos_w, episode_object_quat_w,
+                                      episode_robot_pos_w, episode_robot_quat_w)
                         saved_count += 1
                         print(f"\n  [→] Episode {saved_count} 저장 ({len(episode_obs)} steps)")
                     else:
                         print(f"\n  [→] steps 부족 ({len(episode_obs)}, active={active_steps}) — 폐기")
                     episode_obs.clear(); episode_actions.clear()
                     episode_active.clear(); episode_robot_state.clear()
+                    episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                    episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
                     obs, info = env.reset()
-                    if _home_marker is not None:
-                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-                        _home_marker.visualize(translations=_hm)
+                    if _dest_marker is not None:
+                        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+                        _dest_marker.visualize(translations=_hm)
                     step_count = 0
                     if saved_count >= max_demos:
                         break
@@ -1105,10 +1218,12 @@ def main():
                     print(f"\n  [←] 폐기, 리셋")
                     episode_obs.clear(); episode_actions.clear()
                     episode_active.clear(); episode_robot_state.clear()
+                    episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                    episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
                     obs, info = env.reset()
-                    if _home_marker is not None:
-                        _hm = env.home_pos_w[:1].clone(); _hm[:, 2] = 0.08
-                        _home_marker.visualize(translations=_hm)
+                    if _dest_marker is not None:
+                        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
+                        _dest_marker.visualize(translations=_hm)
                     step_count = 0
                 else:
                     obs = next_obs

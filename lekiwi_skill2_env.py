@@ -98,8 +98,8 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     arm_limit_write_to_sim: bool = True    # USD의 inf limit 시 팔이 몸체 관통 방지
 
     # === Task Geometry (변경) ===
-    object_dist_min: float = 0.7    # Curriculum 시작값 (핸드오프 지점, base cam에 물체 보이는 거리)
-    object_dist_max: float = 2.5    # 최대 (v8 동일)
+    object_dist_min: float = 0.8    # 스폰 최소 거리
+    object_dist_max: float = 1.2    # 스폰 최대 거리
     approach_thresh: float = 0.35   # v8 동일
     grasp_thresh: float = 0.20      # v8 동일
     object_height: float = 0.03     # v8 동일
@@ -112,16 +112,16 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     # === Curriculum (신규) ===
     curriculum_success_threshold: float = 0.7
     curriculum_dist_increment: float = 0.25
-    curriculum_current_max_dist: float = 0.7  # 런타임에 변경됨 (핸드오프 지점에서 시작)
+    curriculum_current_max_dist: float = 1.2  # 런타임에 변경됨 (처음부터 전체 범위 사용)
 
     # === Physics Grasp (v8 동일, break_force만 변경) ===
     object_usd: str = ""
     object_mass: float = 0.3
-    object_scale: float = 1.0
+    object_scale: float = 0.7
     gripper_contact_prim_path: str = ""
     object_prim_path: str = "/World/envs/env_.*/Object"
     object_filter_prim_expr: str = "/World/envs/env_.*/Object"
-    grasp_gripper_threshold: float = 0.7
+    grasp_gripper_threshold: float = 0.65
     grasp_contact_threshold: float = 0.5
     grasp_max_object_dist: float = 0.25
     grasp_attach_height: float = 0.15
@@ -134,6 +134,15 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     # === Multi-object (v8 동일) ===
     multi_object_json: str = ""
     num_object_categories: int = 12
+
+    # === Destination Object (배경 스폰, VLA 학습용) ===
+    dest_object_usd: str = ""           # 비어있으면 dest object 없음
+    dest_object_mass: float = 0.54
+    dest_object_scale: float = 0.7
+    dest_object_fixed: bool = False     # 배경 rigid body, Skill-3에서 True(kinematic) override
+    dest_spawn_dist_min: float = 2.0
+    dest_spawn_dist_max: float = 4.0
+    dest_spawn_min_separation: float = 1.0
 
     # === Reward (approach/grasp/lift 전용) ===
     rew_time_penalty: float = -0.01
@@ -187,6 +196,7 @@ class Skill2Env(DirectRLEnv):
 
     def __init__(self, cfg: Skill2EnvCfg, render_mode: str | None = None, **kwargs):
         self._multi_object = bool(str(getattr(cfg, "multi_object_json", "")).strip())
+        self._dest_object_rigid: RigidObject | None = None  # _setup_scene에서 설정됨
         super().__init__(cfg, render_mode, **kwargs)
 
         self._multi_object = bool(str(self.cfg.multi_object_json).strip())
@@ -231,6 +241,7 @@ class Skill2Env(DirectRLEnv):
         # Task buffers
         self.home_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
+        self.dest_object_pos_w = torch.zeros(self.num_envs, 3, device=self.device)
         self.active_object_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.object_bbox = torch.zeros(self.num_envs, 3, device=self.device)
         self.object_category_id = torch.zeros(self.num_envs, device=self.device)
@@ -337,9 +348,10 @@ class Skill2Env(DirectRLEnv):
                 dtype=torch.float32, device=self.device,
             )
         else:
-            self.object_bbox[:] = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=self.device)
+            _default_bbox = self._single_object_bbox if hasattr(self, '_single_object_bbox') and self._single_object_bbox is not None else [0.05, 0.05, 0.05]
+            self.object_bbox[:] = torch.tensor(_default_bbox, dtype=torch.float32, device=self.device)
             self.object_category_id[:] = 0.0
-            self._catalog_bbox = torch.tensor([[0.05, 0.05, 0.05]], dtype=torch.float32, device=self.device)
+            self._catalog_bbox = torch.tensor([_default_bbox], dtype=torch.float32, device=self.device)
             self._catalog_category = torch.tensor([0.0], dtype=torch.float32, device=self.device)
             self._catalog_mass = torch.tensor([max(float(self.cfg.object_mass), 1e-5)], dtype=torch.float32, device=self.device)
 
@@ -393,8 +405,9 @@ class Skill2Env(DirectRLEnv):
                         f"multi_object_json[{oi}].usd not found: {obj_usd}\n"
                         "Hint: regenerate catalog with build_object_catalog.py using real USD paths."
                     )
-                obj_mass = float(obj_info.get("mass", self.cfg.object_mass))
                 obj_scale = float(obj_info.get("scale", self.cfg.object_scale))
+                # 질량을 scale^3에 비례 축소 (밀도 유지, 관성 텐서 정합성)
+                obj_mass = float(obj_info.get("mass", self.cfg.object_mass))
                 prim_path = f"/World/envs/env_.*/Object_{oi}"
                 filter_exprs.append(prim_path)
 
@@ -410,10 +423,14 @@ class Skill2Env(DirectRLEnv):
                             disable_gravity=False,
                             max_linear_velocity=2.0,
                             max_angular_velocity=5.0,
-                            max_depenetration_velocity=1.0,
+                            max_depenetration_velocity=0.3,
                         ),
                         mass_props=sim_utils.MassPropertiesCfg(mass=obj_mass),
-                        collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                        collision_props=sim_utils.CollisionPropertiesCfg(
+                            collision_enabled=True,
+                            contact_offset=0.005,
+                            rest_offset=0.002,
+                        ),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
                 )
@@ -449,14 +466,39 @@ class Skill2Env(DirectRLEnv):
                         disable_gravity=False,
                         max_linear_velocity=2.0,
                         max_angular_velocity=5.0,
-                        max_depenetration_velocity=1.0,
+                        max_depenetration_velocity=0.3,
                     ),
-                    mass_props=sim_utils.MassPropertiesCfg(mass=float(self.cfg.object_mass)),
-                    collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+                    mass_props=sim_utils.MassPropertiesCfg(
+                        mass=float(self.cfg.object_mass),
+                    ),
+                    collision_props=sim_utils.CollisionPropertiesCfg(
+                        collision_enabled=True,
+                        contact_offset=0.005,
+                        rest_offset=0.002,
+                    ),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(1.5, 0.0, float(self.cfg.object_height))),
             )
             self.object_rigid = RigidObject(object_cfg)
+            # Single-object bbox 자동 계산
+            try:
+                from pxr import Usd, UsdGeom
+                _stage = Usd.Stage.Open(object_usd)
+                _cache = UsdGeom.BBoxCache(0.0, [UsdGeom.Tokens.default_])
+                _bbox = _cache.ComputeWorldBound(_stage.GetPseudoRoot())
+                _range = _bbox.ComputeAlignedRange()
+                _min = _range.GetMin()
+                _max = _range.GetMax()
+                s = float(self.cfg.object_scale)
+                self._single_object_bbox = [
+                    abs(float(_max[0] - _min[0])) * s,
+                    abs(float(_max[1] - _min[1])) * s,
+                    abs(float(_max[2] - _min[2])) * s,
+                ]
+                print(f"  [Object] bbox (scaled): {self._single_object_bbox}")
+            except Exception as e:
+                print(f"  [Object] bbox auto-detect failed: {e}")
+                self._single_object_bbox = None
             contact_cfg = ContactSensorCfg(
                 prim_path=str(self.cfg.gripper_contact_prim_path),
                 update_period=0.0,
@@ -471,6 +513,9 @@ class Skill2Env(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=1500.0, color=(0.9, 0.9, 0.9))
         light_cfg.func("/World/Light", light_cfg)
 
+        # Subclass hook: 추가 씬 오브젝트 생성 (clone 전)
+        self._create_extra_scene_objects()
+
         self.scene.clone_environments(copy_from_source=False)
         self.scene.filter_collisions(global_prim_paths=["/World/ground"])
         self.scene.articulations["robot"] = self.robot
@@ -480,9 +525,51 @@ class Skill2Env(DirectRLEnv):
             self.scene.rigid_objects["object"] = self.object_rigid
         if self.contact_sensor is not None:
             self.scene.sensors["gripper_contact"] = self.contact_sensor
+        # Subclass hook: 추가 rigid object 등록 (clone 후)
+        if hasattr(self, "_dest_object_rigid") and self._dest_object_rigid is not None:
+            self.scene.rigid_objects["dest_object"] = self._dest_object_rigid
 
-        # Grasp break 감지를 위한 gripper body index (sim.reset() 후 lazy init)
         self._gripper_body_idx = None
+
+    def _create_extra_scene_objects(self):
+        """Destination object (빨간 컵 등) USD를 씬에 추가. clone 전 호출.
+
+        dest_object_usd가 비어있으면 스킵 (기본 Skill-2 단독 학습 시).
+        CLI에서 --dest_object_usd 지정 시 또는 Skill-3에서 상속 시 활성화.
+        """
+        dest_usd = os.path.expanduser(self.cfg.dest_object_usd) if self.cfg.dest_object_usd else ""
+        if not dest_usd or not os.path.isfile(dest_usd):
+            if dest_usd:
+                print(f"  [WARN] dest_object_usd not found: {dest_usd}")
+            return
+
+        s = float(self.cfg.dest_object_scale)
+        dest_cfg = RigidObjectCfg(
+            prim_path="/World/envs/env_.*/DestObject",
+            spawn=sim_utils.UsdFileCfg(
+                usd_path=dest_usd,
+                scale=(s, s, s),
+                activate_contact_sensors=False,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                    rigid_body_enabled=True,
+                    kinematic_enabled=bool(self.cfg.dest_object_fixed),
+                    disable_gravity=False,
+                    max_linear_velocity=2.0,
+                    max_angular_velocity=5.0,
+                ),
+                mass_props=sim_utils.MassPropertiesCfg(
+                    mass=float(self.cfg.dest_object_mass),
+                ),
+                collision_props=sim_utils.CollisionPropertiesCfg(
+                    collision_enabled=True,
+                    contact_offset=0.005,
+                    rest_offset=0.002,
+                ),
+            ),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 0.0, 0.0)),
+        )
+        self._dest_object_rigid = RigidObject(dest_cfg)
+        print(f"  [Skill2Env] Dest object USD loaded: {dest_usd} (kinematic={self.cfg.dest_object_fixed})")
 
     # ═══════════════════════════════════════════════════════════════════
     #  Calibration / Dynamics — v8 그대로 복사
@@ -909,7 +996,19 @@ class Skill2Env(DirectRLEnv):
             try:
                 tf_gripper = omni.usd.get_world_transform_matrix(gripper_prim)
                 tf_object = omni.usd.get_world_transform_matrix(object_prim)
-                local_tf0 = tf_gripper.GetInverse() * tf_object
+                # Scale이 포함된 transform에서 rotation 추출 시 non-orthonormal 에러 발생
+                # → 3x3 회전부를 orthonormalize하여 scale 제거 후 clean 4x4 재구성
+                def _clean_xform(m4):
+                    t = m4.ExtractTranslation()
+                    r3 = m4.ExtractRotationMatrix()
+                    r3.Orthonormalize()
+                    out = Gf.Matrix4d(1.0)
+                    out.SetRotate(r3)
+                    out.SetTranslateOnly(t)
+                    return out
+                clean_gripper = _clean_xform(tf_gripper)
+                clean_object = _clean_xform(tf_object)
+                local_tf0 = clean_gripper.GetInverse() * clean_object
                 local_pos0 = local_tf0.ExtractTranslation()
                 local_rot0 = self._quatd_to_quatf(local_tf0.ExtractRotationQuat())
 
@@ -1208,6 +1307,50 @@ class Skill2Env(DirectRLEnv):
             z = base_z + float(self.cfg.object_height)
         return torch.stack([x, y, z], dim=-1)
 
+    def _spawn_dest_object(self, env_ids: torch.Tensor):
+        """목적지 물체를 env origin 주변 랜덤으로 스폰 (source와 최소 거리 보장)."""
+        if self._dest_object_rigid is None:
+            return
+        num = len(env_ids)
+        env_origins = self.scene.env_origins[env_ids]
+        obj_xy = self.object_pos_w[env_ids, :2]
+        min_sep = float(self.cfg.dest_spawn_min_separation)
+
+        # 랜덤 거리 + 랜덤 방향 (source와 가까우면 resample)
+        for _ in range(10):
+            dist = (
+                torch.rand(num, device=self.device)
+                * (self.cfg.dest_spawn_dist_max - self.cfg.dest_spawn_dist_min)
+                + self.cfg.dest_spawn_dist_min
+            )
+            angle = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+
+            dx = env_origins[:, 0] + dist * torch.cos(angle)
+            dy = env_origins[:, 1] + dist * torch.sin(angle)
+
+            sep = torch.norm(torch.stack([dx - obj_xy[:, 0], dy - obj_xy[:, 1]], dim=-1), dim=-1)
+            if (sep >= min_sep).all():
+                break
+
+        self.dest_object_pos_w[env_ids, 0] = dx
+        self.dest_object_pos_w[env_ids, 1] = dy
+        self.dest_object_pos_w[env_ids, 2] = env_origins[:, 2]  # 바닥 (kinematic이면 중력 없으므로 정확히 바닥)
+
+        # Rigid body sim에 실제 pose 반영
+        pose = self._dest_object_rigid.data.default_root_state[env_ids, :7].clone()
+        pose[:, 0] = dx
+        pose[:, 1] = dy
+        pose[:, 2] = self.dest_object_pos_w[env_ids, 2]
+        # 랜덤 yaw
+        yaw = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+        pose[:, 3] = torch.cos(yaw * 0.5)   # qw
+        pose[:, 4] = 0.0
+        pose[:, 5] = 0.0
+        pose[:, 6] = torch.sin(yaw * 0.5)   # qz
+        self._dest_object_rigid.write_root_pose_to_sim(pose, env_ids)
+        zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
+        self._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
+
     # ═══════════════════════════════════════════════════════════════════
     #  Base body velocity — v3.0 (displacement 계산 대체)
     # ═══════════════════════════════════════════════════════════════════
@@ -1238,6 +1381,10 @@ class Skill2Env(DirectRLEnv):
                 self.object_pos_w[ids] = rigid.data.root_pos_w[ids]
         elif self._physics_grasp and self.object_rigid is not None:
             self.object_pos_w[:] = self.object_rigid.data.root_pos_w
+
+        # Dest object 위치 갱신 (배경 물체, rigid body이므로 밀릴 수 있음)
+        if self._dest_object_rigid is not None:
+            self.dest_object_pos_w[:] = self._dest_object_rigid.data.root_pos_w
 
         root_pos_w = self.robot.data.root_pos_w
         root_quat_w = self.robot.data.root_quat_w
@@ -1308,11 +1455,7 @@ class Skill2Env(DirectRLEnv):
         if newly_grasped.any():
             self.object_grasped[newly_grasped] = True
             self.just_grasped[newly_grasped] = True
-            grasped_ids = newly_grasped.nonzero(as_tuple=False).squeeze(-1)
-            if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
-                self._attach_grasp_fixed_joint_for_envs(grasped_ids)
-            else:
-                self._teleport_attach_for_envs(grasped_ids)
+            # Pure friction grasp: attach 없음 — 마찰만으로 유지
 
         # Lift 성공 판정
         if self.object_grasped.any():
@@ -1321,24 +1464,7 @@ class Skill2Env(DirectRLEnv):
             lifted = self.object_grasped & ((obj_z - env_z) > self.cfg.grasp_attach_height)
             self.task_success[lifted] = True
 
-        # Grasp break 감지 (fixed joint 파손 시 drop 판정)
-        if self._gripper_body_idx is None:
-            try:
-                body_ids, _ = self.robot.find_bodies(["Moving_Jaw_08d_v1"])
-                self._gripper_body_idx = body_ids[0]
-            except (IndexError, RuntimeError, AttributeError):
-                self._gripper_body_idx = 0
-        if self.object_grasped.any() and self._physics_grasp:
-            grip_pos_w = self.robot.data.body_pos_w[:, self._gripper_body_idx]
-            obj_delta = self.object_pos_w - grip_pos_w
-            grip_obj_dist = torch.norm(obj_delta, dim=-1)
-            drop_detected = self.object_grasped & (grip_obj_dist > float(self.cfg.grasp_drop_detect_dist))
-            if drop_detected.any():
-                self.object_grasped[drop_detected] = False
-                self.just_dropped[drop_detected] = True
-                drop_ids = drop_detected.nonzero(as_tuple=False).squeeze(-1)
-                if self._grasp_attach_mode == "fixed_joint":
-                    self._disable_grasp_fixed_joint_for_envs(drop_ids)
+
 
         # GRASP timeout
         if self.cfg.grasp_timeout_steps > 0:
@@ -1404,9 +1530,6 @@ class Skill2Env(DirectRLEnv):
             fallback = arm_grip_action * self.cfg.arm_action_scale
             arm_targets = torch.where(finite, mapped, fallback)
             clamped = torch.clamp(arm_targets, arm_lo, arm_hi)
-            # 그리퍼: 하한 리밋 아래 타겟 허용 → PD가 강하게 닫음 (PhysX 물리 리밋이 실제 제약)
-            g = self.gripper_arm_offset
-            clamped[:, g] = torch.clamp(arm_targets[:, g], min=arm_lo[:, g] - 0.5, max=arm_hi[:, g])
             arm_targets = torch.where(finite, clamped, arm_targets)
         else:
             arm_targets = arm_grip_action * self.cfg.arm_action_scale
@@ -1680,11 +1803,11 @@ class Skill2Env(DirectRLEnv):
             self.object_pos_w[env_ids, 2] = self.home_pos_w[env_ids, 2] + torch.clamp(
                 self.object_bbox[env_ids, 2] * 0.5, min=float(self.cfg.object_height),
             )
-            for rigid in self.object_rigids:
+            for oi, rigid in enumerate(self.object_rigids):
                 hide_pose = rigid.data.default_root_state[env_ids, :7].clone()
                 hide_pose[:, 0] = 0.0
                 hide_pose[:, 1] = 0.0
-                hide_pose[:, 2] = -100.0
+                hide_pose[:, 2] = -100.0 - oi * 2.0
                 rigid.write_root_pose_to_sim(hide_pose, env_ids=env_ids)
                 obj_vel = torch.zeros((num, 6), dtype=torch.float32, device=self.device)
                 rigid.write_root_velocity_to_sim(obj_vel, env_ids=env_ids)
@@ -1708,7 +1831,8 @@ class Skill2Env(DirectRLEnv):
                 rigid.write_root_velocity_to_sim(obj_vel, env_ids=selected_env_ids)
         elif self._physics_grasp and self.object_rigid is not None:
             self.active_object_idx[env_ids] = 0
-            self.object_bbox[env_ids] = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=self.device)
+            _default_bbox = self._single_object_bbox if hasattr(self, '_single_object_bbox') and self._single_object_bbox is not None else [0.05, 0.05, 0.05]
+            self.object_bbox[env_ids] = torch.tensor(_default_bbox, dtype=torch.float32, device=self.device)
             self.object_category_id[env_ids] = 0.0
             obj_pose = self.object_rigid.data.default_root_state[env_ids, :7].clone()
             obj_pose[:, :3] = self.object_pos_w[env_ids]
@@ -1723,8 +1847,12 @@ class Skill2Env(DirectRLEnv):
             self.object_rigid.write_root_velocity_to_sim(obj_vel, env_ids=env_ids)
         else:
             self.active_object_idx[env_ids] = 0
-            self.object_bbox[env_ids] = torch.tensor([0.05, 0.05, 0.05], dtype=torch.float32, device=self.device)
+            _default_bbox = self._single_object_bbox if hasattr(self, '_single_object_bbox') and self._single_object_bbox is not None else [0.05, 0.05, 0.05]
+            self.object_bbox[env_ids] = torch.tensor(_default_bbox, dtype=torch.float32, device=self.device)
             self.object_category_id[env_ids] = 0.0
+
+        # Dest object 배경 스폰 (설정된 경우에만)
+        self._spawn_dest_object(env_ids)
 
         # Task 버퍼 리셋
         self.object_grasped[env_ids] = False
