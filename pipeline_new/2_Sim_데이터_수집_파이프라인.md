@@ -614,7 +614,9 @@ dest_object_rel: 목적지 물체(빨간 컵) 위치의 body-frame 상대 벡터
 
 ```bash
 # 텔레옵 데이터 (idle 프레임 제거)
-python train_bc.py --demo_dir demos_skill3/ --epochs 200 --expected_obs_dim 29 --filter_active
+python train_bc.py --demo_dir demos_skill3/ --epochs 300 --expected_obs_dim 29 \
+    --filter_active --loss gmm --n_components 5 --eval \
+    --save_dir checkpoints/skill3/
 ```
 
 #### 3-4-3. RL 학습
