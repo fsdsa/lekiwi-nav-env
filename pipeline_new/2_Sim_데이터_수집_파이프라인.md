@@ -820,7 +820,7 @@ python collect_demos.py \
   --annotate_subtasks
 ```
 
-초기 상태: Handoff Buffer에서 샘플. DR은 Skill-2와 동일 (물체 위치 DR 불필요, 목적지 물체(빨간 컵) 위치 2.0~4.0m 랜덤 스폰, 물체와 최소 0.5m 분리). 목적지 물체는 에피소드마다 re-spawn된다 (handoff buffer에는 포함되지 않음).
+초기 상태: Handoff Buffer에서 샘플. DR은 Skill-2와 동일 (물체 위치 DR 불필요, 목적지 물체(빨간 컵) 위치 4.0~5.0m 랜덤 스폰, 물체와 최소 0.5m 분리). 목적지 물체는 에피소드마다 re-spawn된다 (handoff buffer에는 포함되지 않음).
 
 Instruction: "place the medicine bottle next to the red cup", "put the bottle beside the red cup".
 

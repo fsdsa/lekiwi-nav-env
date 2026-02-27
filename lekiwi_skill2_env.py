@@ -140,8 +140,8 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dest_object_mass: float = 0.54
     dest_object_scale: float = 0.7
     dest_object_fixed: bool = False     # 배경 rigid body, Skill-3에서 True(kinematic) override
-    dest_spawn_dist_min: float = 2.0
-    dest_spawn_dist_max: float = 4.0
+    dest_spawn_dist_min: float = 4.0
+    dest_spawn_dist_max: float = 5.0
     dest_spawn_min_separation: float = 1.0
 
     # === Reward (approach/grasp/lift 전용) ===
