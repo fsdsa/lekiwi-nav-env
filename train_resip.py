@@ -33,7 +33,8 @@ Changes from v6:
 
 Everything else identical to v6:
   R1  Gripper open milestone     +10    one-time, gates R2/R3
-  R2  EE proximity (3D)          ×3     tanh σ=0.20, budget=80 + floor 0.1 (near+close)
+  R2  EE proximity (3D)          ×3     tanh σ=0.20, budget=80
+  R2b Gripper close near object  ×2.0   ee<0.10, grip progress
   R3  Verified grasp             +100   one-time, 5-step sustained (env sticky)
   R4  Lift height                ×200   per-step, sustain≥3, grip closed, ee<0.20
   R5  Sustained lift bonus       ×50    per-step after 15 steps held
@@ -56,8 +57,9 @@ V7.1 — Drop detection & re-grasp
   - 신규: (1 - tanh(ee_3d / 0.20)) × 3.0 → 가까울수록 강한 per-step 보상
   - cumulative budget=80: approach당 최대 80까지만 누적 (R3 +100 > R2 max)
     → 물체 옆에 가만히 있는 exploit 방지, grasp로 넘어가는 게 항상 이득
-  - floor=0.1: budget 소진 후 물체 근처(0.10m) + 그리퍼 닫기(< 0.70) 시 0.1/step
-    → max ~50 < R3(+100), grasp 발생 확률↑로 자연 전이
+  - R2b: 물체 근처(ee<0.10)에서 gripper 닫기 진행도 × 2.0
+    → R2가 "가까이 있되 잡지 마라" exploit을 유발하는 것을 상쇄
+    → grip close → contact → R3(+100) 자연 전이
 """
 from __future__ import annotations
 
@@ -416,6 +418,7 @@ def main():
     _r4b_sum = 0.0    # v7 NEW: R4b reward sum
     _r8_n    = 0      # v7 NEW: R8 ground contact count
     _drop_n  = 0      # v7.1: drop detection count
+    _r2b_sum = 0.0    # R2b grip close reward sum
 
     # ── Helpers ──
     def ee_pos():
@@ -454,7 +457,7 @@ def main():
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     print(f"  rew_norm={'ON' if args.normalize_reward else 'OFF'}")
-    print(f"  R1=GripOpen(+10) R2=EEprox(×3,budget={R2_MAX_BUDGET}+floor0.1)")
+    print(f"  R1=GripOpen(+10) R2=EEprox(×3,budget={R2_MAX_BUDGET}) R2b=GripClose(×2.0,ee<0.10)")
     print(f"  R3=VGrasp(+100,{GV}s) R4=Lift(×200,sus≥{LMS},ee<{HELD_EE_MAX})")
     print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0) [v7 NEW]")
     print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
@@ -557,30 +560,31 @@ def main():
             ms_go |= nop
 
             # ══════════════════════════════════════════════════════
-            # R2: EE PROXIMITY (tanh σ=0.20, budgeted + floor)
-            # Phase 1 (budget 내): 강한 approach 신호 (×3.0)
-            # Phase 2 (budget 소진): 물체 근처 + 그리퍼 닫기 시 0.1/step
-            #   → 물리적으로 grasp 발생 확률↑, R3(+100)로 자연 전이
-            #   → floor max ≈ 500×0.1 = 50 < R3(+100), exploit 불가
+            # R2: EE PROXIMITY (tanh σ=0.20, budgeted)
+            # 물체에 가까울수록 보상, budget=80으로 총량 제한
             # ══════════════════════════════════════════════════════
             aok = (~ms_gr) & ms_go
             ee_prox = 1.0 - torch.tanh(ee_3d / 0.20)
-
-            # Phase 1: budgeted proximity
             r2_raw = aok.float() * ee_prox * 3.0
             r2_remaining = torch.clamp(R2_MAX_BUDGET - r2_bud, min=0.0)
             r2_budgeted = torch.min(r2_raw, r2_remaining)
             r2_bud += r2_budgeted
-
-            # Phase 2: grasp-inducing floor (budget 소진 후)
-            budget_out = (r2_remaining <= 0.0)
-            near_closing = (ee_3d < 0.10) & (grip < 0.70)
-            r2_floor = budget_out.float() * aok.float() * near_closing.float() * 0.1
-
-            _r2_val = r2_budgeted + r2_floor
-            rew += _r2_val
-            _r2_sum += torch.nan_to_num(_r2_val, nan=0.0).sum().item()
+            rew += r2_budgeted
+            _r2_sum += torch.nan_to_num(r2_budgeted, nan=0.0).sum().item()
             _open_ct += nop.sum().item()
+
+            # ══════════════════════════════════════════════════════
+            # R2b: GRIPPER CLOSE NEAR OBJECT (×2.0)
+            # 물체 근처(ee<0.10)에서 그리퍼 닫는 진행도에 비례
+            # R2가 "가까이 있되 잡지 마라" exploit을 유발하는 것을 상쇄
+            # grip 0.80→0.00 = progress 0→1, scale 2.0 → max 2.0/step
+            # 실제 시나리오: ~30 step × ~1.0 avg = ~30 총량 < R3(+100)
+            # ══════════════════════════════════════════════════════
+            near_obj = (ee_3d < 0.10) & aok
+            grip_progress = torch.clamp(0.80 - grip, min=0.0) / 0.80
+            r2b_val = near_obj.float() * grip_progress * 2.0
+            rew += r2b_val
+            _r2b_sum += torch.nan_to_num(r2b_val, nan=0.0).sum().item()
 
             # ══════════════════════════════════════════════════════
             # R3: VERIFIED GRASP (+100, 5-step sustained)
@@ -721,10 +725,11 @@ def main():
         cr = _clip_ct / max(_clip_n, 1)
         r2a = _r2_sum / max(S * N, 1)
         r4ba = _r4b_sum / max(S * N, 1)
-        diag2 = (f" | R2avg={r2a:.3f} Opens={_open_ct} ClipR={cr:.3f}"
+        r2ba = _r2b_sum / max(S * N, 1)
+        diag2 = (f" | R2avg={r2a:.3f} R2b={r2ba:.3f} Opens={_open_ct} ClipR={cr:.3f}"
                  f" R4b={r4ba:.3f} R8=({_r8_n}) Drop={_drop_n}")
         _r2_sum = 0.0; _open_ct = 0; _clip_ct = 0; _clip_n = 0
-        _r4b_sum = 0.0; _r8_n = 0; _drop_n = 0
+        _r4b_sum = 0.0; _r8_n = 0; _drop_n = 0; _r2b_sum = 0.0
 
         print(f"  SR={sr:.2%} | G={tg}(env:{teg}) | L={tl} | SL={tsl} | "
               f"EE={fed.min():.3f}({fed.mean():.3f}) | "
