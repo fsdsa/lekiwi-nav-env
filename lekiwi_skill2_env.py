@@ -43,7 +43,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_apply_inverse
+from isaaclab.utils.math import quat_apply, quat_apply_inverse
 
 from lekiwi_robot_cfg import (
     ARM_LIMITS_BAKED_RAD,
@@ -56,6 +56,9 @@ from lekiwi_robot_cfg import (
     WHEEL_JOINT_NAMES,
     WHEEL_RADIUS,
 )
+
+# EE position: local offset from Wrist_Roll_08c_v1 body frame (measured in USD)
+EE_LOCAL_OFFSET = (0.04029, 0.0309, -0.06419)
 
 
 @configclass
@@ -122,12 +125,12 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     object_prim_path: str = "/World/envs/env_.*/Object"
     object_filter_prim_expr: str = "/World/envs/env_.*/Object"
     grasp_gripper_threshold: float = 0.65
-    grasp_contact_threshold: float = 0.5
+    grasp_contact_threshold: float = 0.55
+    lift_contact_threshold: float = 0.55  # lift sustain 판정용 (grasp와 동일)
+    grasp_require_contact: bool = True   # False → skip contact sensor for RL training
     grasp_max_object_dist: float = 0.25
-    grasp_attach_height: float = 0.15
-    grasp_attach_mode: str = "fixed_joint"
-    grasp_joint_break_force: float = 30.0    # v8의 1e8에서 변경 (mass*g*10)
-    grasp_joint_break_torque: float = 30.0
+    grasp_ee_max_dist: float = 0.07  # EE(캘리브레이션 좌표)~물체 중심 거리 < 이 값이면 grasp 가능 (물체 내부 판정)
+    grasp_success_height: float = 0.05       # task_success 판정 높이 (순수 마찰 lift)
     grasp_drop_detect_dist: float = 0.30     # gripper-object 거리 > 이 값이면 drop 판정 (gripper body 중심~물체 중심 자연 오프셋 ~0.18m)
     grasp_timeout_steps: int = 75
 
@@ -177,8 +180,6 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dr_object_dynamic_friction_scale_range: tuple[float, float] = (0.6, 1.5)
 
     # Grasp DR (sim2real gap 핵심)
-    dr_grasp_break_force_range: tuple[float, float] = (15.0, 45.0)
-    dr_grasp_break_torque_range: tuple[float, float] = (15.0, 45.0)
 
     # Observation noise (sim2real: 센서 노이즈 시뮬레이션)
     dr_obs_noise_joint_pos: float = 0.01     # rad — arm joint position noise
@@ -216,6 +217,13 @@ class Skill2Env(DirectRLEnv):
         if len(gripper_ids) != 1:
             raise RuntimeError(f"Expected single gripper joint: {GRIPPER_JOINT_NAME}, got {len(gripper_ids)}")
         self.gripper_idx = int(gripper_ids[0])
+        # EE body index + local offset (grasp 판정용)
+        try:
+            fixed_jaw_ids, _ = self.robot.find_bodies(["Wrist_Roll_08c_v1"])
+            self._fixed_jaw_body_idx = int(fixed_jaw_ids[0])
+        except (IndexError, RuntimeError):
+            self._fixed_jaw_body_idx = -1
+        self._ee_local_offset = torch.tensor(EE_LOCAL_OFFSET, device=self.device).unsqueeze(0)  # (1, 3)
         self.gripper_arm_offset = int(GRIPPER_JOINT_IDX_IN_ARM)
         if self.gripper_arm_offset < 0 or self.gripper_arm_offset >= len(self.arm_idx):
             self.gripper_arm_offset = len(self.arm_idx) - 1
@@ -284,9 +292,7 @@ class Skill2Env(DirectRLEnv):
             self._action_delay_buf = None
         self._cached_metrics: Dict[str, torch.Tensor] | None = None
         self._contact_shape_warned = False
-        self._grasp_attach_mode = str(getattr(self.cfg, "grasp_attach_mode", "fixed_joint")).strip().lower()
-        self._grasp_fixed_joints: dict[tuple[int, int], UsdPhysics.FixedJoint] = {}
-        self._grasp_fixed_joint_warned = False
+        self._physics_grasp = True  # 순수 마찰 grasp (fixed joint 제거됨)
 
         self._dr_base_wheel_stiffness: torch.Tensor | None = None
         self._dr_base_wheel_damping: torch.Tensor | None = None
@@ -305,9 +311,6 @@ class Skill2Env(DirectRLEnv):
         self._dr_object_material_base: dict[str, tuple[float, float]] = {}
         self._arm_action_limits_override: torch.Tensor | None = None
 
-        # Per-env grasp break force/torque (DR용)
-        self._per_env_break_force = torch.full((self.num_envs,), float(self.cfg.grasp_joint_break_force), device=self.device)
-        self._per_env_break_torque = torch.full((self.num_envs,), float(self.cfg.grasp_joint_break_torque), device=self.device)
 
         if self._multi_object:
             if self._num_object_types <= 0 or len(self._object_catalog) == 0:
@@ -480,7 +483,7 @@ class Skill2Env(DirectRLEnv):
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(1.5, 0.0, float(self.cfg.object_height))),
             )
             self.object_rigid = RigidObject(object_cfg)
-            # Single-object bbox 자동 계산
+            # Single-object bbox 자동 계산 + center offset
             try:
                 from pxr import Usd, UsdGeom
                 _stage = Usd.Stage.Open(object_usd)
@@ -495,10 +498,18 @@ class Skill2Env(DirectRLEnv):
                     abs(float(_max[1] - _min[1])) * s,
                     abs(float(_max[2] - _min[2])) * s,
                 ]
+                # USD origin → bbox center offset (local frame, scaled)
+                self._object_bbox_center_local = torch.tensor([
+                    float(_min[0] + _max[0]) * 0.5 * s,
+                    float(_min[1] + _max[1]) * 0.5 * s,
+                    float(_min[2] + _max[2]) * 0.5 * s,
+                ], device=self.device)
                 print(f"  [Object] bbox (scaled): {self._single_object_bbox}")
+                print(f"  [Object] bbox center offset (local): {self._object_bbox_center_local.tolist()}")
             except Exception as e:
                 print(f"  [Object] bbox auto-detect failed: {e}")
                 self._single_object_bbox = None
+                self._object_bbox_center_local = torch.zeros(3, device=self.device)
             contact_cfg = ContactSensorCfg(
                 prim_path=str(self.cfg.gripper_contact_prim_path),
                 update_period=0.0,
@@ -507,8 +518,46 @@ class Skill2Env(DirectRLEnv):
             )
             self.contact_sensor = ContactSensor(contact_cfg)
 
-        ground_cfg = sim_utils.GroundPlaneCfg()
-        ground_cfg.func("/World/ground", ground_cfg)
+        # Ground contact sensors — gripper + wrist가 지면과 접촉하는지 감지
+        # ContactSensor force_matrix_w는 prim_path 1개만 지원 → 센서 2개 생성
+        self.ground_contact_sensor: ContactSensor | None = None
+        self.wrist_ground_contact_sensor: ContactSensor | None = None
+        if str(self.cfg.gripper_contact_prim_path).strip():
+            ground_contact_cfg = ContactSensorCfg(
+                prim_path=str(self.cfg.gripper_contact_prim_path),
+                update_period=0.0,
+                history_length=2,
+                filter_prim_paths_expr=["/World/ground"],
+            )
+            self.ground_contact_sensor = ContactSensor(ground_contact_cfg)
+            # Wrist Roll: gripper prim path에서 body 이름만 교체
+            wrist_prim = str(self.cfg.gripper_contact_prim_path).replace(
+                "Moving_Jaw_08d_v1", "Wrist_Roll_08c_v1")
+            wrist_ground_cfg = ContactSensorCfg(
+                prim_path=wrist_prim,
+                update_period=0.0,
+                history_length=2,
+                filter_prim_paths_expr=["/World/ground"],
+            )
+            self.wrist_ground_contact_sensor = ContactSensor(wrist_ground_cfg)
+
+        # Ground: kinematic rigid cuboid (GPU contact reporting 지원)
+        # GroundPlaneCfg는 static collider로 force_matrix_w 미지원.
+        # Box geometry + RigidBodyAPI(kinematic) → GPU contact generation 지원.
+        # Isaac Lab Issue #1995 공식 워크어라운드.
+        # size: (100, 100, 0.02), z=-0.01 → top surface z=0.0 (기존 동일)
+        ground_cfg = sim_utils.CuboidCfg(
+            size=(100.0, 100.0, 0.02),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                rigid_body_enabled=True,
+                kinematic_enabled=True,
+                disable_gravity=True,
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+            ),
+        )
+        ground_cfg.func("/World/ground", ground_cfg, translation=(0.0, 0.0, -0.01))
 
         light_cfg = sim_utils.DomeLightCfg(intensity=1500.0, color=(0.9, 0.9, 0.9))
         light_cfg.func("/World/Light", light_cfg)
@@ -525,6 +574,10 @@ class Skill2Env(DirectRLEnv):
             self.scene.rigid_objects["object"] = self.object_rigid
         if self.contact_sensor is not None:
             self.scene.sensors["gripper_contact"] = self.contact_sensor
+        if self.ground_contact_sensor is not None:
+            self.scene.sensors["ground_contact"] = self.ground_contact_sensor
+        if self.wrist_ground_contact_sensor is not None:
+            self.scene.sensors["wrist_ground_contact"] = self.wrist_ground_contact_sensor
         # Subclass hook: 추가 rigid object 등록 (clone 후)
         if hasattr(self, "_dest_object_rigid") and self._dest_object_rigid is not None:
             self.scene.rigid_objects["dest_object"] = self._dest_object_rigid
@@ -921,149 +974,6 @@ class Skill2Env(DirectRLEnv):
         imag = quat_d.GetImaginary()
         return Gf.Quatf(float(quat_d.GetReal()), float(imag[0]), float(imag[1]), float(imag[2]))
 
-    def _get_or_create_grasp_fixed_joint(
-        self,
-        env_id: int,
-        object_type: int,
-        gripper_path: str,
-        object_path: str,
-    ) -> UsdPhysics.FixedJoint | None:
-        key = (int(env_id), int(object_type))
-        existing = self._grasp_fixed_joints.get(key)
-        if existing is not None and existing.GetPrim().IsValid():
-            return existing
-
-        stage = self._get_stage()
-        if stage is None:
-            return None
-
-        try:
-            joint_path = Sdf.Path(f"/World/envs/env_{int(env_id)}/GraspFixedJoint_{int(object_type)}")
-            joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
-            if not joint:
-                return None
-        except Exception:
-            return None
-
-        joint.GetBody0Rel().SetTargets([Sdf.Path(gripper_path)])
-        joint.GetBody1Rel().SetTargets([Sdf.Path(object_path)])
-        joint.CreateCollisionEnabledAttr(False)
-        joint.CreateBreakForceAttr(float(self.cfg.grasp_joint_break_force))
-        joint.CreateBreakTorqueAttr(float(self.cfg.grasp_joint_break_torque))
-        joint.CreateJointEnabledAttr(False)
-
-        self._grasp_fixed_joints[key] = joint
-        return joint
-
-    def _attach_grasp_fixed_joint_for_envs(self, env_ids: torch.Tensor):
-        if len(env_ids) == 0:
-            return
-        stage = self._get_stage()
-        if stage is None:
-            return
-
-        for env_id_t in env_ids:
-            env_id = int(env_id_t.item())
-            object_type = int(self.active_object_idx[env_id].item()) if self._multi_object else 0
-            gripper_path = self._gripper_body_prim_path(env_id)
-            object_path = self._object_body_prim_path(env_id, object_type)
-
-            gripper_prim = stage.GetPrimAtPath(gripper_path)
-            object_prim = stage.GetPrimAtPath(object_path)
-            if not gripper_prim.IsValid() or not object_prim.IsValid():
-                if not self._grasp_fixed_joint_warned:
-                    self._grasp_fixed_joint_warned = True
-                    print(
-                        "  [WARN] grasp fixed-joint prim not found. "
-                        f"gripper={gripper_path}, object={object_path}. Falling back to teleport attach."
-                    )
-                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
-                continue
-
-            joint = self._get_or_create_grasp_fixed_joint(
-                env_id=env_id,
-                object_type=object_type,
-                gripper_path=gripper_path,
-                object_path=object_path,
-            )
-            if joint is None:
-                if not self._grasp_fixed_joint_warned:
-                    self._grasp_fixed_joint_warned = True
-                    print("  [WARN] failed to create grasp fixed-joint. Falling back to teleport attach.")
-                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
-                continue
-
-            try:
-                tf_gripper = omni.usd.get_world_transform_matrix(gripper_prim)
-                tf_object = omni.usd.get_world_transform_matrix(object_prim)
-                # Scale이 포함된 transform에서 rotation 추출 시 non-orthonormal 에러 발생
-                # → 3x3 회전부를 orthonormalize하여 scale 제거 후 clean 4x4 재구성
-                def _clean_xform(m4):
-                    t = m4.ExtractTranslation()
-                    r3 = m4.ExtractRotationMatrix()
-                    r3.Orthonormalize()
-                    out = Gf.Matrix4d(1.0)
-                    out.SetRotate(r3)
-                    out.SetTranslateOnly(t)
-                    return out
-                clean_gripper = _clean_xform(tf_gripper)
-                clean_object = _clean_xform(tf_object)
-                local_tf0 = clean_gripper.GetInverse() * clean_object
-                local_pos0 = local_tf0.ExtractTranslation()
-                local_rot0 = self._quatd_to_quatf(local_tf0.ExtractRotationQuat())
-
-                joint.GetLocalPos0Attr().Set(local_pos0)
-                joint.GetLocalRot0Attr().Set(local_rot0)
-                joint.GetLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-                joint.GetLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-                # Per-env break force/torque (DR 적용)
-                joint.CreateBreakForceAttr(self._per_env_break_force[env_id].item())
-                joint.CreateBreakTorqueAttr(self._per_env_break_torque[env_id].item())
-                joint.GetJointEnabledAttr().Set(True)
-            except Exception:
-                if not self._grasp_fixed_joint_warned:
-                    self._grasp_fixed_joint_warned = True
-                    print("  [WARN] failed to configure/enable grasp fixed-joint. Falling back to teleport attach.")
-                self._teleport_attach_for_envs(torch.tensor([env_id], device=self.device, dtype=torch.long))
-
-    def _disable_grasp_fixed_joint_for_envs(self, env_ids: torch.Tensor):
-        if len(env_ids) == 0:
-            return
-        max_object_types = max(int(self._num_object_types), 1)
-        for env_id_t in env_ids:
-            env_id = int(env_id_t.item())
-            for object_type in range(max_object_types):
-                joint = self._grasp_fixed_joints.get((env_id, object_type))
-                if joint is None or not joint.GetPrim().IsValid():
-                    continue
-                joint.GetJointEnabledAttr().Set(False)
-
-    def _teleport_attach_for_envs(self, env_ids: torch.Tensor):
-        if len(env_ids) == 0:
-            return
-        metrics_root = self.robot.data.root_state_w[:, :3]
-        self.object_pos_w[env_ids, :2] = metrics_root[env_ids, :2]
-        self.object_pos_w[env_ids, 2] = metrics_root[env_ids, 2] + float(self.cfg.grasp_attach_height)
-        if self._multi_object and len(self.object_rigids) > 0:
-            for oi, rigid in enumerate(self.object_rigids):
-                oi_mask = self.active_object_idx[env_ids] == oi
-                if not oi_mask.any():
-                    continue
-                ids = env_ids[oi_mask]
-                pose = rigid.data.root_pose_w[ids].clone()
-                pose[:, :3] = self.object_pos_w[ids]
-                pose[:, 3:7] = self.robot.data.root_state_w[ids, 3:7]
-                rigid.write_root_pose_to_sim(pose, env_ids=ids)
-                zero_vel = torch.zeros((len(ids), 6), dtype=torch.float32, device=self.device)
-                rigid.write_root_velocity_to_sim(zero_vel, env_ids=ids)
-        elif self._physics_grasp and self.object_rigid is not None:
-            pose = self.object_rigid.data.root_pose_w[env_ids].clone()
-            pose[:, :3] = self.object_pos_w[env_ids]
-            pose[:, 3:7] = self.robot.data.root_state_w[env_ids, 3:7]
-            self.object_rigid.write_root_pose_to_sim(pose, env_ids=env_ids)
-            zero_vel = torch.zeros((len(env_ids), 6), dtype=torch.float32, device=self.device)
-            self.object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=env_ids)
-
     # ═══════════════════════════════════════════════════════════════════
     #  Domain randomization — v8 그대로 복사
     # ═══════════════════════════════════════════════════════════════════
@@ -1233,16 +1143,6 @@ class Skill2Env(DirectRLEnv):
 
         self._apply_object_mass_randomization(env_ids=env_ids)
 
-        # Grasp break force/torque 랜덤화 (신규)
-        if hasattr(self.cfg, 'dr_grasp_break_force_range'):
-            bf_lo, bf_hi = self.cfg.dr_grasp_break_force_range
-            bt_lo, bt_hi = self.cfg.dr_grasp_break_torque_range
-            self._per_env_break_force[env_ids] = (
-                torch.rand(n, device=self.device) * (bf_hi - bf_lo) + bf_lo
-            )
-            self._per_env_break_torque[env_ids] = (
-                torch.rand(n, device=self.device) * (bt_hi - bt_lo) + bt_lo
-            )
 
     # ═══════════════════════════════════════════════════════════════════
     #  Contact force — v8 그대로 복사
@@ -1251,6 +1151,9 @@ class Skill2Env(DirectRLEnv):
     def _contact_force_per_env(self) -> torch.Tensor:
         force = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         if not self._physics_grasp or self.contact_sensor is None:
+            if not getattr(self, "_contact_debug_printed", False):
+                self._contact_debug_printed = True
+                print(f"  [CONTACT_DBG] early return: physics_grasp={self._physics_grasp}, sensor={self.contact_sensor}")
             return force
 
         def _warn_shape_once(name: str, tensor: torch.Tensor):
@@ -1267,21 +1170,45 @@ class Skill2Env(DirectRLEnv):
         if force_matrix is not None:
             mag = torch.norm(force_matrix, dim=-1)
             mag = mag.reshape(mag.shape[0], -1).sum(dim=-1)
+            if not getattr(self, "_contact_debug_printed", False):
+                self._contact_debug_printed = True
+                print(f"  [CONTACT_DBG] force_matrix path: fm.shape={tuple(force_matrix.shape)}, mag.shape={tuple(mag.shape)}, mag.max={mag.max().item():.4f}, mag.sum={mag.sum().item():.4f}")
             if mag.shape[0] == self.num_envs:
                 return mag
             if mag.numel() % self.num_envs == 0:
                 return mag.reshape(self.num_envs, -1).sum(dim=-1)
             _warn_shape_once("force_matrix_w", force_matrix)
 
-        net = self.contact_sensor.data.net_forces_w
-        if net is not None:
-            mag = torch.norm(net, dim=-1)
-            mag = mag.reshape(mag.shape[0], -1).sum(dim=-1)
-            if mag.shape[0] == self.num_envs:
-                return mag
-            if mag.numel() % self.num_envs == 0:
-                return mag.reshape(self.num_envs, -1).sum(dim=-1)
-            _warn_shape_once("net_forces_w", net)
+        # net_forces_w fallback 제거: 필터링 안 된 값이라 바닥 접촉 포함됨
+        # force_matrix_w가 None이면 0 반환 (아래 fallback)
+
+        if not getattr(self, "_contact_debug_printed", False):
+            self._contact_debug_printed = True
+            print(f"  [CONTACT_DBG] fallback zero: force_matrix={force_matrix is not None}, net={net is not None}")
+        return force
+
+    def _ground_contact_force_per_env(self) -> torch.Tensor:
+        """Gripper+Wrist ground contact force per env. 0 if sensors unavailable."""
+        force = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        for sensor in [self.ground_contact_sensor, self.wrist_ground_contact_sensor]:
+            if sensor is None:
+                continue
+            fm = sensor.data.force_matrix_w
+            if fm is not None:
+                mag = torch.norm(fm, dim=-1).reshape(fm.shape[0], -1).sum(dim=-1)
+                if mag.shape[0] == self.num_envs:
+                    force += mag
+                    continue
+                if mag.numel() % self.num_envs == 0:
+                    force += mag.reshape(self.num_envs, -1).sum(dim=-1)
+                    continue
+            net = sensor.data.net_forces_w
+            if net is not None:
+                mag = torch.norm(net, dim=-1)
+                if mag.ndim > 1:
+                    mag = mag.reshape(mag.shape[0], -1).sum(dim=-1)
+                if mag.shape[0] == self.num_envs:
+                    force += mag
         return force
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1382,6 +1309,21 @@ class Skill2Env(DirectRLEnv):
         elif self._physics_grasp and self.object_rigid is not None:
             self.object_pos_w[:] = self.object_rigid.data.root_pos_w
 
+        # root_pos_w → bbox center 보정 (USD origin이 물체 바닥일 수 있으므로)
+        bbox_offset = getattr(self, '_object_bbox_center_local', None)
+        if bbox_offset is not None and bbox_offset.any():
+            if self._multi_object and len(self.object_rigids) > 0:
+                for oi, rigid in enumerate(self.object_rigids):
+                    mask = self.active_object_idx == oi
+                    if not mask.any():
+                        continue
+                    ids = mask.nonzero(as_tuple=False).squeeze(-1)
+                    obj_quat = rigid.data.root_quat_w[ids]
+                    self.object_pos_w[ids] += quat_apply(obj_quat, bbox_offset.expand(ids.shape[0], -1))
+            elif self._physics_grasp and self.object_rigid is not None:
+                obj_quat = self.object_rigid.data.root_quat_w
+                self.object_pos_w += quat_apply(obj_quat, bbox_offset.unsqueeze(0).expand_as(self.object_pos_w))
+
         # Dest object 위치 갱신 (배경 물체, rigid body이므로 밀릴 수 있음)
         if self._dest_object_rigid is not None:
             self.dest_object_pos_w[:] = self._dest_object_rigid.data.root_pos_w
@@ -1449,19 +1391,32 @@ class Skill2Env(DirectRLEnv):
             )
             close_enough = metrics["object_dist"] < adaptive_dist
 
-            can_grasp = gripper_closed & has_contact & close_enough & (~self.object_grasped)
+            # EE offset 기반 거리 체크: EE 위치가 물체에 충분히 가까운지
+            if self._fixed_jaw_body_idx >= 0:
+                wrist_pos = self.robot.data.body_pos_w[:, self._fixed_jaw_body_idx, :]
+                wrist_quat = self.robot.data.body_quat_w[:, self._fixed_jaw_body_idx, :]
+                ee_pos = wrist_pos + quat_apply(wrist_quat, self._ee_local_offset.expand_as(wrist_pos))
+                ee_to_obj = torch.norm(ee_pos - self.object_pos_w, dim=-1)
+                between_jaws = ee_to_obj < float(self.cfg.grasp_ee_max_dist)
+            else:
+                between_jaws = close_enough  # fallback: body 못 찾으면 기존 로직
+
+            if self.cfg.grasp_require_contact:
+                can_grasp = gripper_closed & has_contact & between_jaws & (~self.object_grasped)
+            else:
+                can_grasp = gripper_closed & between_jaws & (~self.object_grasped)
 
         newly_grasped = can_grasp
         if newly_grasped.any():
             self.object_grasped[newly_grasped] = True
             self.just_grasped[newly_grasped] = True
-            # Pure friction grasp: attach 없음 — 마찰만으로 유지
 
-        # Lift 성공 판정
+        # Lift 성공 판정 (순수 마찰: 실제 물리적 lift 필요)
         if self.object_grasped.any():
             obj_z = self.object_pos_w[:, 2]
             env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
-            lifted = self.object_grasped & ((obj_z - env_z) > self.cfg.grasp_attach_height)
+            success_h = self.cfg.grasp_success_height
+            lifted = self.object_grasped & ((obj_z - env_z) > success_h)
             self.task_success[lifted] = True
 
 
@@ -1706,8 +1661,34 @@ class Skill2Env(DirectRLEnv):
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         truncated = self.task_success | time_out
 
-        # Logging
+        # ── RESET 진단 ──
+        if (terminated.any() or truncated.any()) and not getattr(self, "_reset_dbg_printed", False):
+            self._reset_dbg_printed = True
+            n_oob = out_of_bounds.sum().item()
+            n_fell = fell.sum().item()
+            n_ts = self.task_success.sum().item()
+            n_to = time_out.sum().item()
+            ep_len = self.episode_length_buf.max().item()
+            print(f"  [RESET_DBG] out_of_bounds={n_oob} fell={n_fell} task_success={n_ts} time_out={n_to} ep_len={ep_len}/{self.max_episode_length}")
+        if not (terminated.any() or truncated.any()):
+            self._reset_dbg_printed = False
+
+        # Logging (saved BEFORE auto-reset clears task_success)
         self.extras["task_success_rate"] = self.task_success.float().mean()
+        self.extras["task_success_mask"] = self.task_success.clone()
+        self.extras["just_grasped_mask"] = self.just_grasped.clone()
+        self.extras["object_grasped_mask"] = self.object_grasped.clone()
+        self.extras["object_height_mask"] = (self.object_pos_w[:, 2] - self.scene.env_origins[:, 2]).clone()
+        # Contact sensor: lift sustain 판정용 (teleop 0.65와 동일 threshold)
+        if self.cfg.grasp_require_contact:
+            _cf = self._contact_force_per_env()
+            self.extras["has_contact_mask"] = (_cf > float(self.cfg.lift_contact_threshold)).clone()
+            self.extras["contact_force_raw"] = _cf.clone()
+            self.extras["ground_contact_force_raw"] = self._ground_contact_force_per_env().clone()
+        else:
+            self.extras["has_contact_mask"] = self.object_grasped.clone()  # fallback
+            self.extras["contact_force_raw"] = torch.zeros(self.num_envs, device=self.device)
+            self.extras["ground_contact_force_raw"] = self._ground_contact_force_per_env().clone()
 
         # Curriculum 업데이트
         if self.task_success.any() or time_out.any():
@@ -1741,10 +1722,6 @@ class Skill2Env(DirectRLEnv):
         num = len(env_ids)
         if num == 0:
             return
-
-        # Grasp joint 해제 (v8 그대로)
-        if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
-            self._disable_grasp_fixed_joint_for_envs(env_ids)
 
         # Root reset — XY 위치 설정 (yaw는 물체 배치 후 결정)
         default_root_state = self.robot.data.default_root_state[env_ids].clone()
