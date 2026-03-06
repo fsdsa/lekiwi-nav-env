@@ -33,7 +33,7 @@ Changes from v6:
 
 Everything else identical to v6:
   R1  Gripper open milestone     +10    one-time, gates R2/R3
-  R2  EE proximity (3D)          ×3     tanh σ=0.20, absolute (v7.1 changed)
+  R2  EE proximity (3D)          ×3     tanh σ=0.20, budget=80 per approach
   R3  Verified grasp             +100   one-time, 5-step sustained (env sticky)
   R4  Lift height                ×200   per-step, sustain≥3, grip closed, ee<0.20
   R5  Sustained lift bonus       ×50    per-step after 15 steps held
@@ -54,6 +54,8 @@ V7.1 — Drop detection & re-grasp
   R2를 delta-based base-subtraction에서 absolute EE proximity로 교체:
   - 기존: (p_ee_xy - ee_xy) - (p_bs_xy - bs_xy) → BC arm+base 동시 이동 시 ~0
   - 신규: (1 - tanh(ee_3d / 0.20)) × 3.0 → 가까울수록 강한 per-step 보상
+  - cumulative budget=80: approach당 최대 80까지만 누적 (R3 +100 > R2 max)
+    → 물체 옆에 가만히 있는 exploit 방지, grasp로 넘어가는 게 항상 이득
 """
 from __future__ import annotations
 
@@ -372,6 +374,9 @@ def main():
     DROP_OH_THRESH = 0.04   # 약통 서있을 때 0.033, 넘어졌을 때 0.020
     DROP_EE_THRESH = 0.15   # 물체 들고 있으면 ee_3d < 0.15 이므로 정상 파지와 구분
 
+    # R2 budget: approach당 최대 누적 보상 (R3 +100보다 작아야 grasp 동기 유지)
+    R2_MAX_BUDGET = 80.0
+
     # v7 NEW: lifted pose target (proper carry position, not arm-straight-up)
     LIFTED_POSE = torch.tensor([-0.02, -1.00, 1.00, 0.30, -0.55], device=dev)
 
@@ -382,6 +387,7 @@ def main():
     ms_sl   = torch.zeros(N, dtype=torch.bool, device=dev)   # soft-lifted
     g_sus   = torch.zeros(N, dtype=torch.long, device=dev)   # grasp sustain counter
     l_sus   = torch.zeros(N, dtype=torch.long, device=dev)   # lift sustain counter
+    r2_bud  = torch.zeros(N, device=dev)                     # R2 cumulative budget spent
 
     # Diagnostics
     r_gr     = torch.zeros(N, dtype=torch.long, device=dev)
@@ -432,6 +438,7 @@ def main():
         ms_go[mask] = False; ms_gr[mask] = False
         ms_li[mask] = False; ms_sl[mask] = False
         g_sus[mask] = 0; l_sus[mask] = 0
+        r2_bud[mask] = 0.0
 
     # ── Print config ──
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -445,7 +452,7 @@ def main():
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     print(f"  rew_norm={'ON' if args.normalize_reward else 'OFF'}")
-    print(f"  R1=GripOpen(+10) R2=EEprox(×3,tanh σ=0.20)")
+    print(f"  R1=GripOpen(+10) R2=EEprox(×3,tanh σ=0.20,budget={R2_MAX_BUDGET})")
     print(f"  R3=VGrasp(+100,{GV}s) R4=Lift(×200,sus≥{LMS},ee<{HELD_EE_MAX})")
     print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0) [v7 NEW]")
     print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
@@ -462,7 +469,7 @@ def main():
         next_obs = env.reset(); dp.reset()
         next_done = torch.zeros(N, device=dev)
         ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_()
-        g_sus.zero_(); l_sus.zero_()
+        g_sus.zero_(); l_sus.zero_(); r2_bud.zero_()
 
         # Warmup
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
@@ -537,6 +544,7 @@ def main():
                 ms_sl[dropped] = False
                 g_sus[dropped] = 0
                 l_sus[dropped] = 0
+                r2_bud[dropped] = 0.0  # 새 approach phase → R2 budget 리셋
                 _drop_n += dropped.sum().item()
 
             # ══════════════════════════════════════════════════════
@@ -547,13 +555,17 @@ def main():
             ms_go |= nop
 
             # ══════════════════════════════════════════════════════
-            # R2: EE PROXIMITY (tanh σ=0.20, absolute)
-            # [v7.1] delta base-subtraction → absolute proximity
-            # BC arm+base 동시 이동 시 delta ≈ 0 문제 해결
+            # R2: EE PROXIMITY (tanh σ=0.20, absolute, budgeted)
+            # [v7.1] absolute proximity + cumulative budget
+            # budget < R3(+100) → grasp가 항상 이득
+            # budget 소진 후 유일한 보상 경로 = grasp → lift
             # ══════════════════════════════════════════════════════
             aok = (~ms_gr) & ms_go
             ee_prox = 1.0 - torch.tanh(ee_3d / 0.20)
-            _r2_val = aok.float() * ee_prox * 3.0
+            r2_raw = aok.float() * ee_prox * 3.0
+            r2_remaining = torch.clamp(R2_MAX_BUDGET - r2_bud, min=0.0)
+            _r2_val = torch.min(r2_raw, r2_remaining)
+            r2_bud += _r2_val
             rew += _r2_val
             _r2_sum += torch.nan_to_num(_r2_val, nan=0.0).sum().item()
             _open_ct += nop.sum().item()
@@ -726,7 +738,7 @@ def main():
                     "iteration": gi, "global_step": gs, "args": vars(args)},
                     save_dir / "resip_best_grasp.pt")
                 print(f"  ★ Best G={tg}")
-            if gi % 50 == 0 or gi <= 10:
+            if gi % 10 == 0 or gi <= 10:
                 torch.save({"residual_policy_state_dict": rpol.state_dict(),
                     "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
                     "iteration": gi, "args": vars(args)},
