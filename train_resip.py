@@ -34,7 +34,7 @@ Changes from v6:
 Everything else identical to v6:
   R1  Gripper open milestone     +10    one-time, gates R2/R3
   R2  EE proximity (3D)          ×3     tanh σ=0.20, budget=80
-  R2b Gripper close near object  ×2.0   ee<0.10, grip progress
+  R2b Gripper open near penalty  -1.0   ee<0.15, grip>0.70
   R3  Verified grasp             +100   one-time, 5-step sustained (env sticky)
   R4  Lift height                ×200   per-step, sustain≥3, grip closed, ee<0.20
   R5  Sustained lift bonus       ×50    per-step after 15 steps held
@@ -57,7 +57,7 @@ V7.1 — Drop detection & re-grasp
   - 신규: (1 - tanh(ee_3d / 0.20)) × 3.0 → 가까울수록 강한 per-step 보상
   - cumulative budget=80: approach당 최대 80까지만 누적 (R3 +100 > R2 max)
     → 물체 옆에 가만히 있는 exploit 방지, grasp로 넘어가는 게 항상 이득
-  - R2b: 물체 근처(ee<0.10)에서 gripper 닫기 진행도 × 2.0
+  - R2b: 물체 근처(ee<0.15)에서 gripper 열림 페널티 -1.0/step
     → R2가 "가까이 있되 잡지 마라" exploit을 유발하는 것을 상쇄
     → grip close → contact → R3(+100) 자연 전이
 """
@@ -457,7 +457,7 @@ def main():
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     print(f"  rew_norm={'ON' if args.normalize_reward else 'OFF'}")
-    print(f"  R1=GripOpen(+10) R2=EEprox(×3,budget={R2_MAX_BUDGET}) R2b=GripClose(×2.0,ee<0.10)")
+    print(f"  R1=GripOpen(+10) R2=EEprox(×3,budget={R2_MAX_BUDGET}) R2b=GripOpenPen(-1.0,ee<0.15)")
     print(f"  R3=VGrasp(+100,{GV}s) R4=Lift(×200,sus≥{LMS},ee<{HELD_EE_MAX})")
     print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0) [v7 NEW]")
     print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
@@ -574,15 +574,13 @@ def main():
             _open_ct += nop.sum().item()
 
             # ══════════════════════════════════════════════════════
-            # R2b: GRIPPER CLOSE NEAR OBJECT (×2.0)
-            # 물체 근처(ee<0.10)에서 그리퍼 닫는 진행도에 비례
-            # R2가 "가까이 있되 잡지 마라" exploit을 유발하는 것을 상쇄
-            # grip 0.80→0.00 = progress 0→1, scale 2.0 → max 2.0/step
-            # 실제 시나리오: ~30 step × ~1.0 avg = ~30 총량 < R3(+100)
+            # R2b: GRIPPER OPEN NEAR OBJECT PENALTY (-1.0)
+            # 물체 근처(ee<0.15)에서 그리퍼 열려있으면 매 step -1.0
+            # 보상은 발견해야 작동하지만 페널티는 즉시 느낌
+            # 접근+열림: R2(80)+R2b(-200)=-120 vs 접근+닫기+grasp: R2(80)+R3(100)=+180
             # ══════════════════════════════════════════════════════
-            near_obj = (ee_3d < 0.10) & aok
-            grip_progress = torch.clamp(0.80 - grip, min=0.0) / 0.80
-            r2b_val = near_obj.float() * grip_progress * 2.0
+            near_open = (ee_3d < 0.15) & (grip > 0.70) & aok
+            r2b_val = near_open.float() * (-1.0)
             rew += r2b_val
             _r2b_sum += torch.nan_to_num(r2b_val, nan=0.0).sum().item()
 
