@@ -1062,10 +1062,12 @@ def main():
                         extra = f"heading={heading_to_home:+.2f}rad"
                     elif current_phase == 3:
                         extra = f"steps={len(phase3_obs)}"
+                    obj_z = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
                     print(
                         f"  [{conn}] Phase-{current_phase}({phase_names[current_phase]}) | "
                         f"home={home_dist:.2f}m | "
                         f"grip={grip_sim:+.3f} {'GRASPED' if grasped else ''} | "
+                        f"objZ={obj_z:.3f} | "
                         f"{extra} | "
                         f"s2={skill2_saved} s3={skill3_saved}/{max_demos}"
                     )
@@ -1177,11 +1179,12 @@ def main():
                     grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
                     wr_raw = arm_pos_rad[4] if arm_pos_rad is not None else float('nan')
                     wr_sim = env.robot.data.joint_pos[0, env.arm_idx[4]].item()
+                    obj_z = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
                     print(
                         f"  [{conn_str}] | "
                         f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
                         f"obj=({target_pos[0]:+.2f},{target_pos[1]:+.2f}) | "
-                        f"dist={dist:.2f}m | "
+                        f"dist={dist:.2f}m | objZ={obj_z:.3f} | "
                         f"steps={len(episode_obs)} | "
                         f"saved={saved_count}/{max_demos}\n"
                         f"    grip: raw={grip_raw:+.4f} action={grip_action:+.4f} sim={grip_sim:+.4f}\n"
