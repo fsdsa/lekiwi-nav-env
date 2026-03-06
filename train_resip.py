@@ -29,37 +29,32 @@ v6 실기 검증 결과 발견된 두 가지 문제:
 
 Changes from v6:
   R4b Lifted pose approach       ×30    Gaussian σ=2.0, per-step during lift
-  R8  Gripper-ground contact     −5.0   gcf sensor, pre-grasp only
-
-Everything else identical to v6:
-  R1  Gripper open milestone     +10    one-time, gates R2/R3
-  R2  EE proximity (3D)          ×3     tanh σ=0.20, budget=80
-  R2b Gripper open near penalty  -1.0   ee<0.15, grip>0.70
-  R3  Verified grasp             +100   one-time, 5-step sustained (env sticky)
-  R4  Lift height                ×200   per-step, sustain≥3, grip closed, ee<0.20
-  R5  Sustained lift bonus       ×50    per-step after 15 steps held
-  R6  Soft-lift milestone        +100   one-time after 15 steps held
-  R7  Time penalty               −0.01
+  R8  Gripper-ground contact     −5.0   gcf sensor
 
 ═══════════════════════════════════════════════════════════════════════════
-V7.1 — Drop detection & re-grasp
+V7.2 — Milestone-only pre-grasp (per-step approach 전면 제거)
 ═══════════════════════════════════════════════════════════════════════════
 
-  물체를 잡은 후 떨어뜨리면(oh<0.04 & ee_3d>0.15):
-  - R3 보상 회수 (−100)
-  - env.object_grasped sticky 리셋
-  - milestone 리셋 (ms_gr, ms_li, ms_sl, g_sus, l_sus)
-  - R2 재활성화 → 재접근 → 재파지(+100) → 재lift 경로 확보
-  - ms_go는 유지 (그리퍼 열기는 이미 학습됨)
+v7/v7.1 실패 교훈:
+  - 모든 per-step approach 보상은 "잡지 마라" exploit을 유발
+    (budget, floor, penalty 전부 실패)
+  - R1 gripper-open 보상이 residual에게 "열어라"를 가르침
+  - Residual이 BC의 gripper-close를 적극 방해
 
-  R2를 delta-based base-subtraction에서 absolute EE proximity로 교체:
-  - 기존: (p_ee_xy - ee_xy) - (p_bs_xy - bs_xy) → BC arm+base 동시 이동 시 ~0
-  - 신규: (1 - tanh(ee_3d / 0.20)) × 3.0 → 가까울수록 강한 per-step 보상
-  - cumulative budget=80: approach당 최대 80까지만 누적 (R3 +100 > R2 max)
-    → 물체 옆에 가만히 있는 exploit 방지, grasp로 넘어가는 게 항상 이득
-  - R2b: 물체 근처(ee<0.15)에서 gripper 열림 페널티 -1.0/step
-    → R2가 "가까이 있되 잡지 마라" exploit을 유발하는 것을 상쇄
-    → grip close → contact → R3(+100) 자연 전이
+해결: pre-grasp는 one-time milestone만, per-step 보상은 lift 이후만
+  R1  Approach milestone    +30   one-time, ee_3d < 0.15
+  R2  Close milestone       +30   one-time, ee_3d < 0.10 & grip < 0.65
+  R3  Verified grasp        +100  one-time, 5-step sustained
+  R4  Lift height           ×200  per-step (grasp 후)
+  R4b Lifted pose           ×30   per-step (grasp 후)
+  R5  Sustained lift bonus  ×50   per-step (15+ steps held)
+  R6  Soft-lift milestone   +100  one-time
+  R7  Time penalty          −0.01
+  R8  Ground contact        −5.0
+  DROP: oh<0.04 & ee>0.15  −100  milestone reset
+
+핵심: pre-grasp per-step 보상 = 0 → residual이 BC를 방해할 이유 없음
+  BC가 approach+grasp, residual은 정확도 보정 + lift에 집중
 """
 from __future__ import annotations
 
@@ -69,7 +64,7 @@ import os
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Args
 # ═══════════════════════════════════════════════════════════════════════════════
-parser = argparse.ArgumentParser(description="ResiP v7.1")
+parser = argparse.ArgumentParser(description="ResiP v7.2")
 
 parser.add_argument("--bc_checkpoint", type=str, required=True)
 parser.add_argument("--skill", type=str, required=True,
@@ -378,20 +373,17 @@ def main():
     DROP_OH_THRESH = 0.04   # 약통 서있을 때 0.033, 넘어졌을 때 0.020
     DROP_EE_THRESH = 0.15   # 물체 들고 있으면 ee_3d < 0.15 이므로 정상 파지와 구분
 
-    # R2 budget: approach당 최대 누적 보상 (R3 +100보다 작아야 grasp 동기 유지)
-    R2_MAX_BUDGET = 80.0
-
     # v7 NEW: lifted pose target (proper carry position, not arm-straight-up)
     LIFTED_POSE = torch.tensor([-0.02, -1.00, 1.00, 0.30, -0.55], device=dev)
 
     # Per-env state
-    ms_go   = torch.zeros(N, dtype=torch.bool, device=dev)   # gripper opened
+    ms_app  = torch.zeros(N, dtype=torch.bool, device=dev)   # approach milestone (ee<0.15)
+    ms_cls  = torch.zeros(N, dtype=torch.bool, device=dev)   # close milestone (ee<0.10 & grip<0.65)
     ms_gr   = torch.zeros(N, dtype=torch.bool, device=dev)   # grasped (verified)
     ms_li   = torch.zeros(N, dtype=torch.bool, device=dev)   # lifted
     ms_sl   = torch.zeros(N, dtype=torch.bool, device=dev)   # soft-lifted
     g_sus   = torch.zeros(N, dtype=torch.long, device=dev)   # grasp sustain counter
     l_sus   = torch.zeros(N, dtype=torch.long, device=dev)   # lift sustain counter
-    r2_bud  = torch.zeros(N, device=dev)                     # R2 cumulative budget spent
 
     # Diagnostics
     r_gr     = torch.zeros(N, dtype=torch.long, device=dev)
@@ -411,14 +403,13 @@ def main():
     r_bls    = torch.zeros(1, device=dev)   # base dist at lift sum
     r_bln    = torch.zeros(1, dtype=torch.long, device=dev)
     _ldbg    = 0
-    _r2_sum  = 0.0    # R2 reward accumulator
-    _open_ct = 0      # ms_go trigger count
     _clip_ct = 0      # residual clamp hit count
     _clip_n  = 0      # total samples for clip rate
-    _r4b_sum = 0.0    # v7 NEW: R4b reward sum
-    _r8_n    = 0      # v7 NEW: R8 ground contact count
-    _drop_n  = 0      # v7.1: drop detection count
-    _r2b_sum = 0.0    # R2b grip close reward sum
+    _r4b_sum = 0.0    # R4b reward sum
+    _r8_n    = 0      # R8 ground contact count
+    _drop_n  = 0      # drop detection count
+    _app_ct  = 0      # R1 approach milestone count
+    _cls_ct  = 0      # R2 close milestone count
 
     # ── Helpers ──
     def ee_pos():
@@ -440,10 +431,9 @@ def main():
         return torch.nan_to_num(d, nan=1.0)
 
     def reset_ep(mask):
-        ms_go[mask] = False; ms_gr[mask] = False
-        ms_li[mask] = False; ms_sl[mask] = False
+        ms_app[mask] = False; ms_cls[mask] = False
+        ms_gr[mask] = False; ms_li[mask] = False; ms_sl[mask] = False
         g_sus[mask] = 0; l_sus[mask] = 0
-        r2_bud[mask] = 0.0
 
     # ── Print config ──
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -452,17 +442,17 @@ def main():
     next_obs = env.reset(); next_done = torch.zeros(N, device=dev); dp.reset()
 
     print(f"\n{'='*60}")
-    print(f"  ResiP v7.1 — {args.skill}")
+    print(f"  ResiP v7.2 — {args.skill}")
     print(f"  N={N} S={S} B={B} iters={NI}")
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     print(f"  rew_norm={'ON' if args.normalize_reward else 'OFF'}")
-    print(f"  R1=GripOpen(+10) R2=EEprox(×3,budget={R2_MAX_BUDGET}) R2b=GripOpenPen(-1.0,ee<0.15)")
+    print(f"  R1=Approach(+30,ee<0.15) R2=Close(+30,ee<0.10,grip<0.65)")
     print(f"  R3=VGrasp(+100,{GV}s) R4=Lift(×200,sus≥{LMS},ee<{HELD_EE_MAX})")
-    print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0) [v7 NEW]")
+    print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0)")
     print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
-    print(f"  R8=GCF({args.r8_penalty}) [v7 NEW]")
-    print(f"  DROP: oh<{DROP_OH_THRESH} & ee>{DROP_EE_THRESH} → -100, milestone reset [v7.1]")
+    print(f"  R8=GCF({args.r8_penalty})")
+    print(f"  DROP: oh<{DROP_OH_THRESH} & ee>{DROP_EE_THRESH} → -100, milestone reset")
     print(f"  warmup: {args.warmup_steps_initial}→{args.warmup_steps_final}/{args.warmup_decay_iters}")
     print(f"{'='*60}\n")
 
@@ -473,8 +463,8 @@ def main():
 
         next_obs = env.reset(); dp.reset()
         next_done = torch.zeros(N, device=dev)
-        ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_()
-        g_sus.zero_(); l_sus.zero_(); r2_bud.zero_()
+        ms_app.zero_(); ms_cls.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_()
+        g_sus.zero_(); l_sus.zero_()
 
         # Warmup
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
@@ -532,63 +522,45 @@ def main():
             rew = torch.zeros(N, device=dev)
 
             # ══════════════════════════════════════════════════════
-            # DROP DETECTION & MILESTONE RESET (v7.1)
-            # 물체를 잡은 후(ms_gr=True) 떨어뜨림을 감지:
-            #   oh < 0.04: 물체가 바닥으로 돌아감 (서있으면 0.033, 넘어지면 0.020)
-            #   ee_3d > 0.15: 그리퍼가 물체에서 멀어짐 (정상 파지 중 불가능)
+            # DROP DETECTION & MILESTONE RESET
             # ══════════════════════════════════════════════════════
             dropped = ms_gr & (oh < DROP_OH_THRESH) & (ee_3d > DROP_EE_THRESH)
             if dropped.any():
-                # R3 보상 회수
                 rew[dropped] -= 100.0
-                # env sticky object_grasped 리셋 (안 하면 g_sus가 바로 올라감)
                 env.env.object_grasped[dropped] = False
-                # milestone 리셋 (ms_go는 유지: 그리퍼 열기는 이미 학습됨)
+                ms_app[dropped] = False
+                ms_cls[dropped] = False
                 ms_gr[dropped] = False
                 ms_li[dropped] = False
                 ms_sl[dropped] = False
                 g_sus[dropped] = 0
                 l_sus[dropped] = 0
-                r2_bud[dropped] = 0.0  # 새 approach phase → R2 budget 리셋
                 _drop_n += dropped.sum().item()
 
             # ══════════════════════════════════════════════════════
-            # R1: GRIPPER OPEN MILESTONE (+10)
+            # R1: APPROACH MILESTONE (+30, one-time)
+            # ee_3d < 0.15에 처음 도달하면 +30
+            # one-time이라 farming 불가, BC approach 보조
             # ══════════════════════════════════════════════════════
-            nop = (grip > 0.8) & (~ms_go) & (~ms_gr)
-            rew += nop.float() * 10.0
-            ms_go |= nop
+            app_ok = (ee_3d < 0.15) & (~ms_app) & (~ms_gr)
+            rew += app_ok.float() * 30.0
+            ms_app |= app_ok
+            _app_ct += app_ok.sum().item()
 
             # ══════════════════════════════════════════════════════
-            # R2: EE PROXIMITY (tanh σ=0.20, budgeted)
-            # 물체에 가까울수록 보상, budget=80으로 총량 제한
+            # R2: CLOSE MILESTONE (+30, one-time)
+            # ee_3d < 0.10 & grip < 0.65에 처음 도달하면 +30
+            # R1→R3 사이 bridge: "가까이 + 닫기" = grasp 직전
             # ══════════════════════════════════════════════════════
-            aok = (~ms_gr) & ms_go
-            ee_prox = 1.0 - torch.tanh(ee_3d / 0.20)
-            r2_raw = aok.float() * ee_prox * 3.0
-            r2_remaining = torch.clamp(R2_MAX_BUDGET - r2_bud, min=0.0)
-            r2_budgeted = torch.min(r2_raw, r2_remaining)
-            r2_bud += r2_budgeted
-            rew += r2_budgeted
-            _r2_sum += torch.nan_to_num(r2_budgeted, nan=0.0).sum().item()
-            _open_ct += nop.sum().item()
-
-            # ══════════════════════════════════════════════════════
-            # R2b: GRIPPER OPEN NEAR OBJECT PENALTY (-1.0)
-            # 물체 근처(ee<0.15)에서 그리퍼 열려있으면 매 step -1.0
-            # 보상은 발견해야 작동하지만 페널티는 즉시 느낌
-            # 접근+열림: R2(80)+R2b(-200)=-120 vs 접근+닫기+grasp: R2(80)+R3(100)=+180
-            # ══════════════════════════════════════════════════════
-            near_open = (ee_3d < 0.15) & (grip > 0.70) & aok
-            r2b_val = near_open.float() * (-1.0)
-            rew += r2b_val
-            _r2b_sum += torch.nan_to_num(r2b_val, nan=0.0).sum().item()
+            cls_ok = (ee_3d < 0.10) & (grip < 0.65) & (~ms_cls) & (~ms_gr)
+            rew += cls_ok.float() * 30.0
+            ms_cls |= cls_ok
+            _cls_ct += cls_ok.sum().item()
 
             # ══════════════════════════════════════════════════════
             # R3: VERIFIED GRASP (+100, 5-step sustained)
-            # (v6 방식: env sticky object_grasped 사용)
             # ══════════════════════════════════════════════════════
-            gc = eg & ms_go & (~ms_gr)
+            gc = eg & (~ms_gr)
             g_sus[gc] += 1
             g_sus[~gc & (~ms_gr)] = 0
             r_mgs = torch.max(r_mgs, g_sus)
@@ -621,12 +593,10 @@ def main():
 
             # ══════════════════════════════════════════════════════
             # R4b: LIFTED POSE APPROACH (Gaussian σ=2.0)
-            # [v7 NEW] 물체를 든 상태에서 하늘로 팔을 쭉 뻗는 대신
-            # 적절한 carry pose를 유지하도록 유도
             # ══════════════════════════════════════════════════════
             arm_joints = env.env.robot.data.joint_pos[:, :5]
             joint_err = torch.norm(arm_joints - LIFTED_POSE, dim=-1)
-            pose_sim = torch.exp(-(joint_err ** 2) / 8.0)   # σ=2.0 → /8.0
+            pose_sim = torch.exp(-(joint_err ** 2) / 8.0)
             r4b_r = ms_gr.float() * held.float() * lok.float() * pose_sim * args.r4b_scale
             rew += r4b_r
             _r4b_sum += r4b_r.sum().item()
@@ -653,8 +623,6 @@ def main():
 
             # ══════════════════════════════════════════════════════
             # R8: GRIPPER-GROUND CONTACT PENALTY
-            # [v7 NEW] 바닥을 그리퍼로 밀면서 위치를 잡는 행동 억제
-            # 물체가 5cm 이상 안 올라갔으면 바닥 접촉 시 페널티
             # ══════════════════════════════════════════════════════
             grip_on_ground = (gcf > 1.0) & (oh < 0.05)
             rew += grip_on_ground.float() * args.r8_penalty
@@ -721,13 +689,12 @@ def main():
 
         fps = S * N / max(time.time() - it0, 1e-6)
         cr = _clip_ct / max(_clip_n, 1)
-        r2a = _r2_sum / max(S * N, 1)
         r4ba = _r4b_sum / max(S * N, 1)
-        r2ba = _r2b_sum / max(S * N, 1)
-        diag2 = (f" | R2avg={r2a:.3f} R2b={r2ba:.3f} Opens={_open_ct} ClipR={cr:.3f}"
+        diag2 = (f" | App={_app_ct} Cls={_cls_ct} ClipR={cr:.3f}"
                  f" R4b={r4ba:.3f} R8=({_r8_n}) Drop={_drop_n}")
-        _r2_sum = 0.0; _open_ct = 0; _clip_ct = 0; _clip_n = 0
-        _r4b_sum = 0.0; _r8_n = 0; _drop_n = 0; _r2b_sum = 0.0
+        _clip_ct = 0; _clip_n = 0
+        _r4b_sum = 0.0; _r8_n = 0; _drop_n = 0
+        _app_ct = 0; _cls_ct = 0
 
         print(f"  SR={sr:.2%} | G={tg}(env:{teg}) | L={tl} | SL={tsl} | "
               f"EE={fed.min():.3f}({fed.mean():.3f}) | "
