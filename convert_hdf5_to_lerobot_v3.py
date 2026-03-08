@@ -103,6 +103,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Inspect input episodes and print conversion plan without writing output",
     )
+    parser.add_argument(
+        "--base_disp_m_to_mm",
+        action="store_true",
+        help="Convert base displacement actions (vx, vy) from sim meters to lekiwi_v6 mm (×1000)",
+    )
+    parser.add_argument(
+        "--gripper_binary",
+        action="store_true",
+        help="Convert gripper action to binary 0/1 (threshold 0.5)",
+    )
+    parser.add_argument(
+        "--gripper_action_index",
+        type=int,
+        default=8,
+        help="Index of gripper action in action vector (default: 8, i.e. last of 9D)",
+    )
     return parser.parse_args()
 
 
@@ -371,8 +387,17 @@ def main() -> None:
                 default_full_task_text=args.full_task_text,
             )
 
-            actions = np.asarray(grp["actions"], dtype=np.float32)
+            actions = np.asarray(grp["actions"], dtype=np.float32).copy()
             n_steps = actions.shape[0]
+
+            # Post-process actions for VLA compatibility
+            if args.base_disp_m_to_mm and actions.shape[1] >= 3:
+                actions[:, 0] *= 1000.0  # vx: m → mm
+                actions[:, 1] *= 1000.0  # vy: m → mm
+            if args.gripper_binary:
+                gi = args.gripper_action_index
+                if gi < actions.shape[1]:
+                    actions[:, gi] = (actions[:, gi] > 0.5).astype(np.float32)
 
             # robot_state
             if "robot_state" in grp:

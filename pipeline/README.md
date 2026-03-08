@@ -1,664 +1,149 @@
-# LeKiwi Fetch-Navigation RL Pipeline (v8 — Fixed-Joint Carry + DR)
+# LeKiwi 3-Skill Pipeline (v9 — Navigate + ApproachGrasp + CarryPlace)
 
-Isaac Lab `DirectRLEnv` 기반 LeKiwi Fetch task 파이프라인.
-핵심: **Privileged RL Teacher (37D) → 물리 기반 다중 물체 Grasp → VLA Student 증류**.
+Isaac Lab `DirectRLEnv` 기반 LeKiwi 3-Skill 파이프라인.
+핵심: **Navigate(scripted) → Skill-2 RL(ApproachGrasp, AAC) → Skill-3 RL(CarryPlace, AAC) → VLA 증류**.
 
-## 1) v7 → v8 변경점
+## 1) v8 → v9 변경점
 
-- **Grasp carry 방식**: per-step 텔레포트 고정 → **fixed joint attach 기반 carry**(grasp 시 attach, reset 시 detach)
-- **Domain Randomization 추가**: reset 시점에 wheel/arm dynamics + object mass/friction을 랜덤화(튜닝값 중심 범위 샘플링)
-- **Grasp 판정**: physics-based (gripper 닫힘 + contact force + 적응적 거리) 유지
-- **Observation**: `33D` → **`37D`** (multi-object 모드)
-  - `[33:36]` object_bbox_normalized (x, y, z)
-  - `[36]` object_category_normalized
-  - 기존 33D 위치는 변동 없음 → robot_state 추출 호환
-- **다중 물체 RL 학습**: 대표 N종 RigidBody를 pre-spawn, 에피소드마다 랜덤 선택
-  - Teacher가 물체 크기/형상을 보고 물체별 다른 grasp 전략 학습
-- **object_catalog.json 자동 생성**: `build_object_catalog.py`로 1030종 USD에서 bbox 추출 + 클러스터링 → 대표 선별
-- **VLA 입력은 변동 없음**: `image + instruction + robot_state(9D)` → `action(9D)`
-  - obs[33:37]은 privileged info로 VLA에 전달하지 않음
-- **Physics multi-object instruction 개선**: SpawnManager 없이도 활성 물체 이름 기반으로
-  `find the <object> and bring it back` 문장을 episode별로 저장
-- **BC warm-start 확장**: multi-object(37D)에서도 BC→RL 실행 가능
-  - 33D BC 체크포인트를 37D RL에 로드할 때 `net.0.weight` 입력 차원 공통 부분을 자동 어댑트
-  - 37D BC 체크포인트는 동일 차원으로 그대로 로드
-- **배포 변환 체인 유틸 추가**: `deploy_vla_action_bridge.py`
-  - VLA action(9D) → sim denorm → `sim_to_real` → arm limits 매핑을 1회 실행
-- **기존 33D 호환**: `--multi_object_json` 미지정 시 기존 33D proximity 모드 동작
+- **3-Skill 분리 아키텍처**: 기존 unified 4-phase FSM을 3개 독립 스킬로 분리
+  - **Navigate (Skill-1)**: Scripted proportional controller, VLA 학습 데이터 생성용
+  - **ApproachGrasp (Skill-2)**: RL 환경, 14D actor obs / 21D critic obs (AAC)
+  - **CarryPlace (Skill-3)**: RL 환경, 13D actor obs / 20D critic obs (AAC)
+- **Asymmetric Actor-Critic (AAC)**: Actor는 real-deployable obs, Critic은 privileged info 추가
+- **Handoff Buffer**: Skill-2 성공 상태를 저장 → Skill-3 초기화에 사용 (200-500 entries)
+- **Curriculum Learning**: Skill-2 object distance 0.5m→2.5m, 70% 성공률 시 증가
+- **break_force 변경**: mass × g × 10 (기존 1e8에서 물리적으로 현실적인 값으로)
+- **Visibility Gate**: 에피소드 시작부 카메라에 물체 안 보이는 구간 제거
+- **VLA 호환 변환**: base displacement m→mm (×1000), gripper binary 0/1
 
 ## 2) 파일 구조
 
 ```text
 scripts/lekiwi_nav_env/
-├── __init__.py                  # Gymnasium 등록 (Isaac-LeKiwi-Fetch-Direct-v0)
-├── lekiwi_robot_cfg.py          # ArticulationCfg, Kiwi IK (LEKIWI_USD_PATH 환경변수 지원)
-├── lekiwi_nav_env.py            # 37D obs, fixed-joint grasp carry, reset-time DR, GRASP timeout
-├── models.py                    # ★ 공유 RL 모델 (PolicyNet, ValueNet) — train/collect 공통
-├── build_object_catalog.py      # USD bbox 추출 + 대표 물체 선별
+├── __init__.py                    # Gymnasium 등록 (fetch + skill2 + skill3)
+├── lekiwi_robot_cfg.py            # ArticulationCfg, Kiwi IK
+├── lekiwi_nav_env.py              # 기존 unified 4-phase env (backward compat)
+├── env_common.py                  # ★ 공통 base environment class
+├── skill2_approach_grasp_env.py   # ★ Skill-2 ApproachGrasp RL 환경
+├── skill3_carry_place_env.py      # ★ Skill-3 CarryPlace RL 환경
+├── handoff_buffer.py              # ★ Handoff Buffer save/load/sample
+├── models.py                      # PolicyNet, ValueNet, AsymmetricValueNet
+├── collect_navigate_data.py       # ★ Navigate scripted policy 데이터 수집
+├── train_lekiwi.py                # PPO 학습 (--skill fetch/skill2/skill3)
+├── train_bc.py                    # BC 학습 (--skill skill2/skill3)
+├── collect_demos.py               # RL expert 데모 수집 (--skill, --visibility_gate)
+├── convert_hdf5_to_lerobot_v3.py  # HDF5→LeRobot v3 (--base_disp_m_to_mm, --gripper_binary)
+├── build_object_catalog.py        # USD bbox + 대표 물체 선별
 ├── calibrate_real_robot.py
-├── replay_in_sim.py
 ├── tune_sim_dynamics.py
-├── compare_real_sim.py
-├── check_calibration_gate.py   # ★ 캘리브레이션 품질 게이트 (RMSE 임계값 pass/fail)
-├── sim_real_calibration_test.py # ★ Isaac Sim Script Editor용 sim-real 이동/회전 정합 테스트
-├── sim_real_command_transform.py # ★ sim<->real base command 변환 유틸 (배포 전/중 검증)
-├── deploy_vla_action_bridge.py  # ★ VLA action(9D) -> real base/arm 명령 변환 체인 유틸
-├── build_arm_limits_real2sim.py
-├── record_teleop.py
-├── teleop_dual_logger.py
-├── sim_action_receiver_logger.py
-├── train_bc.py
-├── train_lekiwi.py              # skrl PPO (models.py import, --multi_object_json 지원)
-├── collect_demos.py             # Expert demo 수집 (models.py import, physics grasp 메타 저장)
 ├── spawn_manager.py
-├── convert_hdf5_to_lerobot_v3.py  # obs 37D 처리, tasks.jsonl 안정적 출력
-├── test_env.py                  # 환경 검증 (--dynamics_json, --arm_limit_json 지원)
-├── object_catalog.json          # build_object_catalog.py 출력물
-├── demos/
-├── checkpoints/
-├── logs/ppo_lekiwi/
-└── outputs/rl_demos/
+├── record_teleop.py
+├── deploy_vla_action_bridge.py
+└── pipeline/README.md             # 이 문서
 ```
 
-## 3) 환경 스펙
+## 3) Observation / Action 정의
 
-### Observation
+### Skill-2 ApproachAndGrasp
 
-기본 33D (multi-object 미사용 시):
+| 구분 | Dim | 구성 |
+|------|-----|------|
+| Actor obs | 14D | arm_pos(5) + grip_pos(1) + base_disp(3) + rel_object(3) + contact(2) |
+| Critic obs | 21D | Actor 14D + obj_bbox(6D) + obj_mass(1D) |
+| Action | 9D | arm_target(5) + gripper_cmd(1) + base_cmd(3) |
 
-| 인덱스 | 항목 | 차원 |
-|--------|------|------|
-| 0:2 | target_xy_body | 2 |
-| 2:4 | object_xy_body | 2 |
-| 4:6 | home_xy_body | 2 |
-| 6:10 | phase_onehot | 4 |
-| 10 | object_visible | 1 |
-| 11 | object_grasped | 1 |
-| 12:15 | base_lin_vel_body | 3 |
-| 15:18 | base_ang_vel_body | 3 |
-| 18:24 | arm_joint_pos | 6 |
-| 24:30 | arm_joint_vel | 6 |
-| 30:33 | wheel_vel | 3 |
+### Skill-3 CarryAndPlace
 
-Multi-object 37D (추가분):
+| 구분 | Dim | 구성 |
+|------|-----|------|
+| Actor obs | 13D | arm_pos(5) + grip_pos(1) + base_disp(3) + home_rel(3) + grip_force(1) |
+| Critic obs | 20D | Actor 13D + obj_dims(3D) + obj_mass(1D) + grip_rel_pos(3D) |
+| Action | 9D | arm_target(5) + gripper_cmd(1) + base_cmd(3) |
 
-| 인덱스 | 항목 | 차원 | 비고 |
-|--------|------|------|------|
-| 33:36 | object_bbox_normalized | 3 | privileged (VLA 미전달) |
-| 36 | object_category_normalized | 1 | privileged (VLA 미전달) |
+## 4) 파이프라인 실행
 
-### Action (9D, 변동 없음)
-
-- `[0:3]` body_vel_cmd (vx, vy, wz)
-- `[3:9]` arm_pos_target (6 joints, gripper 포함)
-
-### Phase 상태머신
-
-```
-SEARCH → APPROACH → GRASP → RETURN → success
-                       ↑       │
-                       └───────┘ timeout (grasp_timeout_steps=75, ~3초@25Hz)
-```
-
-v7 GRASP 판정 (physics mode):
-- gripper joint position < threshold (닫힘)
-- contact force > threshold (접촉)
-- object_dist < adaptive threshold (물체 bbox 크기 반영)
-- GRASP timeout: `grasp_timeout_steps` (기본 75 step) 초과 시 APPROACH로 복귀하여 재시도
-
-## 4) 실행 순서
-
+### Step 1: Navigate 데이터 수집 (scripted)
 ```bash
-conda activate env_isaaclab
-source ~/isaacsim/setup_conda_env.sh
-cd ~/IsaacLab/scripts/lekiwi_nav_env
+python collect_navigate_data.py \
+    --num_demos 200 --num_envs 4 \
+    --multi_object_json object_catalog.json \
+    --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body>" \
+    --dynamics_json calibration/tuned_dynamics.json
 ```
 
-### Step 0. 사전 준비: gripper 정보 확인
-
-lekiwi_robot_cfg.py에 아래 상수가 정확한지 확인:
-
-```python
-GRIPPER_JOINT_NAME = "STS3215_03a_v1_4_Revolute_57"
-GRIPPER_JOINT_IDX_IN_ARM = 5
-```
-
-Isaac Sim에서 lekiwi USD를 열어 gripper finger의 rigid body prim 경로 확인.
-이 경로가 `--gripper_contact_prim_path`에 들어감.
-
-### Step 1. 대표 물체 카탈로그 생성
-
-1030종 USD에서 bbox를 자동 추출하고 k-means로 대표 물체를 선별:
-
+### Step 2: Skill-2 RL 학습 (ApproachAndGrasp)
 ```bash
-python build_object_catalog.py \
-  --index_jsonl ~/isaac-objects/mujoco_obj_usd_index_all.jsonl \
-  --output_json object_catalog.json \
-  --all_objects_json object_catalog_all.json \
-  --num_representatives 12 \
-  --scale 1.0 \
-  --mass_mode volume_density \
-  --density_kg_m3 350
+python train_lekiwi.py --skill skill2 --num_envs 2048 \
+    --multi_object_json object_catalog.json \
+    --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body>" \
+    --dynamics_json calibration/tuned_dynamics.json --headless
 ```
 
-출력: `object_catalog.json` (대표 12종, RL 학습용), `object_catalog_all.json` (전체 메타데이터).
-pxr 환경(Isaac Sim Python)에서 실행해야 함.
-
-### Step 2. ★ Sim2Real 캘리브레이션 (RL 학습 전 필수)
-
-**Step 3~5의 모든 학습/수집 명령어가 `--dynamics_json`과 `--arm_limit_json`을 사용하므로, 이 단계를 먼저 완료해야 한다.** 캘리브레이션 없이 학습된 정책은 실제 로봇의 dynamics와 불일치하여 Sim2Real 전이 성능이 저하된다.
-
-중요:
-- `sim_real_calibration_test.py`(Script Editor)는 **보조 검증**이다.
-- 이 스크립트는 base의 pose-level(총 이동거리/총 회전각) 정합을 빠르게 확인하는 용도이며, PRE-3~6(SysID/replay/gate)를 대체하지 않는다.
-- VLA 파인튜닝 데이터 수집/실배포 판단은 반드시 PRE-3~6 결과(`tuned_dynamics.json`, replay report, gate pass)로 최종 확정한다.
-
-#### 2-1. 실로봇 측정
-
+### Step 3: Skill-2 데모 수집 + Handoff Buffer 생성
 ```bash
-# 전체 측정 (wheel/base/arm/rest/sysid)
-python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode all --connection_mode direct --robot_port /dev/ttyACM0 \
-  --client_id my_awesome_kiwi --sample_hz 20 --encoder_unit m100
-
-# geometry는 config 값을 유지하고 arm/rest/sysid만 갱신
-python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode all --skip wheel_radius,base_radius \
-  --connection_mode direct --robot_port /dev/ttyACM0 \
-  --client_id my_awesome_kiwi --sample_hz 20 --encoder_unit m100
-
-# arm 6축 range만 재측정 (권장: 수동 시작/종료)
-python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode joint_range --connection_mode direct --robot_port /dev/ttyACM0 \
-  --client_id my_awesome_kiwi --joint_range_duration 0 --sample_hz 20
-
-# 단일 관절만 재측정 (예: gripper)
-python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode joint_range_single --connection_mode direct --robot_port /dev/ttyACM0 \
-  --client_id my_awesome_kiwi --joint_key arm_gripper.pos \
-  --joint_range_duration 0 --sample_hz 20
-
-# arm sysid만 별도 측정
-python scripts/lekiwi_nav_env/calibrate_real_robot.py \
-  --mode arm_sysid --connection_mode direct --robot_port /dev/ttyACM0 \
-  --client_id my_awesome_kiwi --sample_hz 50 --encoder_unit m100
+python collect_demos.py --skill skill2 \
+    --checkpoint logs/ppo_lekiwi/skill2_scratch/checkpoints/best_agent.pt \
+    --num_demos 50 --visibility_gate \
+    --multi_object_json object_catalog.json \
+    --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body>"
 ```
 
-메모:
-- direct 모드는 로봇 USB가 연결된 머신(예: `192.168.0.104`)에서 실행해야 한다.
-- `--joint_range_duration 0` 또는 음수면 고정 시간 대신 Enter로 시작/종료한다.
-- `joint_range`/`joint_range_single` 측정 중에는 arm torque가 자동으로 OFF되고, 종료 시 ON으로 복구된다.
-- `joint_range_single`은 기존 `wheel_radius`/`base_radius`를 유지한 채 지정 관절 range만 갱신한다.
-- direct 모드에서 모터 캘리브레이션 파일을 쓰려면 현재 로봇 ID에 맞게 `--client_id`를 지정한다(예: `my_awesome_kiwi`).
-- `tune_sim_dynamics.py` 기본 `--geometry_source`는 `config`이므로, `lekiwi_robot_cfg.py`의 `WHEEL_RADIUS`/`BASE_RADIUS`를 그대로 사용할 때는 wheel/base 재측정을 생략해도 된다.
-
-#### 2-1-1. 현재 진행 현황 (업데이트: 2026-02-18)
-
-- 상태: 원격 로봇 호스트(`192.168.0.104`)에서 `mode all` 실행 후, `joint_range --joint_range_duration 0` 재측정 완료.
-- 기준 파일: `calibration/calibration_latest.json`
-  - `timestamp`: `2026-02-18 10:12:18`
-  - `connection_mode`: `direct`
-  - `robot_port`: `/dev/ttyACM0`
-  - `client_id`: `my_awesome_kiwi`
-- arm joint ranges (실측 반영 완료):
-  - `arm_shoulder_pan.pos = [-99.48282231252308, 100.0]`
-  - `arm_shoulder_lift.pos = [-100.0, 100.0]`
-  - `arm_elbow_flex.pos = [-100.0, 98.93048128342247]`
-  - `arm_wrist_flex.pos = [-100.0, 99.91539763113366]`
-  - `arm_wrist_roll.pos = [-95.7997557997558, 90.4273504273504]`
-  - `arm_gripper.pos = [0.07524454477050413, 100.0]`
-- calibration 블록 포함 상태:
-  - `wheel_radius`: 포함됨
-  - `base_radius`: 없음 (`--skip wheel_radius,base_radius`로 재측정 생략한 실행본 기준)
-  - `arm_sysid`: 포함됨
-- geometry 사용 정책:
-  - `tune_sim_dynamics.py` 기본 `--geometry_source config`를 유지하고, `lekiwi_robot_cfg.py`의 `WHEEL_RADIUS`/`BASE_RADIUS`를 기준으로 튜닝한다.
-  - 즉, wheel/base 실측 수치 재수집 없이도 arm_sysid + wheel encoder log로 동역학 튜닝/검증을 진행할 수 있다.
-- 중요:
-  - 이번 실측 반영 후 PRE-3(tune) → PRE-4(replay) → PRE-5(compare) → PRE-6(gate)를 다시 실행해 최신 리포트를 갱신한다.
-  - `joint_range` 결과에서 arm span이 비정상적으로 작게 나오면 `--joint_range_duration 0`으로 재측정한다.
-
-#### 2-2. Arm Joint Limit JSON 생성
-
+### Step 4: Skill-3 RL 학습 (CarryAndPlace)
 ```bash
-python scripts/lekiwi_nav_env/build_arm_limits_real2sim.py \
-  --calibration_json calibration/calibration_latest.json \
-  --encoder_calibration_json ~/.cache/huggingface/lerobot/calibration/robots/lekiwi/my_awesome_kiwi.json \
-  --output calibration/arm_limits_real2sim.json
+python train_lekiwi.py --skill skill3 --num_envs 2048 \
+    --handoff_buffer_path handoff_buffer.pt \
+    --multi_object_json object_catalog.json \
+    --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body>" \
+    --dynamics_json calibration/tuned_dynamics.json --headless
 ```
 
-#### 2-3. Sim 파라미터 튜닝
-
-```bash
-python scripts/lekiwi_nav_env/tune_sim_dynamics.py \
-  --calibration calibration/calibration_latest.json \
-  --encoder_unit m100 \
-  --optimizer cem \
-  --iterations 60 \
-  --analytical_init \
-  --refine \
-  --refine_iters 30 \
-  --cmd_transform_mode real_to_sim \
-  --cmd_linear_map auto \
-  --cmd_lin_scale 1.0166 \
-  --cmd_ang_scale 1.2360 \
-  --cmd_wz_sign -1.0 \
-  --freeze_cmd_scales \
-  --output calibration/tuned_dynamics.json --headless
-```
-
-메모:
-- 기본값:
-  - `--optimizer cem`
-  - `--analytical_init` 활성 (실측 encoder 정상상태 rate 기반으로 `lin_cmd_scale`/`ang_cmd_scale` 초기값 추정)
-  - `--refine` 활성 (global search 이후 L-BFGS-B 로컬 정밀화)
-  - `--cmd_linear_map auto` 활성 (wheel RMSE 기준으로 `identity/flip_180/rot_cw_90/rot_ccw_90` 자동 선택)
-  - `--freeze_cmd_scales` 활성 (`lin_cmd_scale`, `ang_cmd_scale`를 1.0 고정해 동역학 파라미터에 집중)
-- 필요 시 비활성:
-  - `--no_analytical_init`
-  - `--no_refine`
-  - `--no_freeze_cmd_scales`
-- 속도/목적별 옵션:
-  - `--sequences wheel_radius` 또는 `--sequences base_radius`로 wheel replay 시퀀스를 제한할 수 있다.
-  - `--no_arm_tests`로 arm_sysid 항목을 제외한 wheel 중심 튜닝을 실행할 수 있다.
-  - `--max_arm_tests N`으로 arm_sysid 테스트 개수를 제한해 튜닝 시간을 줄일 수 있다.
-- `tuned_dynamics.json`에는 `best_params`(wheel/arm dynamics + `lin_cmd_scale`/`ang_cmd_scale`)와 함께 `command_transform`이 저장된다.
-  - arm 파라미터는 전역 스케일(`arm_stiffness_scale`, `arm_damping_scale`)뿐 아니라 관절별 스케일(`arm_stiffness_scale_j0..j5`, `arm_damping_scale_j0..j5`)도 포함한다.
-- `tuned_dynamics.json.optimizer`에 탐색 메타(`analytical_init`, `refine`, 평가 횟수)가 함께 저장된다.
-- 이후 replay 단계에서 `--dynamics_json`을 주면 `lin_cmd_scale`/`ang_cmd_scale`는 자동으로 그 값을 기본 사용한다(명시 인자 전달 시 override).
-- calibration에 저장된 wheel/base 기하값이 config 대비 과도하게 벗어나면 (`<0.5x` 또는 `>1.8x`) 튜너가 config 값으로 자동 fallback한다.
-
-#### 2-3-1. 튜닝/리플레이 최신 결과 스냅샷 (업데이트: 2026-02-18)
-
-- 튜닝 결과 파일: `calibration/tuned_dynamics.json`
-  - `source = merged_wheel_under012_with_armbest`
-  - tuning 기준 RMSE: `wheel=0.117299`, `arm=0.086990`
-  - gate(`wheel<0.12`, `arm<0.09`) 통과
-- replay 기준 리포트(운영 판정본):
-  - `calibration/replay_command_report_merged_wheelpass_armbest.json`: `wheel_rmse=0.145975`
-  - `calibration/replay_arm_report_merged_wheelpass_armbest_v2.json`: `arm_rmse=0.087000`
-  - gate(`wheel<0.15`, `arm<0.09`) 통과
-- 참고:
-  - wheel 0.12 미만 튜닝 결과를 replay에 그대로 적용한 초기 시도(`replay_command_report_under012_try1_clean.json`)는 `wheel_rmse=0.163078`로 악화되어 운영 판정본에서 제외했다.
-  - arm 0.08 미만은 아직 미달이며, 현재 안정 운영 기준은 arm 0.09 미만으로 유지한다.
-
-#### 2-4. Replay 검증
-
-```bash
-python scripts/lekiwi_nav_env/replay_in_sim.py \
-  --calibration calibration/calibration_latest.json \
-  --mode command \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --report_path calibration/replay_command_report.json \
-  --series_path calibration/replay_command_series.json \
-  --headless
-
-python scripts/lekiwi_nav_env/replay_in_sim.py \
-  --calibration calibration/calibration_latest.json \
-  --mode arm_command \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --report_path calibration/replay_arm_report.json \
-  --series_path calibration/replay_arm_series.json \
-  --headless
-
-python scripts/lekiwi_nav_env/compare_real_sim.py \
-  --input calibration/replay_command_series.json \
-  --output_dir calibration/plots
-
-python scripts/lekiwi_nav_env/compare_real_sim.py \
-  --input calibration/replay_arm_series.json \
-  --output_dir calibration/plots
-```
-
-메모:
-- `replay_in_sim.py`는 기본적으로 `--dynamics_json`에서 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`, `command_transform`을 읽어 적용한다.
-- `replay_in_sim.py`는 `arm_stiffness_scale_j0..j5`, `arm_damping_scale_j0..j5`가 있으면 관절별 arm stiffness/damping도 함께 적용한다.
-- 필요 시 아래 인자로 override 가능:
-  - `--lin_cmd_scale`, `--ang_cmd_scale`
-  - `--cmd_transform_mode`, `--cmd_linear_map`, `--cmd_lin_scale`, `--cmd_ang_scale`, `--cmd_wz_sign`
-- RL 학습 환경(`lekiwi_nav_env.py`)은 sim action space를 직접 학습하므로 `command_transform.wz_sign`을 action 경로에 직접 적용하지 않는다.
-  - 대신 `best_params.lin_cmd_scale`, `best_params.ang_cmd_scale`를 통해 sim 내부 command range를 보정한다(`dynamics_apply_cmd_scale=True`).
-  - arm stiffness/damping은 전역 스케일과 관절별 스케일을 곱한 값으로 적용한다.
-  - arm limit는 기본적으로 제어 target 매핑에만 적용되고(`arm_limit_write_to_sim=False`), PhysX joint limit로 직접 쓰지 않는다.
-    (현재 LeKiwi USD의 다수 revolute가 `(-inf, +inf)`라 PhysX `setLimitParams` 경고 spam을 유발할 수 있기 때문)
-  - `test_env.py`는 종료 코드가 0이어도 Kit 로그에 PhysX limit 경고가 남을 수 있으므로(`kit_20260218_142505.log`), 경고량이 증가하면 `arm_limit_write_to_sim` 설정과 limit JSON 범위를 함께 점검한다.
-
-이 단계가 완료되면 `calibration/tuned_dynamics.json`과 `calibration/arm_limits_real2sim.json`이 생성된다. 이후 모든 Step에서 이 파일들을 `--dynamics_json`과 `--arm_limit_json`으로 전달한다.
-
-#### 2-5. 캘리브레이션 품질 게이트
-
-replay 결과가 임계값 이내인지 자동 검사. FAIL 시 캘리브레이션 재수행 필요:
-
-```bash
-python check_calibration_gate.py \
-  --reports calibration/replay_command_report.json \
-           calibration/replay_arm_report.json
-
-# 또는 tune 출력으로 직접 검사
-python check_calibration_gate.py \
-  --reports calibration/tuned_dynamics.json
-
-# 파이프라인 자동화: 게이트 통과 시에만 학습 진행
-python check_calibration_gate.py \
-  --reports calibration/replay_command_report.json \
-           calibration/replay_arm_report.json && \
-  python train_lekiwi.py --num_envs 2048 --headless
-```
-
-기본 임계값: wheel RMSE ≤ 0.20 rad, arm RMSE ≤ 0.15 rad. `--wheel_rmse_threshold`, `--arm_rmse_threshold`로 조정 가능.
-운영 기준:
-- 장기 목표(권장): wheel RMSE < 0.15 rad, arm RMSE < 0.08 rad
-- 현재 안정 통과 기준(2026-02-18): wheel RMSE < 0.15 rad, arm RMSE < 0.09 rad
-  - 최신 replay 결과: wheel `0.145975`, arm `0.087000`
-
-```bash
-python check_calibration_gate.py \
-  --reports calibration/replay_command_report.json \
-           calibration/replay_arm_report.json \
-  --wheel_rmse_threshold 0.15 \
-  --arm_rmse_threshold 0.09
-```
-
-#### 2-6. Isaac Sim Script Editor 정합 검증 (권장)
-
-`scripts/lekiwi_nav_env/sim_real_calibration_test.py`는 Script Editor 전용 검증 스크립트다.
-headless CLI가 아니라 Isaac Sim UI에서 실행한다.
-
-```text
-1) Isaac Sim에서 LeKiwi USD 로드
-2) Play 상태로 전환
-3) Script Editor에서 sim_real_calibration_test.py 실행
-4) TEST 1(linear), TEST 2(angular) 결과의 ratio(R/S) 확인
-```
-
-권장 해석:
-- `ratio(R/S) = real_output / sim_output`가 1.0에 가까우면 정합 양호
-- 실사용 기준: linear / angular 모두 `0.95 ~ 1.05` 범위
-- 회전 부호는 좌표계 차이를 고려해 `WZ_SIGN`으로 맞춘다
-  - 현재 LeKiwi 설정: `WZ_SIGN = -1.0`
-- 스크립트는 `AUTO_LOAD_COMP_FROM_DYNAMICS=True`일 때 `calibration/tuned_dynamics.json`의
-  `command_transform`(`lin_scale`, `ang_scale`, `wz_sign`, `linear_map`)를 우선 로드하고,
-  파일이 없으면 코드 상수(`LIN_SCALE`, `ANG_SCALE`, `WZ_SIGN`)를 fallback으로 사용한다.
-- `wheel joint delta = n/a`가 나와도 pose 기반 거리/각도 검증은 정상 수행 가능
-
-적용 범위와 한계:
-- 확인 가능한 것:
-  - base 직진/회전 명령의 총량 비율(거리, 각도)
-  - 좌표계/부호 정합(`WZ_SIGN`, `LINEAR_MAP`, forward axis)
-- 확인 불가한 것:
-  - wheel/arm의 과도응답(상승시간, 오버슈트, 감쇠)
-  - arm 6축 command-response 정합(시간축 RMSE)
-- 따라서 이 테스트 단독 통과만으로는 RL/VLA 실배포 적합 판정을 내리지 않는다.
-
-#### 2-7. 스케일값 사용 규칙 (데이터 수집 / 실배포)
-
-`sim_real_calibration_test.py`에서 확정한 base 보정은 아래 변환으로 사용한다.
-
-정의:
-- `u_real = [vx_real, vy_real, wz_real]` (실로봇 기준 명령)
-- `u_sim = [vx_sim, vy_sim, wz_sim]` (시뮬레이터 기준 명령)
-- `M = ACTIVE_LINEAR_MAP` (현재 자동 선택: `identity`)
-
-변환식:
-- real -> sim
-  - `[vx_sim, vy_sim]^T = LIN_SCALE * M * [vx_real, vy_real]^T`
-  - `wz_sim = WZ_SIGN * ANG_SCALE * wz_real`
-- sim -> real (배포 시 역변환)
-  - `[vx_real, vy_real]^T = (1 / LIN_SCALE) * M^{-1} * [vx_sim, vy_sim]^T`
-  - `wz_real = wz_sim / (WZ_SIGN * ANG_SCALE)`
-
-현재 확정 상수:
-- `LIN_SCALE = 1.0166`
-- `ANG_SCALE = 1.2360`
-- `WZ_SIGN = -1.0`
-- `M = identity` (최근 auto-select 결과)
-
-현재 상수로 단순화된 식 (`M=identity`):
-- real -> sim
-  - `vx_sim = 1.0166 * vx_real`
-  - `vy_sim = 1.0166 * vy_real`
-  - `wz_sim = -1.2360 * wz_real`
-- sim -> real
-  - `vx_real = vx_sim / 1.0166`
-  - `vy_real = vy_sim / 1.0166`
-  - `wz_real = wz_sim / (-1.2360)`
-
-운영 규칙:
-- 데이터 수집(sim):
-  - `collect_demos.py` 기본 파이프라인은 sim action space 기준으로 수집한다.
-  - 이 경우 수집 시점에 추가 역변환을 넣지 않는다.
-- 실배포(real):
-  - 모델 출력(sim 기준 base 명령)을 실로봇 전송 직전에 `sim -> real` 역변환 1회 적용한다.
-  - 빠른 검증/적용용 유틸:
-    ```bash
-    python sim_real_command_transform.py \
-      --mode sim_to_real --vx 0.20 --vy 0.00 --wz -1.00
-    ```
-- PRE-3/4 (SysID/replay):
-  - 실측 command 로그를 sim에서 재생해야 하므로 `real -> sim` 변환을 적용한 상태로 튜닝/검증한다.
-  - 현재 파이프라인은 `tune_sim_dynamics.py` 인자와 `tuned_dynamics.json.command_transform`으로 이를 고정한다.
-  - `replay_in_sim.py`는 `--cmd_transform_mode auto` 기본값에서 `dynamics_json`의 변환 설정을 자동 상속한다.
-- 주의:
-  - 같은 신호 경로에 `dynamics_json` 명령 스케일과 위 보정을 중복 적용하지 않는다.
-  - 어느 단계에서 적용했는지(run config/로그)에 명시한다.
-  - 실배포 송신 경로에는 `sim -> real` 역변환이 실제 코드로 구현되어 있어야 한다(문서 수식만 두고 누락하지 않음).
-  - 본 저장소에서는 `sim_real_command_transform.py`로 동일 변환을 재현/검증할 수 있다.
-
-#### 2-8. VLA 파인튜닝/실배포 Go-NoGo 기준
-
-- NoGo:
-  - `sim_real_calibration_test.py`만 통과했고 PRE-3~6을 수행하지 않은 상태
-  - replay report 없이 `LIN_SCALE/ANG_SCALE/WZ_SIGN`만으로 배포를 결정한 상태
-- Go(최소):
-  - PRE-3 완료: `calibration/tuned_dynamics.json` 생성
-  - PRE-4/5 완료: command + arm replay/plot 확인
-  - PRE-6 완료: `check_calibration_gate.py` 기준 wheel/arm RMSE 임계값 통과
-- Go(권장):
-  - 보정 상수(`LIN_SCALE`, `ANG_SCALE`, `WZ_SIGN`, `LINEAR_MAP`) 변경 시 PRE-3~6 재실행
-  - 실배포 전, 송신 코드에서 `sim -> real` 역변환 단위 테스트 로그를 보관
-
-### Step 3. 환경 검증
-
-```bash
-# 기존 proximity 모드 (33D)
-python test_env.py --num_envs 4 --headless
-
-# multi-object physics grasp 모드 (37D) + 캘리브레이션 반영
-python test_env.py --num_envs 4 \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --headless
-```
-
-확인 사항: obs shape (37,), bbox/category 출력, contact force 값, grasp 판정.
-
-### Step 4. RL 학습
-
-```bash
-# [메인] BC -> RL (37D, multi-object)
-# 1) 37D 텔레옵 데모 수집:
-#    python record_teleop.py --num_demos 20 \
-#      --multi_object_json object_catalog.json \
-#      --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
-# 2) BC 학습:
-#    python train_bc.py --demo_dir demos/ --epochs 200 --expected_obs_dim 37
-# 3) BC warm-start PPO:
-python train_lekiwi.py \
-  --num_envs 2048 \
-  --bc_checkpoint checkpoints/bc_nav.pt \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --headless
-
-# [baseline] RL scratch (37D, multi-object)
-python train_lekiwi.py \
-  --num_envs 2048 \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --headless
-
-# 단일 물체 physics grasp (33D)
-python train_lekiwi.py \
-  --num_envs 2048 \
-  --object_usd /path/to/grasp_cube.usd \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --headless
-```
-
-참고:
-- multi-object(37D)에서도 BC warm-start 지원
-- 33D BC 체크포인트를 37D RL에 로드하면 첫 레이어 입력 차원 공통 부분만 어댑트됨
-- `train_bc.py`의 기본값은 `--normalize` OFF이다(권장 기본 경로).
-- `--normalize`로 BC를 학습하면 `checkpoints/bc_nav_norm.npz`가 생성되며,
-  `train_lekiwi.py`에서 BC warm-start 시 정규화 mismatch 보호 로직이 동작한다.
-- 학습 완료 후:
-  - BC->RL(37D): `logs/ppo_lekiwi/ppo_lekiwi_bc_finetune/checkpoints/best_agent.pt`
-  - scratch(37D): `logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt`
-
-### Step 5. RL Expert 데모 수집
-
-```bash
-# camera + multi-object physics grasp + v6 annotation (권장)
-python collect_demos.py \
-  --checkpoint logs/ppo_lekiwi/ppo_lekiwi_bc_finetune/checkpoints/best_agent.pt \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --num_envs 4 --num_demos 200 --headless \
-  --annotate_subtasks
-
-# (baseline) scratch 37D 체크포인트로 동일 수집
-python collect_demos.py \
-  --checkpoint logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --num_envs 4 --num_demos 200 --headless \
-  --annotate_subtasks
-
-# camera + SpawnManager 1030종 시각 다양성 (proximity 모드)
-python collect_demos.py \
-  --checkpoint logs/ppo_lekiwi/ppo_lekiwi_bc_finetune/checkpoints/best_agent.pt \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --objects_index ~/isaac-objects/mujoco_obj_usd_index_all.jsonl \
-  --num_envs 4 --num_demos 200 --headless \
-  --annotate_subtasks --object_cap 5 --min_steps 30
-
-# state-only 빠른 수집
-python collect_demos.py \
-  --checkpoint logs/ppo_lekiwi/ppo_lekiwi_scratch/checkpoints/best_agent.pt \
-  --multi_object_json object_catalog.json \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --no_camera --num_envs 64 --num_demos 200 --headless
-```
-
-참고:
-- physics grasp 모드에서는 SpawnManager(`--objects_index`)가 자동 비활성화됨
-- HDF5 attrs에 `object_bbox_xyz`, `object_category_id`, `active_object_type_idx` 저장됨
-- physics multi-object 모드에서는 episode별 `instruction`이 활성 물체 이름 기반으로 저장됨
-- `final_object_dist`를 기본 최종 거리 메트릭으로 저장 (`final_dist`는 하위호환 alias)
-- 저장되는 `action`은 sim action space 기준이므로, 실배포 시 base 명령은 `2-7`의 `sim -> real` 역변환을 적용
-
-### Step 6. HDF5 → LeRobot v3 변환
-
+### Step 5: HDF5 → LeRobot v3 변환
 ```bash
 python convert_hdf5_to_lerobot_v3.py \
-  --input outputs/rl_demos/*.hdf5 \
-  --output_root outputs/lerobot_v3/lekiwi_fetch_v7 \
-  --repo_id local/lekiwi_fetch_v7 \
-  --fps 25 \
-  --include_subtask_index \
-  --skip_episodes_without_images
+    --input outputs/skill2_demos/*.hdf5 \
+    --output_root lerobot_skill2/ \
+    --base_disp_m_to_mm --gripper_binary \
+    --include_subtask_index
 ```
 
-참고:
-- obs 37D → `robot_state 9D` 추출은 기존과 동일 위치 (obs[18:24] + obs[30:33])
-- obs[33:37] (물체 bbox/category)은 VLA에 전달하지 않음
-- `lerobot` 패키지 설치 환경에서 실행
+### Step 6: VLA 학습
+- π0-FAST (chunk 10) 또는 GR00T N1.6 (chunk 16) target
 
-### Step 7. VLA 파인튜닝
+## 5) Reward 설계
 
-LeRobot v3 데이터셋으로 π0Fast 또는 GR00T 파인튜닝 (A100 서버).
-VLA 입력: `image + instruction + robot_state(9D)` → `action(9D)`.
-실배포 시 `action[0:3]`(base)는 `2-7`의 `sim -> real` 역변환 후 실로봇에 송신.
+### Skill-2 Rewards
+- `approach`: -‖robot−object‖₂ (거리 기반)
+- `grasp_success`: +10 (파지 성공)
+- `lift`: +5 (물체 들어올림)
+- `collision`: -1 (충돌)
+- `time_penalty`: -0.01/step
 
-배포 전 변환 체인 점검 예시:
+### Skill-3 Rewards
+- `carry`: -‖robot−home‖₂ (홈 방향 거리)
+- `hold`: +0.1/step (물체 유지)
+- `place_success`: +20 (배치 성공)
+- `drop`: -10 (물체 낙하)
+- `collision`: -1 (충돌)
+- `time_penalty`: -0.01/step
 
-```bash
-python deploy_vla_action_bridge.py \
-  --action "0.2,0.0,-0.3,0,0,0,0,0,0" \
-  --dynamics_json calibration/tuned_dynamics.json \
-  --arm_limit_json calibration/arm_limits_real2sim.json \
-  --arm_action_to_limits \
-  --json
-```
+## 6) Curriculum (Skill-2)
 
-## 5) 데이터 흐름 요약
+- 시작: object_dist_max = 0.5m
+- 성공률 > 70% 시: object_dist_max += 0.2m
+- 최종: object_dist_max = 2.5m
 
-```
-build_object_catalog.py
-  1030종 USD → bbox 추출 → k-means → 대표 12종 object_catalog.json
+## 7) Handoff Buffer
 
-calibrate → tune → replay → compare → gate  (★ RL 학습 전 필수)
-  실로봇 측정 → tuned_dynamics.json + arm_limits_real2sim.json 생성
-  check_calibration_gate.py로 RMSE 임계값 통과 확인
-  이후 모든 학습/수집에 --dynamics_json --arm_limit_json 전달
+Skill-2 성공 시 터미널 상태를 저장:
+- robot root state, joint positions/velocities
+- object position/orientation, bbox, mass
+- home position
 
-train_lekiwi.py (RL 학습)
-  Teacher obs 37D = 33D + bbox(3) + category(1)
-  대표 12종 RigidBody, contact-based grasp
-  → Teacher가 물체별 다른 arm trajectory + gripper timing 학습
+Skill-3 `_reset_idx()`에서 이 상태로 초기화.
+Target buffer size: 200-500 entries.
 
-collect_demos.py (데이터 수집)
-  학습된 Teacher 실행, camera 이미지 저장
-  물체별로 다른 action이 기록됨
+## 8) 기존 호환성
 
-convert_hdf5_to_lerobot_v3.py
-  obs 37D → robot_state 9D 추출 (물체 정보 제외)
-  LeRobot v3: (image, instruction, robot_state 9D) → action 9D
-
-VLA 파인튜닝
-  Student는 이미지에서 물체를 보고 적절한 action 예측
-  추가 privileged info 없이 동작
-```
-
-## 6) 호환성
-
-| 항목 | 33D (proximity) | 37D (multi-object) |
-|------|----------------|-------------------|
-| `--multi_object_json` 미지정 | 기존 동작 | N/A |
-| `--multi_object_json` 지정 | N/A | 37D 활성 |
-| BC 체크포인트 warm-start | 동일 차원 직접 로드, 37D↔33D 입력층 어댑트 | 동일 차원 직접 로드, 33D↔37D 입력층 어댑트 |
-| robot_state 추출 | obs[18:24]+obs[30:33] | 동일 |
-| VLA 학습 입력 | 9D | 9D (동일) |
-| SpawnManager | 사용 가능 | 자동 비활성 |
-
-## 7) 주의사항
-
-- **★ `--dynamics_json`은 Step 2(캘리브레이션) 완료 후 생성됨** — Step 3~5의 학습/수집 전에 반드시 캘리브레이션을 완료하고, `check_calibration_gate.py`로 품질 게이트 통과를 확인할 것
-- `--dynamics_json`은 학습/수집 모두 동일한 파일을 사용해야 Sim2Real 정합 유지
-- BC warm-start에서 obs 차원이 다르면 `net.0.weight` 입력 차원 공통 부분만 사용해 자동 어댑트
-- camera 수집 시 VRAM에 따라 `num_envs`를 1~8로 제한
-- `--gripper_contact_prim_path`는 Isaac Sim에서 gripper finger body prim을 직접 확인해서 설정
-- `build_object_catalog.py`는 pxr(Isaac Sim Python) 환경에서만 실행 가능
-- **USD 경로**: `lekiwi_robot_cfg.py`는 환경변수 `LEKIWI_USD_PATH`를 우선 참조. 미설정 시 기본 경로 사용.
-  다른 머신에서 실행 시: `export LEKIWI_USD_PATH=/path/to/lekiwi_robot.usd`
-- **텔레옵 기본값**: `leader_to_home_tcp_rest_matched_with_keyboard_base.py`는 연구실 기본값(`host=100.91.14.65`, `port=15002`, `leader_port=COM8`)을 그대로 사용한다. 필요 시 `--host`, `--port`, `--leader_port`로 override.
-- **ROS2 텔레옵 구독 초기화**: `record_teleop.py`는 ROS2 다중 상속 초기화를 명시적으로 수행하도록 정리되어, 향후 `TeleopInputBase` 초기화 로직 추가 시에도 안전하게 동작한다.
-- **replay 정렬 입력 검증**: `calibration_common.align_and_compare`는 실측/시뮬레이션 시계열에 대해 최소 2개 샘플, finite 값, 고유 timestamp 조건을 확인한다. 조건을 만족하지 않으면 즉시 에러를 반환하므로 캘리브레이션 로그 품질을 먼저 확인해야 한다.
-- **모델 공유**: `PolicyNet`/`ValueNet`은 `models.py`에 단일 정의. `train_lekiwi.py`와 `collect_demos.py`가 공통 import하므로 모델 구조 변경 시 `models.py`만 수정
-- **GRASP timeout**: `grasp_timeout_steps=75` (기본 ~3초@25Hz). GRASP phase에서 지정 step 내 grasp 미성공 시 APPROACH로 복귀하여 재시도. 0으로 설정하면 무제한
+- `--skill fetch` (기본값): 기존 unified 4-phase 환경 사용
+- 기존 33D/37D 모드 그대로 동작
+- BC → RL warm-start도 `--skill fetch`에서 그대로 지원

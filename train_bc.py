@@ -133,9 +133,12 @@ def main():
     parser.add_argument("--train_split", type=float, default=0.9)
     parser.add_argument("--save_dir", type=str, default="checkpoints/")
     parser.add_argument("--expected_obs_dim", type=int, default=None,
-                        help="관측 차원 강제 검증 (예: 33). None이면 자동 추론.")
+                        help="관측 차원 강제 검증 (예: 33, 14, 13). None이면 자동 추론.")
     parser.add_argument("--expected_act_dim", type=int, default=9,
                         help="액션 차원 검증")
+    parser.add_argument("--skill", type=str, default=None,
+                        choices=["skill2", "skill3"],
+                        help="Skill preset: skill2(14D obs), skill3(13D obs)")
     norm_group = parser.add_mutually_exclusive_group()
     norm_group.add_argument("--normalize", action="store_true",
                             help="obs 정규화 적용 (기본: 비활성)")
@@ -144,6 +147,16 @@ def main():
     parser.add_argument("--eval", action="store_true",
                         help="학습 후 간단한 평가")
     args = parser.parse_args()
+
+    # Skill preset overrides
+    if args.skill == "skill2":
+        if args.expected_obs_dim is None:
+            args.expected_obs_dim = 14
+        print("  [Skill preset] skill2: obs_dim=14 (arm5+grip1+base_disp3+rel_obj3+contact2)")
+    elif args.skill == "skill3":
+        if args.expected_obs_dim is None:
+            args.expected_obs_dim = 13
+        print("  [Skill preset] skill3: obs_dim=13 (arm5+grip1+base_disp3+home_rel3+grip_force1)")
 
     print("\n" + "=" * 60)
     print("  LeKiwi Nav — Behavioral Cloning")

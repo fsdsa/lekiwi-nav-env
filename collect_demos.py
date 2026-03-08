@@ -116,6 +116,16 @@ dr_group.add_argument("--dr_lighting", dest="dr_lighting", action="store_true", 
 dr_group.add_argument("--no_dr_lighting", dest="dr_lighting", action="store_false", help="조명 Domain Randomization OFF")
 parser.set_defaults(dr_lighting=True)
 
+# Skill mode
+parser.add_argument("--skill", type=str, default="fetch",
+                    choices=["fetch", "skill2", "skill3"],
+                    help="Skill mode for demo collection")
+# Visibility gate
+parser.add_argument("--visibility_gate", action="store_true",
+                    help="Trim episode start until object visible in camera (>=10x10 pixels)")
+parser.add_argument("--visibility_min_pixels", type=int, default=100,
+                    help="Minimum pixels for object visibility (default 10x10=100)")
+
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 

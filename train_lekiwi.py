@@ -2,6 +2,11 @@
 """
 LeKiwi Navigation — PPO Training (skrl 1.4.3) + BC warm-start.
 
+Supports 3 skill modes:
+    --skill fetch    (default) unified 4-phase env (33D/37D obs)
+    --skill skill2   Skill-2 ApproachAndGrasp (14D actor / 21D critic AAC)
+    --skill skill3   Skill-3 CarryAndPlace    (13D actor / 20D critic AAC)
+
 BC → RL 파이프라인:
     1. record_teleop.py로 텔레옵 데모 수집 (ROS2: 리더암 + 키보드)
     2. train_bc.py로 BC 학습 → checkpoints/bc_nav.pt
@@ -11,24 +16,25 @@ Usage:
     cd /home/yubin11/IsaacLab/scripts/lekiwi_nav_env
     conda activate env_isaaclab && source ~/isaacsim/setup_conda_env.sh
 
-    # ── BC → RL Fine-tune (37D 메인 실험) ──
+    # ── Skill-2 ApproachAndGrasp ──
+    python train_lekiwi.py --skill skill2 --num_envs 2048 \
+        --multi_object_json object_catalog.json \
+        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
+        --dynamics_json calibration/tuned_dynamics.json --headless
+
+    # ── Skill-3 CarryAndPlace (with handoff buffer from Skill-2) ──
+    python train_lekiwi.py --skill skill3 --num_envs 2048 \
+        --handoff_buffer_path handoff_buffer.pt \
+        --multi_object_json object_catalog.json \
+        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
+        --dynamics_json calibration/tuned_dynamics.json --headless
+
+    # ── BC → RL Fine-tune (37D, fetch mode) ──
     python train_lekiwi.py --num_envs 2048 \
         --bc_checkpoint checkpoints/bc_nav.pt \
         --multi_object_json object_catalog.json \
         --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
         --dynamics_json calibration/tuned_dynamics.json --headless
-
-    # ── RL from scratch (37D baseline) ──
-    python train_lekiwi.py --num_envs 2048 \
-        --multi_object_json object_catalog.json \
-        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>" \
-        --dynamics_json calibration/tuned_dynamics.json --headless
-
-    # ── 소규모 테스트 ──
-    python train_lekiwi.py --num_envs 64 --max_iterations 100 \
-        --bc_checkpoint checkpoints/bc_nav.pt \
-        --multi_object_json object_catalog.json \
-        --gripper_contact_prim_path "/World/envs/env_.*/Robot/<gripper_body_prim>"
 
     # ── 학습 재개 ──
     python train_lekiwi.py --num_envs 2048 --resume --checkpoint logs/ppo_lekiwi/best_agent.pt --headless
@@ -43,6 +49,9 @@ import sys
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="LeKiwi Nav PPO Training")
+parser.add_argument("--skill", type=str, default="fetch",
+                    choices=["fetch", "skill2", "skill3"],
+                    help="Skill mode: fetch (unified 4-phase), skill2 (ApproachGrasp), skill3 (CarryPlace)")
 parser.add_argument("--num_envs", type=int, default=2048)
 parser.add_argument("--max_iterations", type=int, default=3000)
 parser.add_argument("--resume", action="store_true",
@@ -55,6 +64,8 @@ parser.add_argument("--bc_lr_scale", type=float, default=0.3,
                     help="BC warm-start 시 learning rate 스케일 (기본 0.3 → 3e-4 × 0.3 = 9e-5)")
 parser.add_argument("--allow_bc_norm_mismatch", action="store_true",
                     help="BC obs 정규화 파일이 있어도 강제 진행 (권장하지 않음)")
+parser.add_argument("--handoff_buffer_path", type=str, default="",
+                    help="Skill-3 handoff buffer path (from Skill-2 success states)")
 parser.add_argument("--dynamics_json", type=str, default=None,
                     help="tune_sim_dynamics.py 출력 JSON (best_params) 경로")
 parser.add_argument("--calibration_json", type=str, default=None,
@@ -90,8 +101,7 @@ sim_app = launcher.app
 # —— 나머지 import ——————————————————————————————————————————————
 import torch
 
-from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
-from models import PolicyNet, ValueNet
+from models import PolicyNet, ValueNet, AsymmetricValueNet, make_asymmetric_models
 
 # skrl imports (1.4.3 — 클래스 직접 참조)
 from skrl.agents.torch.ppo import PPO, PPO_DEFAULT_CONFIG
@@ -257,33 +267,51 @@ def main():
     mode_label = _mode_label(mode)
 
     # —— 환경 생성 ————————————————————————————————————————————
-    env_cfg = LeKiwiNavEnvCfg()
-    env_cfg.scene.num_envs = args.num_envs
-    if args.calibration_json is not None:
-        raw = str(args.calibration_json).strip()
-        env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
-    if args.dynamics_json:
-        env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
-    if args.arm_limit_json:
-        env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
-        env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
-    physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
-    multi_object_mode = bool(str(args.multi_object_json).strip())
-    if multi_object_mode:
-        env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
-    if physics_grasp_mode:
-        env_cfg.object_usd = os.path.expanduser(args.object_usd)
-        env_cfg.object_mass = float(args.object_mass)
-        env_cfg.object_scale = float(args.object_scale)
-        env_cfg.gripper_contact_prim_path = str(args.gripper_contact_prim_path)
-        env_cfg.grasp_gripper_threshold = float(args.grasp_gripper_threshold)
-        env_cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
-        env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
-        env_cfg.grasp_attach_height = float(args.grasp_attach_height)
+    skill_mode = args.skill
+    use_aac = skill_mode in ("skill2", "skill3")
 
-    raw_env = LeKiwiNavEnv(cfg=env_cfg)
+    def _apply_common_cfg(env_cfg):
+        """Apply common CLI args to any env config."""
+        env_cfg.scene.num_envs = args.num_envs
+        if args.calibration_json is not None:
+            raw = str(args.calibration_json).strip()
+            env_cfg.calibration_json = os.path.expanduser(raw) if raw else ""
+        if args.dynamics_json:
+            env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
+        if args.arm_limit_json:
+            env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
+            env_cfg.arm_limit_margin_rad = float(args.arm_limit_margin_rad)
+        physics_grasp_mode = bool(str(args.object_usd).strip()) or bool(str(args.multi_object_json).strip())
+        multi_object_mode = bool(str(args.multi_object_json).strip())
+        if multi_object_mode:
+            env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+        if physics_grasp_mode:
+            env_cfg.object_usd = os.path.expanduser(args.object_usd)
+            env_cfg.object_mass = float(args.object_mass)
+            env_cfg.object_scale = float(args.object_scale)
+            env_cfg.gripper_contact_prim_path = str(args.gripper_contact_prim_path)
+            env_cfg.grasp_gripper_threshold = float(args.grasp_gripper_threshold)
+            env_cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
+            env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
+            env_cfg.grasp_attach_height = float(args.grasp_attach_height)
+        return env_cfg
+
+    if skill_mode == "skill2":
+        from skill2_approach_grasp_env import ApproachGraspEnv, ApproachGraspEnvCfg
+        env_cfg = _apply_common_cfg(ApproachGraspEnvCfg())
+        raw_env = ApproachGraspEnv(cfg=env_cfg)
+    elif skill_mode == "skill3":
+        from skill3_carry_place_env import CarryPlaceEnv, CarryPlaceEnvCfg
+        env_cfg = _apply_common_cfg(CarryPlaceEnvCfg())
+        if args.handoff_buffer_path:
+            env_cfg.handoff_buffer_path = os.path.expanduser(args.handoff_buffer_path)
+        raw_env = CarryPlaceEnv(cfg=env_cfg)
+    else:
+        from lekiwi_nav_env import LeKiwiNavEnv, LeKiwiNavEnvCfg
+        env_cfg = _apply_common_cfg(LeKiwiNavEnvCfg())
+        raw_env = LeKiwiNavEnv(cfg=env_cfg)
+
     env = wrap_env(raw_env, wrapper="isaaclab")
-
     device = env.device
 
     if mode == "bc_finetune":
@@ -301,9 +329,11 @@ def main():
             )
 
     print("\n" + "=" * 60)
-    print(f"  LeKiwi Nav PPO Training — {mode_label}")
+    print(f"  LeKiwi Nav PPO Training — {mode_label} [skill={skill_mode}]")
     print(f"  Envs: {args.num_envs} | Device: {device}")
     print(f"  Obs: {env.observation_space.shape} | Act: {env.action_space.shape}")
+    if use_aac:
+        print(f"  AAC Critic obs: {env_cfg.state_space}D")
     print(f"  Max iterations: {args.max_iterations}")
     if env_cfg.calibration_json:
         print(f"  Calibration JSON: {env_cfg.calibration_json}")
@@ -338,10 +368,17 @@ def main():
     print("=" * 60 + "\n")
 
     # —— Models ————————————————————————————————————————————————
-    models = {
-        "policy": PolicyNet(env.observation_space, env.action_space, device),
-        "value": ValueNet(env.observation_space, env.action_space, device),
-    }
+    if use_aac:
+        actor_obs_dim = int(env.observation_space.shape[0])
+        critic_obs_dim = int(env_cfg.state_space)
+        act_dim = int(env.action_space.shape[0])
+        models = make_asymmetric_models(actor_obs_dim, critic_obs_dim, act_dim, device)
+        print(f"  [AAC] Actor obs={actor_obs_dim}, Critic obs={critic_obs_dim}, Act={act_dim}")
+    else:
+        models = {
+            "policy": PolicyNet(env.observation_space, env.action_space, device),
+            "value": ValueNet(env.observation_space, env.action_space, device),
+        }
 
     # —— BC 가중치 로드 ————————————————————————————————————————
     if mode == "bc_finetune":
@@ -401,7 +438,7 @@ def main():
 
     # Logging
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "ppo_lekiwi")
-    exp_name = f"ppo_lekiwi_{mode}"
+    exp_name = f"ppo_lekiwi_{skill_mode}_{mode}"
     cfg_ppo["experiment"] = {
         "directory": log_dir,
         "experiment_name": exp_name,
