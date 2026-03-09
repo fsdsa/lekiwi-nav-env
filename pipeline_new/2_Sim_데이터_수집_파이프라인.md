@@ -547,6 +547,129 @@ python train_lekiwi.py \
 
 **수렴 기준**: 성공률 80% 이상. 정체 시 approach bonus 0.1 활성화.
 
+#### 3-2-4. ResiP 경로 (Diffusion Policy + Residual PPO) — 채택
+
+위의 MLP BC + skrl PPO 경로와 **병렬**로 ResiP 경로가 존재한다. 현재 Skill-2에서는 이 경로를 채택하여 학습 진행 중이다.
+
+**Diffusion Policy BC** (`diffusion_policy.py` + `train_diffusion_bc.py`):
+- ConditionalUnet1D (공식 코드 그대로), pred_horizon=16, obs_dim=30, act_dim=9
+- 소규모 모델: down_dims=[64,128,256] (~5.3M params, 22개 데모에 적합)
+- DDPM 100 training steps, DDIM 4-step 추론 (RL 속도), EMA
+- LinearNormalizer: min-max [-1,1] 정규화 (공식 그대로)
+- 체크포인트: `dp_bc_epoch150.pt` 채택 (300 epochs 학습, epoch150이 최적)
+
+```bash
+python train_diffusion_bc.py \
+  --demo_path demos/combined_skill2_20260227_091123.hdf5 \
+  --obs_dim 30 --epochs 300 --eval \
+  --down_dims 64 128 256 --save_every 50
+```
+
+**Residual PPO** (`train_resip.py`):
+- Frozen DP + ResidualPolicy(~154K MLP), `final_action = base_action + clamp(residual, -1, 1) * per_dim_scale`
+- **순수 마찰 grasp** (FixedJoint 비활성화): `grasp_contact_threshold=0.55`, `grasp_require_contact=True`
+- **object_pos_w bbox center 보정**: USD root → geometric center (`quat_apply(obj_quat, bbox_offset)`)
+- **EE position**: Wrist_Roll_08c_v1 body + local offset `(0.04029, 0.0309, -0.06419)` via `quat_apply`
+- **Ground**: CuboidCfg 100×100×0.1m (z=-0.05), kinematic rigid (GroundPlaneCfg는 force_matrix_w=0)
+- **GTO (Grasp Timeout)**: `ms_gr + oh<0.04 × 30 consecutive steps → ms_gr reset` — phantom grasp(sticky `object_grasped` flag) 대응
+
+**Reward 설계 진화 (v6→v7):**
+
+Reward v6 (초기, v52 계열):
+- 7개 항목: R1(GripOpen+10) → R2(ArmXY×30) → R3(VGrasp+100) → R4(Lift×200) → R5(SustLift×50) → R6(SoftLift+100) → R7(Time-0.01)
+- **Best SR=35.25%** (v57, v56b resume + R4b LiftPose + R8 GCF)
+- **한계**: v_loss 폭발 (R4×200/step → bimodal return → critic MSE 지수 성장 → clip=0.000 → policy death, iter 50-60), phantom grasp (sticky `object_grasped` flag)
+
+Reward v7 (현재 학습중, 11개 항목):
+
+| 항목 | 값 | 조건 | 설명 |
+|------|-----|------|------|
+| R1 | GripOpen **+10** | one-time | gripper open milestone, R2/R3 gate |
+| R2 | ArmXY **×30** | per-step, pre-grasp | base-subtracted arm approach (XY) |
+| R3 | Verified Grasp **+100** | one-time, 5-step sustained | obj_z>0.030 + EE pressing down 차단 |
+| R4 | LiftBand **×200** | per-step, post-grasp | Gaussian at h=0.12m, σ=0.05 |
+| R4b | LiftPose **×100** | per-step, post-grasp | `exp(-5*arm_pose_err)`, arm5_idx fix |
+| R5 | Sustained lift **×50** | per-step, ≥15 step | 연속 lift 유지 |
+| R6 | SoftLift **+100** | one-time | obj_z>0.05 + lift 조건 충족 |
+| R7 | Time **-0.01** | per-step | 시간 초과 방지 |
+| R8 | GCF **-0.5** | per-step, **pre-grasp only** | ground contact force penalty |
+| R9 | GripHold **+2.0** | per-step, post-grasp | grip<0.55 유지 보상 (grasp→lift bridge) |
+| R10 | Drop **-50** | one-time + **episode term** | obj_z<0.04 after grasp, 30 grace steps |
+| R11 | ArmStability **×3.0** | per-step, lift 중 | `exp(-arm_vel_norm*0.5)` 진동 억제 |
+
+v6→v7 핵심 변경:
+- R4 Gaussian LiftBand: 특정 높이(12cm) 근처에서 최대 보상 → 과도한 lift 방지
+- R9 GripHold: grasp→lift 사이 보상 gap 해소 (80% drop rate 문제 대응)
+- R10 Drop detection + episode termination: phantom grasp 후 보상 누수 차단
+- R11 ArmStability: lift 중 arm 진동 억제 (텔레옵은 팔을 접지만 RL은 뻗는 문제)
+- R3 obj_z>0.030: 물체 넘어뜨리기+누르기를 grasp로 오인하는 exploit 차단
+- R8 pre-grasp only: false grasp 후 R8 비활성화 버그 수정 (기존 `~ms_gr` gate → `oh<0.05` gate)
+
+**현재 학습 상태 (2026-03-09, v7c):**
+
+| 항목 | 값 |
+|------|-----|
+| per_dim_action_scale | arm=0.20, grip=0.25, base=0.35 |
+| PPO hyperparams | lr_actor=1e-3, lr_critic=5e-3, target_kl=1.5, ent_coef=0.001 |
+| Warmup | 3600→0 / 60 iters, WU_RESET=1800 (주기적 리셋) |
+| 환경 수 | 1024 envs, A100 40GB (~5GB VRAM) |
+| Iter 33/348 진행중 | G=970, SL=21, SR=2.05% (best iter 31) |
+
+**Warmup 리셋 설계**: BC 성공 에피소드 ~1600 steps, 실패 ~7500 steps. 기존 warmup 500은 1회 시도 후 소진. 3600 initial + 1800-step 주기 리셋으로 2회 시도 기회 → G(grasp count) 대폭 증가.
+
+**체크포인트 백업 (SR 기준)**: v52c=18.75%, v53f=25.49%, v54b=28.81%, v56=31.64%, v56b=31.84%, v57=35.25%(v6 best), v8e=29.10%, v6.4b=28.91%, v7_GTO=25.29% (phantom 제거 후 정직한 수치). 상세 버전 히스토리: `memory/resip_versions.md`
+
+```bash
+# ★ --object_usd와 --headless 필수 (없으면 phantom grasp)
+cd /home/jovyan/IsaacLab/scripts/lekiwi_nav_env && \
+PYTHONUNBUFFERED=1 LEKIWI_USD_PATH=/home/jovyan/Downloads/lekiwi_robot.usd \
+nohup python -u train_resip.py \
+  --skill approach_and_grasp \
+  --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt \
+  --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd \
+  --num_envs 1024 --total_timesteps 250000000 \
+  --normalize_reward False --headless \
+  > logs/resip_v7.log 2>&1 &
+```
+
+**평가** (`eval_resip.py`):
+- **--object_usd 필수** (없으면 물체 안 나오지만 텐서 존재 → 허수 LIFT 판정)
+- per_dim_action_scale은 학습 시 사용한 값과 반드시 매칭
+- grasp 조건: `grasp_contact_threshold=0.55`, `grasp_ee_max_dist=0.10`
+- spawn heading: env default 사용 (`spawn_heading_noise_std=0.35`, `spawn_heading_max_rad=0.76`)
+
+**핵심 교훈 (v28~v57, 30+ 실험):**
+1. **--object_usd 누락**: contact_sensor=None → contact force 항상 0 → phantom grasp (가장 흔한 실수)
+2. **--headless 필수** (서버): 없으면 PhysX CUDA 감지 실패
+3. **Pre-grasp grip shaping 금지**: DP의 gripper 시퀀스를 residual이 덮어써서 diverge
+4. **모든 per-step pre-grasp reward는 "don't grasp" exploit 유발**: budget, floor, penalty 전부 실패. Milestone-only가 안전
+5. **v_loss 폭발 메커니즘**: R4(×200/step) → bimodal return → critic MSE 지수 성장 → clip=0.000 → policy death (iter 50-60). `normalize_reward=True` 또는 `rew *= 0.1`로 대응
+6. **Phantom grasp**: `object_grasped` flag가 한번 True면 영구 유지 → GTO(30-step timeout)로 리셋
+7. **Ground cuboid 0.1m**: 0.02m은 물체 관통, 2.0m은 patch overflow, 1.0m은 FPS 50%↓
+
+| Exploit 패턴 | 메커니즘 | 대응 |
+|---------------|----------|------|
+| Gripper 항상 열기 | continuous gripper-open reward farming | one-time milestone |
+| Gripper 닫고 돌진 | arm 수축+base 전진→충돌→fake grasp | 5-step sustained 검증 |
+| Base만 전진 | EE dist 줄이기 = base 1DOF가 쉬움 | arm_prog - base_prog (XY) |
+| Toggle exploit | open→approach(+), close→retreat(0) 반복 | toggle gate 제거 → 음수 적용 |
+| Object bounce lift | 물체 튕김이 lift 보상 수령 | ee_3d proximity 조건 |
+| Per-step approach farming | 잡지 않고 접근만 반복이 최적 | pre-grasp는 milestone-only |
+
+**Expert 데이터 수집** (`collect_resip_demos.py`):
+- Frozen DP + trained Residual → combined policy rollout, 성공 에피소드만 HDF5로 저장
+- `--bc_checkpoint --resip_checkpoint --num_episodes 1000`
+
+**MLP BC + skrl PPO vs ResiP 비교**:
+| | MLP BC + skrl PPO (3-2-2~3) | ResiP (3-2-4, 채택) |
+|---|---|---|
+| BC 모델 | MLP 256-128-64, GMM | ConditionalUnet1D (~5.3M) |
+| Action 예측 | single step | chunk (K=16) |
+| RL 방식 | PPO + AAC (full policy) | Residual PPO (frozen DP + ~154K residual) |
+| Grasp | FixedJoint (break_force 30N) | 순수 마찰 (physics-only) |
+| action_scale | — | per_dim: arm=0.20, grip=0.30, base=0.35 |
+| Env wrapper | skrl IsaacLabWrapper + AAC | LeKiwiEnvWrapper (flat tensor) |
+
 ---
 
 ### 3-3. Handoff Buffer 생성
@@ -936,11 +1059,13 @@ VLM(~15GB) + VLA(~8GB) = ~23GB VRAM이 필요하므로, 3090 Desktop(24GB)에서
 - 역할: Phase 5에서 Jetson Orin Nano Super가 하는 것과 동일
 
 **A100 Server (추론):**
-- conda inference: Qwen2.5-VL-7B-Instruct (VLM, ~15GB)
-- conda lerobotpi0: π0-FAST (VLA, ~8GB)
+- conda vllm: vLLM 0.17.0 + Qwen2.5-VL-7B (VLM, `--gpu-memory-utilization 0.45` → ~18GB)
+- conda lerobotpi0: π0-FAST (VLA, ~6-8GB)
+- 동시 추론 합계: ~24-26GB / A100 40GB
+- 시작: `bash launch_servers.sh all --checkpoint <pi0_path>` (port 8000 VLM + port 8002 VLA)
 - 3090에서 이미지 + state를 수신, instruction + action chunk를 반환
 
-통신: 3090↔A100 간 소켓/HTTP 통신. Phase 5의 Jetson↔A100 WiFi 통신과 동일한 프로토콜을 사용하면, 통신 레이어도 사전 검증된다.
+통신: 3090↔A100 간 HTTP (OpenAI-compatible API for VLM, FastAPI for VLA). Phase 5의 Jetson↔A100 WiFi 통신과 동일한 프로토콜을 사용하면, 통신 레이어도 사전 검증된다.
 
 ### 7-3. eval_full_system.py 구현 개요
 
@@ -1015,7 +1140,8 @@ Phase 1: RL Expert 학습 (텔레옵: 3090 Desktop, BC/RL: A100 서버)
   Skill-1 (Navigate):
     [🔄] v6c vs v6f 비교 후 최종 선택 (더 이상 실험 안 함). v6c 학습중 (A100, 8192 envs, 216K iter). Inference-time masking 적용 (eval/collect_demos).
   Skill-2 (ApproachAndGrasp):
-    텔레옵 10~20개 (Desktop, --multi_object_json 권장) → 파일 분리(demos_skill2/) → scp → BC (A100, --filter_active) → RL (A100, PPO+AAC + BC aux loss: --lambda_bc_init 0.5 --bc_anneal_ratio 0.6, 성공률 90%+)
+    [🔄] **ResiP 경로 채택** (§3-2-4). 텔레옵 22개 → DP BC (epoch150) → Residual PPO. v7c 학습중 (A100, 1024 envs, iter 33/348). Best SR=35.25% (v57, v6 reward). v7 reward(11개)로 phantom grasp/v_loss 폭발 대응중.
+    (MLP BC + skrl PPO 경로는 비활성)
   Handoff Buffer:
     Skill-2 성공 상태 200~500개 저장 (A100)
   Skill-3 (CarryAndPlace):
@@ -1040,7 +1166,8 @@ Phase 3: 포맷 변환
 
 Phase 4.5: Sim Full-System Evaluation (3090 Desktop + A100 서버)
   [⬜] eval_full_system.py 구현
-  [⬜] A100: VLM 추론 API (conda inference) + VLA 추론 API (conda lerobotpi0)
+  [✅] A100: VLM 추론 API (conda vllm, vLLM 0.17.0, port 8000) — 검증 완료
+  [⬜] A100: VLA 추론 API (conda lerobotpi0, Pi0-FAST, port 8002) — `bash setup_lerobotpi0.sh`
   [⬜] 3090↔A100 통신 레이어 구축 및 검증
   [⬜] Skill별 단독 sim 평가 (Navigate/Skill-2/Skill-3, 각 50회+)
   [⬜] VLM + VLA 통합 sim 평가 (전체 task, 각 조건 30회+)

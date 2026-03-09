@@ -406,15 +406,8 @@ def main():
         NAV_W_ANG   = 1.5    # angular tracking weight
         NAV_W_SMOOTH = -0.005
         NAV_W_TIME   = -0.01
-        NAV_W_COLLISION = float(env.env.cfg.rew_collision)     # -2.0
-        NAV_W_PROXIMITY = float(env.env.cfg.rew_proximity)     # -0.5
-        NAV_W_BACKWARD  = float(env.env.cfg.rew_backward)      # -0.3
-        NAV_COLLISION_DIST = float(env.env.cfg.collision_dist)  # 0.20
-        NAV_LIDAR_RANGE = float(env.env.cfg.lidar_max_range)   # 2.0
         _nav_rew_lin_sum = 0.0
         _nav_rew_ang_sum = 0.0
-        _nav_collision_fov_sum = 0.0
-        _nav_collision_any_sum = 0.0
     else:
         # Constants
         GV  = args.grasp_verify_steps
@@ -621,24 +614,9 @@ def main():
                 rew_smooth = NAV_W_SMOOTH * (delta_base ** 2).sum(dim=-1)
                 _nav_prev_action = action.detach().clone()
 
-                # Obstacle avoidance — FOV only for reward (audit_v2)
-                nav_metrics = env.env._compute_metrics()
-                min_obs_dist_fov = nav_metrics["min_obs_dist_fov"]
-                min_obs_dist_all = nav_metrics["min_obs_dist_all"]
-                collision_fov = (min_obs_dist_fov < NAV_COLLISION_DIST).float()
-                rew_collision = NAV_W_COLLISION * collision_fov
-                proximity_fov = torch.clamp(1.0 - min_obs_dist_fov / NAV_LIDAR_RANGE, min=0.0)
-                rew_proximity = NAV_W_PROXIMITY * proximity_fov
-
-                # Backward penalty (body vy < 0)
-                backward = torch.clamp(-bvel[:, 1], min=0.0)
-                rew_backward = NAV_W_BACKWARD * backward
-
-                rew = rew_lin + rew_ang + rew_smooth + NAV_W_TIME + rew_collision + rew_proximity + rew_backward
+                rew = rew_lin + rew_ang + rew_smooth + NAV_W_TIME
                 _nav_rew_lin_sum += rew_lin.sum().item()
                 _nav_rew_ang_sum += rew_ang.sum().item()
-                _nav_collision_fov_sum += collision_fov.sum().item()
-                _nav_collision_any_sum += (min_obs_dist_all < NAV_COLLISION_DIST).float().sum().item()
 
                 # Done masking
                 dm = done.view(-1).bool()
@@ -810,13 +788,10 @@ def main():
         if is_navigate:
             rla = _nav_rew_lin_sum / max(S * N, 1)
             raa = _nav_rew_ang_sum / max(S * N, 1)
-            col_fov = _nav_collision_fov_sum / max(S * N, 1)
-            col_any = _nav_collision_any_sum / max(S * N, 1)
             _nav_rew_lin_sum = 0.0; _nav_rew_ang_sum = 0.0
-            _nav_collision_fov_sum = 0.0; _nav_collision_any_sum = 0.0
 
             print(f"  R_lin={rla:.3f} R_ang={raa:.3f} | "
-                  f"R={avg_ret:.1f} | ColFOV={col_fov:.3f} ColAll={col_any:.3f} | Cl={cr:.3f} | FPS={fps:.0f}")
+                  f"R={avg_ret:.1f} | Cl={cr:.3f} | FPS={fps:.0f}")
 
             if ev:
                 # Navigate: track by avg return (higher = better tracking)

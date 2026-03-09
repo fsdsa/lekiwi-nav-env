@@ -130,8 +130,8 @@ parser.add_argument(
     "--skill",
     type=str,
     default="legacy",
-    choices=["approach_and_grasp", "carry_and_place", "combined", "legacy"],
-    help="환경 모드: approach_and_grasp(Skill-2), carry_and_place(Skill-3), combined(Skill-2→3 연속), legacy(v8 FSM)",
+    choices=["navigate", "approach_and_grasp", "carry_and_place", "combined", "legacy"],
+    help="환경 모드: navigate(Skill-1), approach_and_grasp(Skill-2), carry_and_place(Skill-3), combined(Skill-2→3 연속), legacy(v8 FSM)",
 )
 parser.add_argument(
     "--grasp_hold_steps",
@@ -159,6 +159,22 @@ args.num_envs = 1
 
 launcher = AppLauncher(args)
 sim_app = launcher.app
+
+# PhysX tensor 경고/에러 suppress (num_envs=1에서 매 step 스팸)
+import sys, io
+
+class _PhysxFilter(io.TextIOBase):
+    """stderr에서 PhysX tensor 스팸 필터링."""
+    def __init__(self, stream):
+        self._stream = stream
+    def write(self, msg):
+        if "omni.physx.tensors.plugin" in msg or "Incompatible device" in msg:
+            return len(msg)
+        return self._stream.write(msg)
+    def flush(self):
+        self._stream.flush()
+
+sys.stderr = _PhysxFilter(sys.stderr)
 
 # —— 나머지 import ——
 import h5py
@@ -577,9 +593,13 @@ def main():
     print("=" * 60 + "\n")
 
     # —— Isaac Lab 환경 ——
-    use_v6 = args.skill != "legacy"
+    use_v6 = args.skill not in ("legacy",)
+    is_navigate = (args.skill == "navigate")
 
-    if args.skill == "approach_and_grasp":
+    if args.skill == "navigate":
+        from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
+        env_cfg = Skill1EnvCfg()
+    elif args.skill == "approach_and_grasp":
         from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
         env_cfg = Skill2EnvCfg()
     elif args.skill in ("carry_and_place", "combined"):
@@ -629,7 +649,10 @@ def main():
     is_combined = (args.skill == "combined")
     if is_combined:
         env_cfg.grasp_gripper_threshold = 0.65  # combined: 확실한 파지만 인정
-    if args.skill == "approach_and_grasp":
+    if args.skill == "navigate":
+        env_cfg.force_tucked_pose = True  # 텔레옵: arm을 TUCKED_POSE로 고정
+        env = Skill1Env(cfg=env_cfg)
+    elif args.skill == "approach_and_grasp":
         env = Skill2Env(cfg=env_cfg)
     elif args.skill in ("carry_and_place", "combined"):
         env = Skill3Env(cfg=env_cfg)
@@ -759,6 +782,28 @@ def main():
         _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
         _dest_marker.visualize(translations=_hm)
 
+    # Navigate: direction command 라벨 헬퍼 (early define — 아래에서 사용)
+    _NAV_DIR_LABELS = {
+        (0, 1, 0): "FORWARD",
+        (0, -1, 0): "BACKWARD",
+        (-1, 0, 0): "STRAFE LEFT",
+        (1, 0, 0): "STRAFE RIGHT",
+        (0, 0, 1): "TURN LEFT (CCW)",
+        (0, 0, -1): "TURN RIGHT (CW)",
+    }
+
+    def _nav_dir_label(cmd_tensor):
+        """direction_cmd 텐서 → 사람이 읽을 수 있는 라벨."""
+        c = cmd_tensor.cpu().tolist()
+        best_label = "UNKNOWN"
+        best_dot = -1.0
+        for key, label in _NAV_DIR_LABELS.items():
+            dot = sum(a * b for a, b in zip(c, key))
+            if dot > best_dot:
+                best_dot = dot
+                best_label = label
+        return best_label
+
     # 디버그: 물체 스폰 확인
     if hasattr(env, 'object_rigid') and env.object_rigid is not None:
         obj_pos = env.object_rigid.data.root_pos_w[0].cpu().numpy()
@@ -767,6 +812,27 @@ def main():
         print(f"  [DEBUG] object_rigid num_instances: {env.object_rigid.num_instances}")
     else:
         print(f"  [DEBUG] object_rigid: None (physics_grasp={getattr(env, '_physics_grasp', '?')})")
+
+    # Navigate: 방향별 순서 스케줄 (6방향 × N회씩, 순서대로)
+    _nav_dir_schedule = None
+    _nav_dir_idx = 0
+    if is_navigate:
+        _nav_all_dirs = [
+            ([0, 1, 0],  "FORWARD"),
+            ([0, -1, 0], "BACKWARD"),
+            ([-1, 0, 0], "STRAFE LEFT"),
+            ([1, 0, 0],  "STRAFE RIGHT"),
+            ([0, 0, 1],  "TURN LEFT (CCW)"),
+            ([0, 0, -1], "TURN RIGHT (CW)"),
+        ]
+        reps = max(1, args.num_demos // 6)
+        _nav_dir_schedule = []
+        for cmd, label in _nav_all_dirs:
+            _nav_dir_schedule.extend([(cmd, label)] * reps)
+        # 첫 에피소드 방향 강제 지정
+        cmd0, label0 = _nav_dir_schedule[0]
+        env._direction_cmd[0] = torch.tensor(cmd0, dtype=torch.float32, device=env.device)
+        print(f"  [Navigate] direction_cmd: {label0} (schedule 1/{len(_nav_dir_schedule)})")
 
     episode_obs = []
     episode_actions = []
@@ -886,7 +952,8 @@ def main():
     # HDF5 에피소드 저장 헬퍼
     def _save_episode(hf, ep_idx, ep_obs, ep_actions, ep_active, ep_rs,
                       ep_object_pos_w=None, ep_object_quat_w=None,
-                      ep_robot_pos_w=None, ep_robot_quat_w=None):
+                      ep_robot_pos_w=None, ep_robot_quat_w=None,
+                      direction_cmd=None):
         grp = hf.create_group(f"episode_{ep_idx}")
         grp.create_dataset("obs", data=np.array(ep_obs))
         grp.create_dataset("actions", data=np.array(ep_actions))
@@ -913,6 +980,8 @@ def main():
         grp.attrs["num_steps"] = len(ep_obs)
         grp.attrs["num_active_steps"] = int(np.sum(np.asarray(ep_active, dtype=np.int32)))
         grp.attrs["success"] = True
+        if direction_cmd is not None:
+            grp.attrs["direction_cmd"] = direction_cmd
         hf.flush()
 
     try:
@@ -940,6 +1009,16 @@ def main():
                 )
             else:
                 action_np = np.zeros(9)
+
+            # Navigate: arm/gripper를 TUCKED_POSE로 고정 (base만 텔레옵)
+            if is_navigate:
+                tucked_arm = env._tucked_pose.cpu().numpy()  # (5,)
+                tucked_grip = -0.2016  # _TUCKED_GRIPPER_RAD
+                tucked_6 = np.concatenate([tucked_arm, [tucked_grip]])
+                if arm_action_to_limits and arm_center is not None:
+                    action_np[0:6] = (tucked_6 - arm_center) / arm_half_range
+                else:
+                    action_np[0:6] = tucked_6 / arm_action_scale
 
             action = torch.tensor(action_np, dtype=torch.float32, device=env.device).unsqueeze(0)
 
@@ -1156,7 +1235,78 @@ def main():
                     obs = next_obs
 
             # ══════════════════════════════════════════════════
-            #  Single-skill mode — 기존 로직
+            #  Single-skill: Navigate 자동 수집
+            # ══════════════════════════════════════════════════
+            elif is_navigate:
+                _NAV_RECORD_STEPS = 600
+                _NAV_REST_STEPS = 100
+
+                episode_obs.append(obs["policy"][0].cpu().numpy())
+                episode_actions.append(_save_action(action_np))
+                episode_active.append(bool(is_active))
+                episode_robot_state.append(_read_robot_state_9d())
+                episode_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
+                episode_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
+
+                ep_steps = len(episode_obs)
+
+                # 상태 출력
+                if step_count % 25 == 0:
+                    dir_label = _nav_dir_label(env._direction_cmd[0])
+                    conn_str = "ON" if is_active else "OFF"
+                    root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
+                    vx = env.robot.data.root_lin_vel_b[0, 0].item()
+                    vy = env.robot.data.root_lin_vel_b[0, 1].item()
+                    wz = env.robot.data.root_ang_vel_b[0, 2].item()
+                    print(
+                        f"  [{conn_str}] | "
+                        f"pos=({root_pos[0]:+.2f},{root_pos[1]:+.2f}) | "
+                        f"dir={dir_label} | "
+                        f"vel=(vx={vx:+.2f},vy={vy:+.2f},wz={wz:+.2f}) | "
+                        f"steps={ep_steps}/{_NAV_RECORD_STEPS} | "
+                        f"saved={saved_count}/{max_demos}"
+                    )
+
+                # 600 step 도달 → 자동 저장 + 100 step 쉬기 + 다음 방향
+                if ep_steps >= _NAV_RECORD_STEPS:
+                    nav_cmd = env._direction_cmd[0].cpu().numpy()
+                    _save_episode(hdf5_file, saved_count,
+                                  episode_obs, episode_actions, episode_active, episode_robot_state,
+                                  episode_object_pos_w, episode_object_quat_w,
+                                  episode_robot_pos_w, episode_robot_quat_w,
+                                  direction_cmd=nav_cmd)
+                    saved_count += 1
+                    dir_label = _nav_dir_label(env._direction_cmd[0])
+                    print(f"\n  [AUTO] Episode {saved_count}/{max_demos} 저장 ({ep_steps} steps, {dir_label})")
+
+                    episode_obs.clear(); episode_actions.clear()
+                    episode_active.clear(); episode_robot_state.clear()
+                    episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                    episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
+
+                    if saved_count >= max_demos:
+                        break
+
+                    # 100 step 쉬기 (env step만 진행, 기록 안 함)
+                    print(f"  [REST] {_NAV_REST_STEPS} steps 대기중...")
+                    for _ in range(_NAV_REST_STEPS):
+                        zero_action = torch.zeros(1, env.action_space.shape[-1], device=env.device)
+                        env.step(zero_action)
+
+                    # 리셋 + 다음 방향
+                    obs, info = env.reset()
+                    step_count = 0
+                    if _nav_dir_schedule is not None and saved_count < len(_nav_dir_schedule):
+                        cmd_next, label_next = _nav_dir_schedule[saved_count]
+                        env._direction_cmd[0] = torch.tensor(cmd_next, dtype=torch.float32, device=env.device)
+                        print(f"  [Navigate] direction_cmd: {label_next} (schedule {saved_count+1}/{len(_nav_dir_schedule)})")
+                    else:
+                        print(f"  [Navigate] direction_cmd: {_nav_dir_label(env._direction_cmd[0])}")
+                else:
+                    obs = next_obs
+
+            # ══════════════════════════════════════════════════
+            #  Single-skill mode — 기존 로직 (navigate 이외)
             # ══════════════════════════════════════════════════
             else:
                 episode_obs.append(obs["policy"][0].cpu().numpy())
@@ -1170,10 +1320,10 @@ def main():
 
                 # 상태 출력
                 if step_count % 25 == 0:
+                    conn_str = "ON" if is_active else "OFF"
                     root_pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
                     target_pos = env.object_pos_w[0, :2].cpu().numpy()
                     dist = np.linalg.norm(root_pos - target_pos)
-                    conn_str = "ON" if is_active else "OFF"
                     grip_raw = arm_pos_rad[5] if arm_pos_rad is not None else float('nan')
                     grip_action = action_np[5]
                     grip_sim = env.robot.data.joint_pos[0, env.gripper_idx].item()
@@ -1194,7 +1344,6 @@ def main():
                 # 수동 종료 (화살표 키)
                 key = _check_arrow_key()
                 if key == 'right':
-                    # → : 저장 후 리셋
                     active_steps = int(np.sum(np.asarray(episode_active, dtype=np.int32)))
                     if len(episode_obs) > 10 and active_steps > 10:
                         _save_episode(hdf5_file, saved_count,
@@ -1217,7 +1366,6 @@ def main():
                     if saved_count >= max_demos:
                         break
                 elif key == 'left':
-                    # ← : 폐기 후 리셋
                     print(f"\n  [←] 폐기, 리셋")
                     episode_obs.clear(); episode_actions.clear()
                     episode_active.clear(); episode_robot_state.clear()

@@ -78,8 +78,9 @@ bash feedback/setup_server_env.sh rl       # BC/RL만
 ```
 
 스크립트가 생성하는 conda 환경:
-- `inference`: Qwen2.5-VL-7B-Instruct (VLM orchestrator, ~15GB VRAM)
 - `rl_train`: Isaac Sim 5.0.0.0 (headless) + Isaac Lab v2.2.0 + skrl 1.4.3
+- `vllm`: vLLM 0.17.0 + Qwen2.5-VL-7B-Instruct (VLM 추론, OpenAI-compatible API)
+- `lerobotpi0`: π0-FAST + LeRobot (VLA 추론, 생성: `bash setup_lerobotpi0.sh`)
 
 ### 3-4. Isaac Lab 설치 (스크립트에 포함)
 
@@ -126,12 +127,20 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 
 ## 4. 서버 conda 환경 구성 (최종)
 
-| 환경 | 용도 | Phase | Conda 경로 |
-|------|------|-------|-----------|
-| `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | `~/miniconda3/` |
-| `inference` | Qwen2.5-VL-7B 추론 | Phase 4.5 + Phase 5 | `~/miniconda3/` |
-| `lerobotpi0` | pi0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | `~/miniconda3/` |
-| `groot` | GR00T N1.6 (VLA 파인튜닝) | Phase 4 | `~/miniconda3/` |
+| 환경 | 용도 | Phase | 상태 |
+|------|------|-------|------|
+| `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | ✅ 설치됨 |
+| `vllm` | vLLM 0.17.0 + Qwen2.5-VL-7B (VLM 추론, OpenAI API) | Phase 4.5 + Phase 5 | ✅ 설치됨 |
+| `lerobotpi0` | π0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ⬜ `bash setup_lerobotpi0.sh` |
+| `groot` | GR00T N1.6 (VLA 파인튜닝, 선택) | Phase 4 | ⬜ |
+
+**VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB):**
+```
+vLLM (Qwen 7B bf16):  --gpu-memory-utilization 0.45 → ~18GB 선점
+Pi0-FAST (VLA):        나머지 ~22GB 사용 (실제 ~6-8GB)
+합계:                  ~24-26GB / 40GB
+```
+> `--gpu-memory-utilization 0.45`는 vLLM이 KV cache를 위해 GPU 메모리를 선점하는 비율. 0.70 이상이면 VLA가 OOM.
 
 ---
 
@@ -219,32 +228,46 @@ python train_bc.py --demo_dir demos_skill3/ --epochs 300 \
 
 ### RL 학습 (서버)
 
-#### Skill-1 Navigate (BC 없이 from scratch) — v6c 확정 (2026-02-25)
+#### Skill-1 Navigate (ResiP: 텔레옵→DP BC→Residual PPO) — 2026-03-09
 
-> **v6c 확정**: simple tracking + collision/proximity 보상. action masking 없음, inference-time masking으로 대체.
-> - **보상**: lin_track(1.5, std=0.25) + ang_track(1.5, std=0.25) + collision(-2.0) + proximity(-0.5) + smooth(-0.005) + time(-0.01)
-> - **inference-time masking**: `collect_demos.py`에서만 적용. fwd/bwd→vx,wz=0, strafe→vy,wz=0
-> - **폐기**: v8(action masking 정체), v7(along/ortho), v6g(ortho drift penalty), v6e/v6f(비교 대상)
+> **ResiP 방식 채택**: 순수 RL의 drift 문제 해결. 텔레옵→BC→Residual RL 파이프라인.
+> - **BC**: DP BC (diffusion_policy.py), obs=20D, act=9D, epoch250 채택
+> - **보상**: lin_track(1.5, std=0.25) + ang_track(1.5, std=0.25) + smooth(-0.005) + time(-0.01)
+> - **장애물 회피**: RL에서 제거 — VLM이 2-4Hz로 실시간 판단하여 대체
+> - **direction commands**: 6개 (forward/backward/strafe_left/strafe_right/turn_left/turn_right)
+> - **action scale**: arm=0, gripper=0, base=0.25 (navigate는 base만 학습)
 >
-> **체크포인트 백업**:
-> - `backup/best_agent_v6c.pt`, `backup/best_agent_v6e.pt`, `backup/best_agent_v6f.pt`
-> - `backup/best_agent_v6g2.pt`, `backup/best_agent_v6g3.pt`, `backup/best_agent_v8.pt`
+> **체크포인트**:
+> - BC: `checkpoints/dp_bc_nav/dp_bc_epoch250.pt`
+> - ResiP: `checkpoints/resip_nav/resip_best.pt`
 
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
 export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
 mkdir -p logs && \
-nohup python train_lekiwi.py \
-    --skill navigate \
-    --num_envs 8192 \
-    --headless > logs/train_navigate_v6c.log 2>&1 &
-```
 
-**Early stopping** (navigate는 자동 활성): `rew_track_ang` rolling avg >= 1.35 **AND** `ang_vel_error` <= 0.02 (window=500)이면 자동 중단.
-수동 설정:
-```bash
---early_stop_metric rew_track_ang --early_stop_threshold 1.35 --early_stop_metric2 ang_vel_error --early_stop_threshold2 0.02 --early_stop_window 500
+# 1) BC 학습 (텔레옵 데이터 → DP BC)
+nohup python train_diffusion_bc.py \
+    --demo_path demos/teleop_navigate.hdf5 \
+    --obs_dim 20 --act_dim 9 \
+    --epochs 300 --save_every 50 \
+    --save_dir checkpoints/dp_bc_nav --save_name dp_bc.pt \
+    > logs/train_bc_nav.log 2>&1 &
+
+# 2) Residual RL 학습 (BC frozen + residual PPO)
+PYTHONUNBUFFERED=1 nohup python train_resip.py \
+    --skill navigate \
+    --bc_checkpoint checkpoints/dp_bc_nav/dp_bc_epoch250.pt \
+    --num_envs 1024 \
+    --num_env_steps 250 \
+    --total_timesteps 3000000 \
+    --action_scale_base 0.25 \
+    --lr_actor 3e-4 --lr_critic 5e-3 \
+    --warmup_steps_initial 600 --warmup_steps_final 0 --warmup_decay_iters 30 \
+    --eval_interval 3 --eval_first true \
+    --save_dir checkpoints/resip_nav \
+    --headless > logs/train_resip_nav.log 2>&1 &
 ```
 
 #### Skill-2 ApproachAndGrasp (BC warm-start + BC auxiliary loss)
@@ -286,14 +309,38 @@ nohup python train_lekiwi.py \
 
 #### A100 서버: 추론 서버 시작
 
-VLM 추론 서버:
+**방법 1: 통합 스크립트 (권장)**
 ```bash
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate inference && \
-cd ~/IsaacLab/scripts/lekiwi_nav_env && \
-python vlm_inference_server.py --port 8001
+cd ~/IsaacLab/scripts/lekiwi_nav_env
+
+# VLM + VLA 동시 실행
+bash launch_servers.sh all --checkpoint ~/datasets/lekiwi_vla/best_model/
+
+# VLM만
+bash launch_servers.sh vlm
+
+# VLA만
+bash launch_servers.sh vla --checkpoint ~/datasets/lekiwi_vla/best_model/
+
+# 종료
+bash launch_servers.sh stop
+
+# 로그 확인
+tail -f logs/vlm_server.log   # VLM (vLLM, port 8000)
+tail -f logs/vla_server.log   # VLA (Pi0, port 8002)
 ```
 
-VLA 추론 서버:
+**방법 2: 수동 실행**
+
+VLM 추론 서버 (vLLM, OpenAI-compatible API):
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate vllm && \
+cd ~/IsaacLab/scripts/lekiwi_nav_env && \
+bash run_vllm_server.sh
+# → port 8000, gpu-memory-utilization 0.45
+```
+
+VLA 추론 서버 (Pi0-FAST):
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate lerobotpi0 && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
@@ -301,6 +348,8 @@ python vla_inference_server.py \
     --checkpoint ~/datasets/lekiwi_vla/best_model/ \
     --port 8002
 ```
+
+> **lerobotpi0 환경 미생성 시**: `bash setup_lerobotpi0.sh` 실행 (최초 1회)
 
 #### 3090 Desktop: sim 평가 실행
 
@@ -311,16 +360,22 @@ cd ~/IsaacLab/scripts/lekiwi_nav_env
 
 # VLM + VLA 통합 평가 (전체 task)
 python eval_full_system.py \
-    --vlm_server http://<A100_IP>:8001 \
-    --vla_server http://<A100_IP>:8002 \
+    --vlm_server http://218.148.55.186:8000 \
+    --vla_server http://218.148.55.186:8002 \
     --num_trials 30 \
-    --task "bring the red cup" \
+    --task "find the medicine bottle and place it next to the red cup" \
     --multi_object_json object_catalog.json \
     --arm_limit_json calibration/arm_limits_measured.json
 
+# Navigate만 VLM+BC 평가 (vllm/ 디렉토리)
+python vllm/run_vlm_navigate.py \
+    --vlm_server http://218.148.55.186:8000 \
+    --bc_checkpoint checkpoints/dp_bc_nav/dp_bc_epoch250.pt \
+    --target_object "medicine bottle"
+
 # Skill별 단독 평가 (VLM 없이)
 python eval_full_system.py \
-    --vla_server http://<A100_IP>:8002 \
+    --vla_server http://218.148.55.186:8002 \
     --eval_mode skill_only --skill approach_and_grasp \
     --instruction "pick up the red cup" \
     --num_trials 50 \
@@ -517,9 +572,10 @@ ln -s ~/IsaacLab/calibration/arm_limits_measured.json calibration/arm_limits_mea
 | 파라미터 | 값 | 설명 |
 |---------|-----|------|
 | **핸드오프 지점** | **0.7m** | Navigate→ApproachAndGrasp 전환 거리 (VLM 판단) |
-| Navigate 방식 | Direction-Conditioned RL | VLM 방향 명령 추종 (velocity tracker, inference-time masking) |
+| Navigate 방식 | ResiP (DP BC + Residual PPO) | 텔레옵→BC→Residual RL. VLM이 장애물 판단 |
 | Navigate 방향 명령 | 6가지 cardinal | forward/backward/left/right/turn_left/turn_right |
-| Navigate rewards (v6c 확정) | lin_track=1.5(std=0.25), ang_track=1.5(std=0.25), collision=-2.0, proximity=-0.5, smooth=-0.005, time=-0.01 | simple tracking + obstacle avoidance. action masking 없음, inference-time masking으로 대체 |
+| Navigate rewards | lin_track=1.5(std=0.25), ang_track=1.5(std=0.25), smooth=-0.005, time=-0.01 | tracking only, 장애물 보상 없음 (VLM이 대체) |
+| VLM Navigate | vLLM + Qwen2.5-VL-7B (2-4Hz) | D455 base_cam 640×400 → 방향 command |
 | Navigate episode | 10초 | 도착 조건 없음, timeout까지 방향 추종 |
 | Navigate PPO | entropy=0.005, dead dims 0:6 frozen, clip_values=False | |
 | Skill-2 object_dist_min | 0.8m | ApproachAndGrasp 스폰 최소 거리 |

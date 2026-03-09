@@ -48,13 +48,6 @@ parser.add_argument("--arm_limit_json", type=str,
 parser.add_argument("--handoff_buffer", type=str, default="")
 parser.add_argument("--grip_override", action="store_true", default=False,
                     help="Rule-based gripper override: GT grip curve based on EE distance")
-# Navigate obstacle eval options
-parser.add_argument("--num_obstacles_min", type=int, default=None,
-                    help="Override min obstacles for eval (default: use env config)")
-parser.add_argument("--num_obstacles_max", type=int, default=None,
-                    help="Override max obstacles for eval (default: use env config)")
-parser.add_argument("--obstacle_none_prob", type=float, default=None,
-                    help="Override no-obstacle probability (0.0 = always obstacles)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -167,14 +160,6 @@ if args.skill == "navigate":
     env_cfg.arm_limit_write_to_sim = False
     env_cfg.force_tucked_pose = True
     env_cfg.episode_length_s = 30.0
-    env_cfg.render_obstacles = True  # GUI: show obstacle cylinders
-    # Obstacle overrides for eval
-    if args.num_obstacles_min is not None:
-        env_cfg.num_obstacles_min = args.num_obstacles_min
-    if args.num_obstacles_max is not None:
-        env_cfg.num_obstacles_max = args.num_obstacles_max
-    if args.obstacle_none_prob is not None:
-        env_cfg.obstacle_none_prob = args.obstacle_none_prob
 elif args.skill == "approach_and_grasp":
     from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
     env_cfg = Skill2EnvCfg()
@@ -301,15 +286,18 @@ def _restore_init_state(ep_data):
     env.object_rigid.update(env.sim.cfg.dt)
 
 
-# Navigate: ordered direction schedule (v3: 4 commands, no strafe)
+# Navigate: ordered direction schedule
 _NAV_DIR_SCHEDULE = [
     ([0, 1, 0],  "FORWARD"),
     ([0, -1, 0], "BACKWARD"),
-    ([0, 0, 0.33],  "TURN LEFT (CCW)"),
-    ([0, 0, -0.33], "TURN RIGHT (CW)"),
+    ([-1, 0, 0], "STRAFE LEFT"),
+    ([1, 0, 0],  "STRAFE RIGHT"),
+    ([0, 0, 1],  "TURN LEFT (CCW)"),
+    ([0, 0, -1], "TURN RIGHT (CW)"),
 ]
 _NAV_DIR_LABELS = {
     (0, 1, 0): "FORWARD", (0, -1, 0): "BACKWARD",
+    (-1, 0, 0): "STRAFE LEFT", (1, 0, 0): "STRAFE RIGHT",
     (0, 0, 1): "TURN LEFT (CCW)", (0, 0, -1): "TURN RIGHT (CW)",
 }
 _nav_schedule_idx = 0
@@ -324,8 +312,7 @@ obs, _ = env.reset()
 if is_navigate:
     cmd_vec, cmd_label = _NAV_DIR_SCHEDULE[_nav_schedule_idx % len(_NAV_DIR_SCHEDULE)]
     env._direction_cmd[0] = torch.tensor(cmd_vec, dtype=torch.float32, device=device)
-    n_obs = env._obstacle_valid[0].sum().item()
-    print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx}) | obstacles={n_obs:.0f}")
+    print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx})")
 
 if demo_episodes:
     _restore_init_state(demo_episodes[0])
@@ -403,12 +390,6 @@ lift_sustain = 0
 # Navigate tracking metrics
 nav_lin_errors = []
 nav_ang_errors = []
-nav_collision_fov_count = 0
-nav_collision_any_count = 0
-nav_ep_collision_fov = 0
-nav_ep_collision_any = 0
-nav_total_collisions_fov = 0
-nav_total_collisions_any = 0
 
 while episode < args.num_episodes and simulation_app.is_running():
     obs_t = obs["policy"].to(device) if isinstance(obs, dict) else obs.to(device)
@@ -473,16 +454,6 @@ while episode < args.num_episodes and simulation_app.is_running():
         nav_lin_errors.append(lin_err)
         nav_ang_errors.append(ang_err)
 
-        # Obstacle collision check (FOV vs all)
-        metrics = env._compute_metrics()
-        min_fov = metrics["min_obs_dist_fov"][0].item()
-        min_all = metrics["min_obs_dist_all"][0].item()
-        col_dist = float(env.cfg.collision_dist)
-        if min_fov < col_dist:
-            nav_ep_collision_fov += 1
-        if min_all < col_dist:
-            nav_ep_collision_any += 1
-
         if step_count % 50 == 0:
             dir_label = _nav_dir_label(cmd)
             vx = env.robot.data.root_lin_vel_b[0, 0].item()
@@ -491,45 +462,30 @@ while episode < args.num_episodes and simulation_app.is_running():
             pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
             avg_lin = sum(nav_lin_errors[-50:]) / len(nav_lin_errors[-50:])
             avg_ang = sum(nav_ang_errors[-50:]) / len(nav_ang_errors[-50:])
-            obs_str = f"obs_fov={min_fov:.2f} obs_all={min_all:.2f}"
             print(f"    [t={step_count:4d}] dir={dir_label} | "
                   f"vel=(vx={vx:+.2f},vy={vy:+.2f},wz={wz:+.2f}) | "
                   f"pos=({pos[0]:+.2f},{pos[1]:+.2f}) | "
-                  f"lin_err={avg_lin:.3f} ang_err={avg_ang:.3f} | {obs_str}", flush=True)
+                  f"lin_err={avg_lin:.3f} ang_err={avg_ang:.3f}", flush=True)
 
         done = terminated.any() or truncated.any()
-        term_reason = ""
-        if terminated.any() and not truncated.any():
-            if min_all < col_dist:
-                term_reason = " [COLLISION]"
-            else:
-                term_reason = " [OOB/FELL]"
         if done:
             episode += 1
             avg_lin = sum(nav_lin_errors) / max(len(nav_lin_errors), 1)
             avg_ang = sum(nav_ang_errors) / max(len(nav_ang_errors), 1)
             dir_label = _nav_dir_label(env._direction_cmd[0])
-            nav_total_collisions_fov += nav_ep_collision_fov
-            nav_total_collisions_any += nav_ep_collision_any
-            survived = "TIMEOUT" if truncated.any() else f"TERMINATED{term_reason}"
             print(f"  Episode {episode}/{args.num_episodes}: {dir_label} | "
-                  f"{step_count} steps | {survived} | "
-                  f"avg_lin_err={avg_lin:.4f} avg_ang_err={avg_ang:.4f} | "
-                  f"col_fov={nav_ep_collision_fov} col_any={nav_ep_collision_any}",
+                  f"{step_count} steps | avg_lin_err={avg_lin:.4f} avg_ang_err={avg_ang:.4f}",
                   flush=True)
             step_count = 0
             nav_lin_errors.clear()
             nav_ang_errors.clear()
-            nav_ep_collision_fov = 0
-            nav_ep_collision_any = 0
             dp_agent.reset()
             obs, _ = env.reset()
             if episode < args.num_episodes:
                 _nav_schedule_idx += 1
                 cmd_vec, cmd_label = _NAV_DIR_SCHEDULE[_nav_schedule_idx % len(_NAV_DIR_SCHEDULE)]
                 env._direction_cmd[0] = torch.tensor(cmd_vec, dtype=torch.float32, device=device)
-                n_obs = env._obstacle_valid[0].sum().item()
-                print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx}) | obstacles={n_obs:.0f}")
+                print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx})")
     else:
         ee_d, base_d, grip, obj_z, ee_z = get_distances()
         ep_min_ee = min(ep_min_ee, ee_d)
@@ -602,9 +558,7 @@ while episode < args.num_episodes and simulation_app.is_running():
                 env.object_rigid.update(env.sim.cfg.dt)
 
 if is_navigate:
-    print(f"\n  === Navigate eval 완료: {episode} episodes ===")
-    print(f"  총 충돌: FOV={nav_total_collisions_fov} steps, ALL={nav_total_collisions_any} steps")
-    print()
+    print(f"\n  === Navigate eval 완료: {episode} episodes ===\n")
 else:
     print(f"\n  === 결과: {successes}/{args.num_episodes} 성공 "
           f"({successes/max(episode,1)*100:.0f}%) ===\n")
