@@ -14,7 +14,7 @@ Observation (Actor 20D):
 
 Observation (Critic 25D, AAC):
   Actor 20D + speed(1) + direction_compliance(1) +
-  closest_obstacle_dist(1) + closest_obstacle_angle(1) + time_remaining(1)
+  closest_fov_obstacle_dist(1) + closest_fov_obstacle_angle(1) + time_remaining(1)
 
 Action (9D — lekiwi_v6 order):
   [0:5]   arm joint target (IGNORED — forced to TUCKED_POSE)
@@ -73,10 +73,12 @@ class Skill1EnvCfg(DirectRLEnvCfg):
         gravity=(0.0, 0.0, -9.81), device="cuda:0",
         physx=PhysxCfg(
             gpu_max_rigid_patch_count=2**18,  # 262144, default 163840 overflows at 8192 envs
+            enable_ccd=True,
+            enable_stabilization=True,
         ),
     )
     decimation: int = 2
-    episode_length_s: float = 10.0  # No target to seek; shorter episodes
+    episode_length_s: float = 10.0  # direction-conditioned, fixed duration
 
     # === Scene (same as Skill-2) ===
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
@@ -120,8 +122,9 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     num_object_categories: int = 12
 
     # === Obstacle (tensor-based, no USD prims) ===
-    num_obstacles_min: int = 3
+    num_obstacles_min: int = 0
     num_obstacles_max: int = 8
+    obstacle_none_prob: float = 0.3    # 30% episodes with zero obstacles
     obstacle_size_min: float = 0.15
     obstacle_size_max: float = 0.5
     obstacle_dist_min: float = 0.6
@@ -129,11 +132,12 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     collision_dist: float = 0.20
     obstacle_clearance_from_object: float = 0.4
 
-    # === Pseudo-Lidar ===
+    # === Pseudo-Lidar (D455 FOV matched) ===
     lidar_num_rays: int = 8
     lidar_max_range: float = 2.0
+    lidar_fov_deg: float = 87.0        # D455 depth horizontal FOV
 
-    # === Reward (v6c: simple tracking, no action masking) ===
+    # === Reward (direction tracking + obstacle avoidance) ===
     rew_time_penalty: float = -0.01
     rew_track_lin_weight: float = 1.5      # linear velocity tracking (exp kernel)
     rew_track_ang_weight: float = 1.5      # angular velocity tracking (exp kernel)
@@ -141,13 +145,15 @@ class Skill1EnvCfg(DirectRLEnvCfg):
     rew_track_ang_std: float = 0.25        # rad/s
     rew_action_smoothness: float = -0.005  # delta_action² penalty
     rew_collision: float = -2.0            # obstacle collision penalty
-    rew_proximity: float = -0.5            # obstacle proximity penalty
+    rew_proximity: float = -0.5            # obstacle proximity penalty (scaled by closeness)
+    rew_backward: float = -0.3            # backward movement penalty (no rear camera)
 
     # === Eval ===
     eval_cardinal_yaw: bool = False  # snap yaw to 0/90/180/270° at reset
 
     # === Termination ===
     max_dist_from_origin: float = 6.0
+    terminate_on_any_collision: bool = True  # terminate on ANY collision (incl. FOV-outside)
 
     # === DR (wheel only, no arm/object/grasp DR) ===
     enable_domain_randomization: bool = True
@@ -167,6 +173,10 @@ class Skill1EnvCfg(DirectRLEnvCfg):
 
     # Action delay
     dr_action_delay_steps: int = 1
+
+    # === Arm control ===
+    force_tucked_pose: bool = True  # True: arm/gripper forced to TUCKED_POSE (pure RL)
+                                     # False: arm/gripper use policy output (ResiP, carry 시 grasp 유지)
 
     # === TUCKED_POSE JSON (optional override) ===
     tucked_pose_json: str | None = None
@@ -307,10 +317,18 @@ class Skill1Env(DirectRLEnv):
             self._catalog_bbox = torch.tensor([[0.05, 0.05, 0.05]], dtype=torch.float32, device=self.device)
             self._catalog_category = torch.tensor([0.0], dtype=torch.float32, device=self.device)
 
-        # Precompute lidar ray angles (body frame, uniform)
+        # Precompute lidar ray angles (body frame, D455 FOV)
+        # Robot forward = body +Y → heading offset +π/2 from body X
+        # D455 FOV centered on forward direction
+        fov_rad = math.radians(self.cfg.lidar_fov_deg)
+        half_fov = fov_rad / 2.0
+        # Rays centered on +Y (forward): angles relative to heading
+        # heading=0 points along +X in world; +π/2 = +Y = forward
+        # So ray angles in body frame: π/2 ± half_fov
         self._lidar_ray_angles = torch.linspace(
-            0, 2 * math.pi, self.cfg.lidar_num_rays + 1, device=self.device
-        )[:-1]  # (num_rays,)
+            math.pi / 2 - half_fov, math.pi / 2 + half_fov,
+            self.cfg.lidar_num_rays, device=self.device
+        )  # (num_rays,)
 
         self._maybe_apply_tuned_dynamics_from_cfg()
         self._apply_baked_arm_limits()
@@ -425,8 +443,20 @@ class Skill1Env(DirectRLEnv):
             )
             self.object_rigid = RigidObject(object_cfg)
 
-        ground_cfg = sim_utils.GroundPlaneCfg()
+        # flat_plane.usd와 동일: friction=1.0, improvePatchFriction=True
+        ground_cfg = sim_utils.GroundPlaneCfg(
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0, dynamic_friction=1.0, restitution=0.0,
+            ),
+        )
         ground_cfg.func("/World/ground", ground_cfg)
+        # improvePatchFriction: omni wheel slip 방지 (flat_plane.usd 동일)
+        import omni.usd
+        from pxr import Sdf
+        stage = omni.usd.get_context().get_stage()
+        mat_prim = stage.GetPrimAtPath("/World/ground/GroundPlane/Looks/Grid/Grid")
+        if mat_prim.IsValid():
+            mat_prim.CreateAttribute("physxMaterial:improvePatchFriction", Sdf.ValueTypeNames.Bool).Set(True)
         light_cfg = sim_utils.DomeLightCfg(intensity=1500.0, color=(0.9, 0.9, 0.9))
         light_cfg.func("/World/Light", light_cfg)
 
@@ -815,9 +845,12 @@ class Skill1Env(DirectRLEnv):
         M = self._max_obstacles
 
         # Random number of obstacles per env
+        # obstacle_none_prob of episodes have zero obstacles
+        no_obstacle_mask = torch.rand(n, device=self.device) < cfg.obstacle_none_prob
         num_obs = torch.randint(
-            cfg.num_obstacles_min, cfg.num_obstacles_max + 1, (n,), device=self.device
+            max(cfg.num_obstacles_min, 1), cfg.num_obstacles_max + 1, (n,), device=self.device
         )
+        num_obs[no_obstacle_mask] = 0
 
         # Generate all obstacle positions (polar sampling around robot)
         r = torch.rand(n, M, device=self.device) * (cfg.obstacle_dist_max - cfg.obstacle_dist_min) + cfg.obstacle_dist_min
@@ -889,8 +922,9 @@ class Skill1Env(DirectRLEnv):
         angle_diff = obs_angle_exp - world_angles_exp  # (N, num_rays, M)
         angle_diff = torch.atan2(torch.sin(angle_diff), torch.cos(angle_diff))
 
-        # Beam half-width
-        beam_half_width = math.pi / num_rays
+        # Beam half-width: FOV / num_rays / 2
+        fov_rad = math.radians(self.cfg.lidar_fov_deg)
+        beam_half_width = fov_rad / num_rays / 2.0
 
         # Obstacles within beam: (N, num_rays, M)
         in_beam = torch.abs(angle_diff) < beam_half_width
@@ -956,20 +990,46 @@ class Skill1Env(DirectRLEnv):
         vel_norm[:, 2] = vel_norm[:, 2] / (self.cfg.max_ang_vel + 1e-6)
         direction_compliance = (cmd * vel_norm).sum(dim=-1)  # (N,)
 
-        # Closest obstacle
+        # === Obstacle distances (all obstacles) ===
         robot_xy = root_pos_w[:, :2].unsqueeze(1)  # (N, 1, 2)
         delta_obs = self._obstacle_pos - robot_xy  # (N, M, 2)
-        obs_dist_all = torch.norm(delta_obs, dim=-1) - self._obstacle_radius  # (N, M)
+        surface_dist = torch.norm(delta_obs, dim=-1) - self._obstacle_radius  # (N, M)
         obs_dist_all = torch.where(
-            self._obstacle_valid, obs_dist_all,
+            self._obstacle_valid, surface_dist,
             torch.tensor(float("inf"), device=self.device)
         )
-        min_obs_dist, min_obs_idx = obs_dist_all.min(dim=-1)  # (N,)
+        min_obs_dist_all, _ = obs_dist_all.min(dim=-1)  # (N,) — for termination
 
-        # Angle to closest obstacle (body frame)
-        closest_delta = torch.gather(delta_obs, 1, min_obs_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, 2)).squeeze(1)
-        closest_delta_b = quat_apply_inverse(root_quat_w, torch.cat([closest_delta, torch.zeros(self.num_envs, 1, device=self.device)], dim=-1))
-        closest_obs_angle = torch.atan2(closest_delta_b[:, 1], closest_delta_b[:, 0])
+        # === FOV filtering: transform deltas to body frame ===
+        N, M = delta_obs.shape[:2]
+        delta_obs_3d = torch.cat([delta_obs, torch.zeros(N, M, 1, device=self.device)], dim=-1)
+        delta_body = quat_apply_inverse(
+            root_quat_w.unsqueeze(1).expand(-1, M, -1).reshape(N * M, 4),
+            delta_obs_3d.reshape(N * M, 3),
+        ).reshape(N, M, 3)  # (N, M, 3) body frame
+
+        # Angle in body frame: +Y = forward = π/2
+        obs_angle_body = torch.atan2(delta_body[:, :, 1], delta_body[:, :, 0])  # (N, M)
+        fov_half_rad = math.radians(self.cfg.lidar_fov_deg / 2.0)
+        in_fov = (obs_angle_body - math.pi / 2).abs() < fov_half_rad  # (N, M)
+
+        # FOV-filtered min distance (for reward)
+        obs_dist_fov = torch.where(
+            self._obstacle_valid & in_fov, surface_dist,
+            torch.tensor(float("inf"), device=self.device)
+        )
+        min_obs_dist_fov, min_fov_idx = obs_dist_fov.min(dim=-1)  # (N,)
+
+        # Closest FOV obstacle angle (for critic obs)
+        closest_fov_delta_b = torch.gather(
+            delta_body, 1, min_fov_idx.unsqueeze(1).unsqueeze(2).expand(-1, 1, 3)
+        ).squeeze(1)  # (N, 3)
+        closest_fov_obs_angle = torch.atan2(closest_fov_delta_b[:, 1], closest_fov_delta_b[:, 0])
+        # When no FOV obstacle, default angle to π/2 (straight ahead)
+        no_fov_obs = min_obs_dist_fov.isinf()
+        closest_fov_obs_angle = torch.where(
+            no_fov_obs, torch.tensor(math.pi / 2, device=self.device), closest_fov_obs_angle
+        )
 
         return {
             "root_pos_w": root_pos_w,
@@ -977,8 +1037,9 @@ class Skill1Env(DirectRLEnv):
             "lin_speed": lin_speed,
             "direction_compliance": direction_compliance,
             "vel_norm": vel_norm,
-            "min_obs_dist": min_obs_dist,
-            "closest_obs_angle": closest_obs_angle,
+            "min_obs_dist_all": min_obs_dist_all,          # all obstacles (termination)
+            "min_obs_dist_fov": min_obs_dist_fov,          # FOV only (reward)
+            "closest_fov_obs_angle": closest_fov_obs_angle,  # FOV closest angle (critic)
         }
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1016,11 +1077,17 @@ class Skill1Env(DirectRLEnv):
         vel_target[:, self.wheel_idx] = wheel_radps
         self.robot.set_joint_velocity_target(vel_target)
 
-        # Arm forced to TUCKED_POSE (position target)
+        # Arm control
         pos_target = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
-        tucked = self._tucked_pose.unsqueeze(0).expand(self.num_envs, -1)  # (N, 5)
-        pos_target[:, self.arm_idx[:5]] = tucked
-        pos_target[:, self.arm_idx[5]] = _TUCKED_GRIPPER_RAD  # gripper tucked (closed)
+        if self.cfg.force_tucked_pose:
+            # Arm forced to TUCKED_POSE (pure RL mode)
+            tucked = self._tucked_pose.unsqueeze(0).expand(self.num_envs, -1)  # (N, 5)
+            pos_target[:, self.arm_idx[:5]] = tucked
+            pos_target[:, self.arm_idx[5]] = _TUCKED_GRIPPER_RAD
+        else:
+            # Arm passthrough: maintain current joint positions (ResiP / carry mode)
+            pos_target[:, self.arm_idx[:5]] = self.robot.data.joint_pos[:, self.arm_idx[:5]]
+            pos_target[:, self.arm_idx[5]] = self.robot.data.joint_pos[:, self.arm_idx[5]]
         self.robot.set_joint_position_target(pos_target)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1060,11 +1127,11 @@ class Skill1Env(DirectRLEnv):
         # Critic Observation (25D, AAC)
         time_remaining = 1.0 - (self.episode_length_buf.float() / max(float(self.max_episode_length), 1.0))
         critic_extra = torch.cat([
-            metrics["lin_speed"].unsqueeze(-1),               # 1D
-            metrics["direction_compliance"].unsqueeze(-1),    # 1D
-            metrics["min_obs_dist"].unsqueeze(-1).clamp(max=5.0),  # 1D
-            metrics["closest_obs_angle"].unsqueeze(-1),       # 1D
-            time_remaining.unsqueeze(-1),                     # 1D
+            metrics["lin_speed"].unsqueeze(-1),                      # 1D
+            metrics["direction_compliance"].unsqueeze(-1),           # 1D
+            metrics["min_obs_dist_fov"].unsqueeze(-1).clamp(max=5.0),  # 1D — FOV only
+            metrics["closest_fov_obs_angle"].unsqueeze(-1),          # 1D — FOV closest angle
+            time_remaining.unsqueeze(-1),                            # 1D
         ], dim=-1)  # 5D
         critic_obs = torch.cat([actor_obs, critic_extra], dim=-1)  # 25D
         self._critic_obs = critic_obs
@@ -1106,19 +1173,27 @@ class Skill1Env(DirectRLEnv):
         delta_action = self.actions[:, 6:9] - self.prev_actions[:, 6:9]
         rew_smooth = self.cfg.rew_action_smoothness * (delta_action ** 2).sum(dim=-1)
 
-        # 4. Collision & proximity (obstacle avoidance)
-        closest_obs_dist = metrics.get("closest_obs_dist",
-            torch.full((self.num_envs,), 999.0, device=self.device))
-        collision = (closest_obs_dist < self.cfg.collision_dist).float()
-        rew_collision = self.cfg.rew_collision * collision
-        proximity = torch.clamp(1.0 - closest_obs_dist / self.cfg.lidar_max_range, min=0.0)
-        rew_proximity = self.cfg.rew_proximity * proximity
+        # 4. Collision & proximity — FOV only (agent can only avoid what it sees)
+        min_obs_dist_fov = metrics["min_obs_dist_fov"]  # (N,) FOV-only closest distance
+        collision_fov = (min_obs_dist_fov < self.cfg.collision_dist).float()
+        rew_collision = self.cfg.rew_collision * collision_fov
+        proximity_fov = torch.clamp(1.0 - min_obs_dist_fov / self.cfg.lidar_max_range, min=0.0)
+        rew_proximity = self.cfg.rew_proximity * proximity_fov
 
-        total = reward + rew_track_lin + rew_track_ang + rew_smooth + rew_collision + rew_proximity
+        # 5. Backward movement penalty (no rear camera)
+        # body vy < 0 = backward movement
+        backward = torch.clamp(-base_vel[:, 1], min=0.0)  # positive when moving backward
+        rew_backward = self.cfg.rew_backward * backward
+
+        total = reward + rew_track_lin + rew_track_ang + rew_smooth + rew_collision + rew_proximity + rew_backward
 
         # Direction compliance (for logging & early stopping)
         vel_norm = metrics["vel_norm"]
         direction_compliance = (cmd * vel_norm).sum(dim=-1)
+
+        # All-obstacle collision (for logging only — reward uses FOV only)
+        min_obs_dist_all = metrics["min_obs_dist_all"]
+        collision_any = (min_obs_dist_all < self.cfg.collision_dist).float()
 
         # Logging
         lin_speed = actual_lin.pow(2).sum(dim=-1).sqrt()
@@ -1129,11 +1204,15 @@ class Skill1Env(DirectRLEnv):
             "rew_smooth": rew_smooth.mean(),
             "rew_collision": rew_collision.mean(),
             "rew_proximity": rew_proximity.mean(),
+            "rew_backward": rew_backward.mean(),
             "direction_compliance": direction_compliance.mean(),
             "lin_vel_error": lin_vel_error.mean(),
             "ang_vel_error": ang_vel_error.mean(),
             "avg_speed": metrics["lin_speed"].mean(),
-            "collision_rate": collision.mean(),
+            "min_obs_dist_fov": min_obs_dist_fov.mean(),
+            "min_obs_dist_all": min_obs_dist_all.mean(),
+            "collision_fov_rate": collision_fov.mean(),
+            "collision_any_rate": collision_any.mean(),
             "turn_lin_speed": (lin_speed * is_turn.float()).sum() / is_turn.float().sum().clamp(min=1),
         }
 
@@ -1154,7 +1233,13 @@ class Skill1Env(DirectRLEnv):
         ) > self.cfg.max_dist_from_origin
         env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
         fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
+
+        # Terminate on ANY obstacle collision (FOV inside or outside)
+        # "네 잘못은 아니지만 실패는 실패" — indirect backward suppression
         terminated = out_of_bounds | fell
+        if self.cfg.terminate_on_any_collision:
+            any_collision = metrics["min_obs_dist_all"] < self.cfg.collision_dist
+            terminated = terminated | any_collision
 
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         # No arrival condition in direction-conditioned mode

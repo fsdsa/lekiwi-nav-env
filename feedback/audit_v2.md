@@ -1,681 +1,258 @@
-# Task 변경 사양서: "약병 찾아서 빨간 컵 옆에 놔"
+# Navigate (Skill1) 수정 사양서 v2
 
-> 이 문서는 기존 파이프라인의 task를 변경하기 위해 수정이 필요한 모든 파일과 변경 내용을 정의한다.
-> Claude Code에게 이 문서를 주고 수정을 요청할 것.
+## 배경 및 전체 아키텍처
+
+### 전체 파이프라인
+```
+Qwen VLM (0.3Hz, Task Planner)
+  │
+  │ 카메라 이미지 + task instruction
+  │ → 상황 판단 → 이산 command 또는 스킬 전환
+  │
+  ├── Navigate: 이산 command (전진/후진/좌이동/우이동/좌회전/우회전)
+  ├── Approach & Grasp: displacement 또는 스킬 트리거
+  └── Carry & Place: displacement 또는 스킬 트리거
+
+단일 VLA 모델, 3 스킬 파인튜닝
+Action space 통일: 9D = [arm(5), gripper(1), base_vx, base_vy, base_wz]
+```
+
+### Navigate 단계 역할
+- VLM이 0.3Hz로 6개 이산 command 중 하나를 선택
+- VLA가 command + 카메라 + robot_state를 받아 9D 연속 action 출력
+- Navigate 시 arm ≈ 0 (tucked), base만 활성
+- 정지 타이밍은 VLM이 결정 (VLA가 아님)
+- displacement 사용하지 않음 (탐색 중 목표를 지나칠 수 있으므로)
+
+### VLA 학습 전략 (privileged teacher → vision student 증류)
+- Sim에서 RL expert는 **lidar** (privileged info)로 장애물 감지하여 회피 학습
+- RL expert로 데이터 수집 시 **카메라(RGB+D)도 함께 녹화**
+- VLA는 카메라만 입력으로 받아 동일 행동을 모방 학습
+- 실물에 lidar 없어도 VLA가 카메라로 장애물 보고 피하게 됨
 
 ---
 
-## 1. Task 변경 요약
+## 수정 사항
 
-### 기존 Task
-```
-"빨간 컵 바구니에 넣어"
-Navigate(컵 탐색) → Grasp(컵) → Navigate(바구니로 이동) → Place(바구니 안에)
-목적지: 바구니 (basket) — 랜덤 스폰 4.0~5.0m
-```
+### 1. Lidar FOV를 D455 depth FOV에 맞추기
 
-### 새 Task
+**현재:**
 ```
-"약병 찾아서 빨간 컵 옆에 놓아"
-Navigate(약병 탐색) → Grasp(약병) → Navigate(빨간 컵 탐색) → Place(빨간 컵 옆에)
-source_object: 약병 (grasp 대상)
-destination_object: 빨간 컵 (place 기준점)
+360° / 8 rays = 45° 간격, 전방위
 ```
 
-### 핵심 변경점
-1. **목적지가 바구니 → 두 번째 물체(빨간 컵)**로 변경
-2. **VLM이 2-object 순차 추적** 필요 (잡은 후 추적 대상 전환)
-3. **Success criteria**: "바구니 안" → "빨간 컵으로부터 XY 20cm 이내"
-4. **물체 2개가 환경에 동시 존재**: 약병 + 빨간 컵
+**변경:**
+```
+~87° 전방 FOV / 8 rays ≈ 11° 간격, 전방만
+- D455 Depth FOV: 수평 ~87°
+- robot forward = body +Y 방향
+- lidar rays를 body +Y 중심으로 ±43.5° 범위에 8개 균등 배치
+```
 
-### 물체 USD 경로
-- **약병 (source, grasp 대상)**: `/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd`
-- **빨간 컵 (destination, place 기준점)**: `/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd`
+**이유:**
+VLA는 전방 카메라만 사용하므로, RL expert도 전방만 감지해야 증류 시 혼란 없음.
+360° lidar로 학습하면 카메라 FOV 밖 장애물 때문에 행동하는 경우가 생기고,
+VLA가 이를 재현할 수 없음.
 
 ---
 
-## 2. 수정 대상 파일 목록
+### 2. FOV 기반 장애물 보상 (핵심 변경)
 
-| 파일 | 수정 범위 | 우선도 |
-|------|----------|--------|
-| `lekiwi_skill3_env.py` | 대규모 — 바구니 → 두 번째 물체 목적지 | 최우선 |
-| `lekiwi_skill2_env.py` | 소규모 — 두 번째 물체(빨간 컵) 동시 스폰 | 높음 |
-| `vlm_orchestrator.py` | 대규모 — 2-object 추적 오케스트레이션 | 높음 |
-| `vlm_prompts.py` | 대규모 — system prompt 전면 재작성 | 높음 |
-| `record_teleop.py` | 중규모 — combined 모드 목적지 변경 | 중간 |
-| `collect_demos.py` | 소규모 — instruction 템플릿 변경 | 중간 |
-| `eval_full_system.py` | 중규모 — success criteria 변경 | 중간 |
-| `generate_handoff_buffer.py` | 소규모 — 두 번째 물체 상태 포함 | 중간 |
-| `convert_hdf5_to_lerobot_v3.py` | 변경 없음 — 9D state/action 구조 불변 | — |
-| `train_lekiwi.py` | 변경 없음 — RL 학습 구조 불변 | — |
-| `train_bc.py` | 변경 없음 — BC 학습 구조 불변 | — |
-| `lekiwi_skill1_env.py` | 변경 없음 — Navigate는 방향 추종 전용 | — |
+**현재 문제:**
+장애물은 360° 전방위에 스폰되는데, collision/proximity reward가 **모든 장애물** 기준으로 계산됨.
+→ RL이 관측할 수 없는 뒤쪽 장애물에 대해 페널티를 받으면 학습 신호가 혼란스러움.
+→ "아무것도 안 보이는데 갑자기 -2.0" → 정책 불안정 또는 보수적 수렴.
+
+**변경: 보상은 FOV 내 장애물만, 종료는 모든 충돌**
+
+```
+FOV 내 장애물 (lidar가 감지 가능):
+  - collision penalty: -2.0 (충돌 시)
+  - proximity penalty: -0.5 × closeness (가까울수록)
+  → RL이 "보이는 장애물은 내 책임" 학습
+
+FOV 밖 장애물 (lidar가 감지 불가):
+  - collision penalty: 없음 (보이지 않으므로 페널티 불공정)
+  - proximity penalty: 없음
+  - 물리적 충돌 시: episode termination만
+  → "네 잘못은 아니지만 실패는 실패"
+  → 간접적으로 후방 이동 최소화 학습
+```
+
+**구현 방법:**
+
+_compute_metrics()에서 두 종류의 최소 거리를 계산:
+
+```python
+# 1. FOV 내 장애물만 필터링 (reward용)
+#    각 장애물이 robot 기준 ±43.5° (FOV/2) 안에 있는지 체크
+obstacle_angle_body = atan2(delta_y_body, delta_x_body)  # body frame 기준
+in_fov = abs(obstacle_angle_body - π/2) < fov_half_rad   # +Y(전방) 중심
+obs_dist_fov = where(in_fov & valid, surface_dist, inf)
+min_obs_dist_fov = obs_dist_fov.min(dim=-1)  # → collision/proximity reward에 사용
+
+# 2. 모든 장애물 (termination용)
+obs_dist_all = where(valid, surface_dist, inf)
+min_obs_dist_all = obs_dist_all.min(dim=-1)  # → termination 판단에 사용
+```
+
+**reward 함수 수정:**
+```python
+# collision & proximity: FOV 내만
+collision_fov = (min_obs_dist_fov < collision_dist).float()
+rew_collision = rew_collision_weight * collision_fov
+
+proximity_fov = clamp(1.0 - min_obs_dist_fov / lidar_max_range, min=0.0)
+rew_proximity = rew_proximity_weight * proximity_fov
+```
+
+**termination 수정:**
+```python
+# 어떤 장애물이든 충돌하면 에피소드 종료
+any_collision = min_obs_dist_all < collision_dist
+terminated = out_of_bounds | fell | any_collision
+```
+
+**이유:**
+- 보상은 "관측 가능한 것"에 대해서만 → 학습 가능한 신호
+- 종료는 "물리적 사실"에 대해서 → 후방 이동 자체를 간접적으로 억제
+- 후진 페널티(rew_backward)와 결합하면, RL이 자연스럽게 "뒤로 갈 일 있으면 회전 후 전진" 패턴 학습
 
 ---
 
-## 3. 파일별 상세 변경 사항
+### 3. 후진 페널티
 
-### 3-1. `lekiwi_skill3_env.py` (대규모)
-
-이 파일이 가장 큰 변경. 바구니(basket)를 두 번째 물체(destination object)로 대체.
-
-#### 3-1-1. Config 변경
+**설정:** `rew_backward = -0.3`
 
 ```python
-# 기존
-class Skill3EnvCfg:
-    basket_spawn_dist_min: float = 4.0       # 바구니 스폰 최소 거리
-    basket_spawn_dist_max: float = 5.0       # 바구니 스폰 최대 거리
-    basket_radius: float = 0.20              # 바구니 안 판정 반경
-    basket_height: float = 0.25              # 바구니 높이 판정
-
-# 변경 →
-class Skill3EnvCfg:
-    dest_object_usd: str = "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd"
-    dest_spawn_dist_min: float = 2.0         # 빨간 컵 스폰 최소 거리 (source object 기준)
-    dest_spawn_dist_max: float = 4.0         # 빨간 컵 스폰 최대 거리
-    dest_spawn_min_separation: float = 1.0   # source와 dest 최소 이격 거리
-    place_radius: float = 0.20               # "옆에" 판정 반경 (XY 20cm 이내)
-    place_height_tolerance: float = 0.10     # 높이 허용 오차 (바닥 물체이므로 작게)
+# body vy < 0 = backward movement
+backward_speed = clamp(-body_vel_y, min=0.0)
+rew_backward = -0.3 * backward_speed
 ```
 
-#### 3-1-2. 바구니 스폰 → 빨간 컵 스폰
-
-```python
-# 기존: _spawn_basket() — 바구니 USD를 env origin에서 4.0~5.0m 거리에 스폰
-# 변경: _spawn_dest_object() — 빨간 컵 USD를 스폰
-
-# 빨간 컵은 일반 rigid body로 스폰 (바구니와 달리 고정 아님)
-# 바닥에 놓이므로 z = bbox_z * 0.5
-# source object(약병)과 최소 dest_spawn_min_separation(1.0m) 이격
-# 랜덤 yaw 회전 적용
-```
-
-#### 3-1-3. `basket_pos_w` → `dest_object_pos_w`
-
-모든 코드에서 `basket_pos_w` 변수명을 `dest_object_pos_w`로 변경. 이 위치는 빨간 컵의 현재 world position.
-
-```python
-# 기존
-self.basket_pos_w = ...  # 바구니 위치
-
-# 변경 →
-self.dest_object_pos_w = ...  # 빨간 컵 위치 (매 step 갱신 — rigid body이므로 밀릴 수 있음)
-```
-
-**주의**: 바구니는 고정 물체였지만 빨간 컵은 **rigid body**이므로, 로봇이 접근하다가 밀 수 있음. 매 step에서 `dest_object_pos_w`를 갱신해야 함. 또는 빨간 컵을 kinematic body로 고정하는 옵션 추가 (`dest_object_fixed: bool = True`).
-
-#### 3-1-4. Success Criteria 변경
-
-```python
-# 기존: _check_place_success()
-# 조건: XY radius(0.20m) + Z height(0.25m) 이내 + gripper open + not dropped
-def _check_place_success(self):
-    obj_pos = self.object_pos_w
-    basket_pos = self.basket_pos_w
-    xy_dist = torch.norm(obj_pos[:, :2] - basket_pos[:, :2], dim=1)
-    z_ok = obj_pos[:, 2] < basket_pos[:, 2] + self.cfg.basket_height
-    return (xy_dist < self.cfg.basket_radius) & z_ok & gripper_open & ~dropped
-
-# 변경 →
-def _check_place_success(self):
-    obj_pos = self.source_object_pos_w       # 약병 (놓인 후 위치)
-    dest_pos = self.dest_object_pos_w        # 빨간 컵 위치
-    xy_dist = torch.norm(obj_pos[:, :2] - dest_pos[:, :2], dim=1)
-    z_diff = torch.abs(obj_pos[:, 2] - dest_pos[:, 2])
-    return (xy_dist < self.cfg.place_radius) & (z_diff < self.cfg.place_height_tolerance) & gripper_open & ~dropped
-```
-
-#### 3-1-5. Actor Observation 변경
-
-```python
-# 기존 Skill-3 Actor obs (29D):
-# 9D + base_vel(6) + arm_vel(6) + basket_rel(3) + grip_force(1) + obj_bbox(3) + obj_category(1)
-
-# 변경 →
-# 9D + base_vel(6) + arm_vel(6) + dest_object_rel(3) + grip_force(1) + obj_bbox(3) + obj_category(1)
-# = 여전히 29D, basket_rel → dest_object_rel로만 바뀜
-
-# basket_rel 계산:
-# 기존: basket_pos - robot_pos (world frame → body frame 변환)
-# 변경: dest_object_pos - robot_pos (동일 변환)
-```
-
-obs 차원(29D)은 변하지 않음. `basket_rel`의 의미가 "바구니까지 상대 위치"에서 "빨간 컵까지 상대 위치"로 바뀔 뿐.
-
-#### 3-1-6. Intentional Place 메커니즘 변경
-
-```python
-# 기존: gripper_open + near_basket(basket_radius × 3.0 = 0.6m 이내) → FixedJoint 해제
-# 변경: gripper_open + near_dest_object(place_radius × 3.0 = 0.6m 이내) → FixedJoint 해제
-# 로직 동일, 거리 기준만 dest_object_pos_w로 변경
-```
-
-#### 3-1-7. 리셋 로직
-
-```python
-# _reset_idx() 또는 _reset_fallback()에서:
-# 기존: 바구니 위치 재스폰
-# 변경: 빨간 컵 위치 재스폰 (source object와 충분히 이격)
-
-# _reset_from_handoff()에서:
-# 기존: handoff buffer에서 로봇+source 물체 상태 복원, 바구니 스폰
-# 변경: handoff buffer에서 로봇+source 물체 상태 복원, 빨간 컵 스폰
-# handoff buffer에 dest_object 정보는 불필요 (매 에피소드 새로 스폰)
-```
-
-#### 3-1-8. 변수명 일괄 치환 요약
-
-| 기존 | 변경 | 비고 |
-|------|------|------|
-| `basket_pos_w` | `dest_object_pos_w` | 빨간 컵 world position |
-| `basket_rel` | `dest_object_rel` | body-frame 상대 위치 (obs) |
-| `basket_radius` | `place_radius` | "옆에" 판정 반경 |
-| `basket_height` | `place_height_tolerance` | 높이 판정 |
-| `basket_spawn_dist_min/max` | `dest_spawn_dist_min/max` | 스폰 거리 |
-| `_spawn_basket()` | `_spawn_dest_object()` | 스폰 함수 |
-| `_check_place_success()` | 시그니처 유지, 내부 로직 변경 | 위 참조 |
-| `parse_basket_detection()` | 삭제 또는 `parse_dest_object_detection()`으로 변경 | VLM orchestrator |
+**이유:**
+- 전방 카메라만 있으므로 후진 시 뒤를 볼 수 없음
+- RL이 학습하는 행동: "뒤로 가야 하는 상황 → 회전해서 전방 확인 후 전진"
+- FOV 밖 충돌 termination과 시너지: 후진 자체를 줄이면 뒤쪽 충돌도 자연히 감소
 
 ---
 
-### 3-2. `lekiwi_skill2_env.py` (소규모)
+### 4. 장애물 환경 구성
 
-Skill-2 환경에 **빨간 컵(destination object)을 배경 물체로 동시 스폰**해야 함. 이유: VLA 데이터 수집 시 빨간 컵이 이미지에 보여야 VLA가 "이건 잡지 않는다"를 학습할 수 있음.
+**장애물은 360° 전방위에 스폰 (변경 없음)**
 
-#### 변경 사항
+실제 집에서 장애물은 모든 방향에 있으므로 현실적.
+reward만 FOV 기반으로 제한하고, 스폰은 그대로 유지.
 
-```python
-# 에피소드 리셋 시:
-# 기존: source object 1개만 스폰
-# 변경: source object(약병) + dest object(빨간 컵) 2개 스폰
-#        dest object는 잡기 대상이 아님 (RL reward에 영향 없음)
-#        source와 dest는 최소 1.0m 이격
-
-# dest object는 rigid body로 스폰하되:
-# - contact sensor 불필요
-# - FixedJoint 대상 아님
-# - reward 계산에 포함 안 됨
-# - 카메라에 보이기만 하면 됨
+**에피소드별 장애물 다양성:**
+```
+장애물 없음 (obstacle_none_prob=0.3):  ~30%
+장애물 적음 (1~3개):                  ~40%
+장애물 많음 (4~8개):                  ~30%
 ```
 
-**RL 학습 시**: dest object가 있어도 RL 보상 구조는 불변. Actor obs에 dest object 정보 포함 안 됨. 단, 물리 시뮬레이션에 두 물체가 존재하므로 충돌은 자연스럽게 처리됨.
+**장애물 배치 다양성:**
+- 정면 장애물 → 크게 우회 학습
+- 측면 장애물 → 살짝 피함 학습
+- 좁은 통로 → 정밀 통과 학습
+- 장애물 없음 → 직진 유지 학습 (BC 행동 보존)
 
-**Phase 2 데이터 수집 시**: 카메라 이미지에 빨간 컵이 보이므로, VLA가 "빨간 컵은 잡지 않고 약병을 잡는다"를 instruction으로 학습 가능.
+**robot 시작 위치 30cm, 타겟 오브젝트 40cm 이내에는 장애물 미배치 (기존 유지)**
 
 ---
 
-### 3-3. `vlm_orchestrator.py` (대규모)
+### 5. Navigate는 이산 command 유지 (변경 없음)
 
-VLM 오케스트레이터를 2-object 순차 추적 구조로 변경.
+displacement 사용하지 않음.
 
-#### 3-3-1. `/classify` 변경
+**이유:**
+- 탐색 목적은 "물체 찾기"이지 "특정 거리 이동"이 아님
+- displacement 기반이면 목표 거리를 채우는 동안 탐색 대상을 지나칠 수 있음
+- VLM이 0.3Hz로 "전진" 유지하다가 타겟 발견 시 "정지" 또는 다음 스킬 전환
 
-```python
-# 기존: 사용자 명령 → {mode: "single", target_object: "빨간 컵"}
-# 변경: 사용자 명령 → {mode: "relative_placement", source_object: "약병", destination_object: "빨간 컵"}
+---
 
-# VLM /classify 프롬프트:
-# "사용자 명령을 분석하여 source_object(잡을 물체)와 destination_object(놓을 기준 물체)를 추출하라."
-# 예: "약병 찾아서 빨간 컵 옆에 놓아" → {source: "약병", destination: "빨간 컵"}
+### 6. Critic observation 수정
+
+Critic extra에 FOV 기반 장애물 정보 사용:
+
 ```
-
-#### 3-3-2. 오케스트레이터 Phase 구조
-
-```python
-# 기존 SingleObjectOrchestrator phases:
-# SEARCH_OBJECT → APPROACH → GRASP → SEARCH_BASKET → NAVIGATE_TO_BASKET → PLACE → DONE
-
-# 변경 → RelativePlacementOrchestrator phases:
-# SEARCH_SOURCE → APPROACH_SOURCE → GRASP → SEARCH_DESTINATION → APPROACH_DESTINATION → PLACE → DONE
-
-class RelativePlacementOrchestrator:
-    """
-    Phase 전환 로직:
-    
-    1. SEARCH_SOURCE: 약병을 탐색 (제자리 회전, 전진 탐색)
-       → 약병이 이미지에 보이면 → APPROACH_SOURCE
-    
-    2. APPROACH_SOURCE: 약병에 접근
-       → 약병이 팔 닿을 거리에 보이면 → GRASP
-    
-    3. GRASP: 약병을 잡음
-       → 물체를 잡은 것을 확인 → SEARCH_DESTINATION
-       ★ 여기서 VLM의 추적 대상이 약병 → 빨간 컵으로 전환
-    
-    4. SEARCH_DESTINATION: 빨간 컵을 탐색 (물체를 든 채로)
-       → 빨간 컵이 이미지에 보이면 → APPROACH_DESTINATION
-    
-    5. APPROACH_DESTINATION: 빨간 컵 근처로 접근
-       → 빨간 컵이 가까이 보이면 → PLACE
-    
-    6. PLACE: 빨간 컵 옆에 약병을 내려놓음
-       → 놓은 것을 확인 → DONE
-    """
-```
-
-#### 3-3-3. VLM `/infer` 호출 시 instruction 전환
-
-```python
-# Phase별 VLM에게 주는 맥락:
-# SEARCH_SOURCE ~ GRASP: "너의 목표는 약병을 찾아서 잡는 것이다"
-# SEARCH_DESTINATION ~ PLACE: "약병을 들고 있다. 이제 빨간 컵을 찾아서 그 옆에 놓아라"
-#
-# VLM이 VLA에게 생성하는 instruction 예시:
-# SEARCH_SOURCE: "turn right slowly to search for the medicine bottle"
-# APPROACH_SOURCE: "move toward the medicine bottle and grasp it"
-# SEARCH_DESTINATION: "turn left to find the red cup"
-# APPROACH_DESTINATION: "move toward the red cup"
-# PLACE: "place the medicine bottle next to the red cup"
+Critic 25D = Actor 20D + [
+  speed(1),
+  direction_compliance(1),
+  closest_fov_obstacle_dist(1),    ← FOV 내 최소 거리
+  closest_fov_obstacle_angle(1),   ← FOV 내 최근접 장애물 각도
+  time_remaining(1)
+]
 ```
 
 ---
 
-### 3-4. `vlm_prompts.py` (대규모)
+## 변경하지 않는 것
 
-기존 SINGLE_OBJECT_SYSTEM_PROMPT, MULTI_CLEANUP_SYSTEM_PROMPT를 삭제/대체.
-
-#### 새 Prompt 구조
-
-```python
-CLASSIFY_SYSTEM_PROMPT = """
-사용자 명령을 분석하여 JSON으로 반환하라.
-- source_object: 잡아야 할 물체
-- destination_object: 놓을 기준 물체
-예: "약병 찾아서 빨간 컵 옆에 놓아" → {"source_object": "medicine bottle", "destination_object": "red cup"}
-JSON만 출력하라.
-"""
-
-RELATIVE_PLACEMENT_SYSTEM_PROMPT = """
-너는 모바일 매니퓰레이터의 지휘자다.
-
-현재 임무: {source_object}를 찾아서 잡고, {destination_object} 옆에 놓아라.
-현재 Phase: {current_phase}
-
-카메라 이미지를 보고, 로봇이 다음에 해야 할 행동 하나를 자연어로 지시해라.
-
-Phase별 판단 기준:
-- SEARCH_SOURCE: {source_object}가 이미지에 보이지 않으면 → 탐색 지시 (회전/전진)
-                  {source_object}가 보이면 → "approach the {source_object}"
-- APPROACH_SOURCE: {source_object}가 멀면 → 접근 지시
-                    {source_object}가 팔 닿을 거리면 → "grasp the {source_object}"
-- GRASP: 잡는 중 → 기다림 / 잡았으면 → phase를 SEARCH_DESTINATION으로 전환
-- SEARCH_DESTINATION: {destination_object}가 보이지 않으면 → 탐색 지시
-                       {destination_object}가 보이면 → "move toward the {destination_object}"
-- APPROACH_DESTINATION: {destination_object}가 멀면 → 접근 지시
-                         가까우면 → "place the {source_object} next to the {destination_object}"
-- PLACE: 놓는 중 → 기다림 / 놓았으면 → "done"
-
-출력 형식:
-{{"instruction": "...", "phase": "SEARCH_SOURCE|APPROACH_SOURCE|GRASP|SEARCH_DESTINATION|APPROACH_DESTINATION|PLACE|DONE"}}
-"""
-```
-
-**기존 BASKET_DETECTION_PROMPT 삭제** — 바구니 감지가 불필요해짐.
+- obs 구조 (Actor 20D, Critic 25D 차원 동일)
+- direction_cmd (6방향 이산 유지)
+- action space (9D 연속 유지)
+- BC 데이터/학습 코드 (기존 epoch250 그대로 사용)
+- 기존 reward 중: track_lin, track_ang, action_smoothness, time_penalty (그대로)
+- 장애물 스폰 로직 (360° 전방위, 랜덤)
+- DR (domain randomization) 설정
 
 ---
 
-### 3-5. `record_teleop.py` (중규모)
+## 학습 파이프라인
 
-#### Combined 모드 변경
+### Step 1: BC (기존 것 재사용)
+- P-controller 데이터, 장애물 없는 환경
+- direction_cmd → base velocity 매핑만 학습
+- lidar 값 거의 1.0이었으므로 사실상 lidar 무시
+- 재학습 불필요
 
-```python
-# 기존 Combined 3-Phase:
-# Phase 1 (Skill-2 기록): 접근+파지
-# Phase 2 (Transit, 미기록): 바구니 근처까지 이동
-# Phase 3 (Skill-3 기록): 바구니 접근+place
+### Step 2: Residual RL 재학습 (이것만 하면 됨)
+- 기존 BC 위에서 장애물 회피 보정값 학습
+- 장애물 있는 환경, 새로운 FOV-aware reward 적용
+- `최종 action = BC_action + residual_action × scale`
+- 장애물 없으면 residual ≈ 0 (BC 그대로)
+- 장애물 보이면 살짝 우회하는 보정값 출력
 
-# 변경 →
-# Phase 1 (Skill-2 기록): 약병 접근+파지
-# Phase 2 (Transit, 미기록): 빨간 컵 근처까지 이동
-# Phase 3 (Skill-3 기록): 빨간 컵 접근 + 옆에 놓기
+### Step 3: VLA 파인튜닝용 데이터 수집
+- Step 2의 expert를 다양한 장애물 환경에서 실행
+- 기록 데이터: (camera_rgb, camera_depth, robot_state, command, 9D_action)
+- 같은 "전진" command라도 장애물 유무에 따라 action이 다르게 기록됨
 
-# Phase 2→3 전환 조건 변경:
-# 기존: dest_dist < 0.7m (바구니까지 거리) AND |heading_to_dest| < 0.76rad
-# 변경: dest_dist < 0.7m (빨간 컵까지 거리) AND |heading_to_dest| < 0.76rad
-
-# 목적지 마커 변경:
-# 기존: 초록 구체가 바구니 위치에 표시
-# 변경: 초록 구체가 빨간 컵 위치에 표시 (또는 빨간 컵 자체가 보이므로 마커 불필요)
-```
-
-#### 환경 스폰 변경
-
-```python
-# 텔레옵 시 환경에 두 물체가 동시에 존재해야 함:
-# - 약병: grasp 대상 (기존 source object 스폰 로직 그대로)
-# - 빨간 컵: place 기준점 (기존 basket 스폰 위치에 빨간 컵 스폰)
-```
+### Step 4: VLA 파인튜닝
+- 카메라(RGB or RGB-D) + language + robot_state → 9D action
+- sim lidar → camera 증류 완료
 
 ---
 
-### 3-6. `collect_demos.py` (소규모)
+## 수정 체크리스트
 
-#### Instruction 템플릿 변경
+### Skill1Env (lekiwi_skill1_env.py)
+- [x] Lidar rays: 360° → D455 FOV 87° 전방 ±43.5°, 8 rays (이미 반영 확인)
+- [x] _compute_metrics(): min_obs_dist_fov (FOV 내), min_obs_dist_all (전체) 두 개 계산
+- [x] _get_rewards(): collision/proximity reward에 min_obs_dist_fov 사용
+- [x] _get_dones(): termination에 min_obs_dist_all 사용 (terminate_on_any_collision)
+- [x] _get_observations(): critic extra에 FOV 기반 장애물 정보 사용
+- [x] 후진 페널티 rew_backward = -0.3 (이미 반영 확인)
+- [x] cfg에 terminate_on_any_collision: bool = True 추가
 
-```python
-# 기존 (Skill-2):
-# "approach the {object} and grasp it"
-# "pick up the {object}"
-
-# 변경 (Skill-2) — 동일:
-# "approach the medicine bottle and grasp it"
-# "pick up the medicine bottle"
-
-# 기존 (Skill-3):
-# "carry the {object} to the basket and place it inside"
-# "bring the {object} to the basket"
-
-# 변경 (Skill-3):
-# "carry the medicine bottle to the red cup and place it next to it"
-# "place the medicine bottle next to the red cup"
-```
-
-#### Skill-3 데이터 수집 시 환경
-
-```python
-# 기존: handoff buffer에서 복원 + 바구니 스폰
-# 변경: handoff buffer에서 복원 + 빨간 컵 스폰
-# collect_demos.py의 Skill3EnvWithCam이 lekiwi_skill3_env.py를 상속하므로,
-# env 변경이 자동 반영됨
-```
+### train_resip.py (navigate 분기)
+- [x] Navigate reward에서 collision/proximity 계산 시 FOV 기반 거리 사용
+- [x] env.env._compute_metrics()에서 min_obs_dist_fov 키 사용
+- [x] 로깅에 collision_fov_rate, collision_any_rate 분리 추가
+- [x] 기존 NAV_W_COLLISION, NAV_W_PROXIMITY, NAV_W_BACKWARD 값은 그대로
 
 ---
 
-### 3-7. `eval_full_system.py` (중규모)
-
-#### 환경 설정
-
-```python
-# 기존: 물체 랜덤 배치 + 바구니 env origin 근처 스폰
-# 변경: 약병 랜덤 배치 + 빨간 컵 별도 랜덤 배치 (최소 1.0m 이격)
-```
-
-#### Success 판정
-
-```python
-# 기존: 물체가 바구니 안(XY 0.20m + Z 0.25m) 안착 + gripper open
-# 변경: 약병이 빨간 컵으로부터 XY 0.20m 이내 + Z 높이 차이 0.10m 이내 + gripper open
-```
-
-#### 오케스트레이터
-
-```python
-# 기존: SingleObjectOrchestrator / MultiCleanupOrchestrator 선택
-# 변경: RelativePlacementOrchestrator 사용
-# /classify 결과로 source_object, destination_object 전달
-```
-
----
-
-### 3-8. `generate_handoff_buffer.py` (소규모)
-
-변경 최소. Handoff buffer는 Skill-2 성공 상태(로봇 + source 물체)를 저장하므로 destination object 정보는 포함하지 않음. Skill-3가 리셋할 때 빨간 컵을 새로 스폰함.
-
-```python
-# 기존: Skill-2 성공 시 (robot_state, source_object_state) 저장
-# 변경: 동일 — destination object는 Skill-3 리셋 시 새로 스폰되므로 buffer에 불필요
-```
-
----
-
-## 4. 변경하지 않는 것
-
-다음은 **명시적으로 변경하지 않는** 항목:
-
-| 항목 | 이유 |
-|------|------|
-| 9D state/action 구조 | observation.state[9], action[9] 불변 |
-| Skill-1 Navigate 환경 | 방향 추종 전용, task 무관 |
-| RL 학습 구조 (train_lekiwi.py) | PPO/AAC 구조 불변 |
-| BC 학습 (train_bc.py) | obs → action 매핑 불변 |
-| 데이터 변환 (convert_hdf5_to_lerobot_v3.py) | 9D 포맷 불변 |
-| Skill-2 RL 보상 구조 | 접근+파지 보상 불변, dest object는 배경 |
-| deploy_vla_action_bridge.py | sim→real 변환 불변 |
-| 캘리브레이션 파일 | 물리 캘리브레이션과 무관 |
-
----
-
-## 5. Skill-3 Actor Observation (29D) 대응표
-
-obs 차원과 구조는 동일. 의미만 변경.
-
-| Index | 기존 | 변경 | 비고 |
-|-------|------|------|------|
-| 0:5 | arm_joint_pos (5D) | 동일 | |
-| 5 | gripper_pos (1D) | 동일 | |
-| 6:9 | base_body_vel (3D) | 동일 | |
-| 9:15 | base_vel (6D) | 동일 | lin+ang world vel |
-| 15:21 | arm_vel (6D) | 동일 | |
-| 21:24 | **basket_rel (3D)** | **dest_object_rel (3D)** | 빨간 컵까지 body-frame 상대 위치 |
-| 24 | grip_force (1D) | 동일 | |
-| 25:28 | obj_bbox (3D) | 동일 | source object(약병) bbox |
-| 28 | obj_category (1D) | 동일 | source object category |
-
-Critic obs도 동일한 치환 (36D 중 해당 인덱스만 변경).
-
----
-
-## 6. 실험 설계 변경 (기존 C1~C7 → 새 A/B/C 구조)
-
-기존 C1~C7을 폐기하고, **비교 축을 명확히 분리한 A/B/C 구조**로 재설계한다.
-
-### 6-1. 비교 축
-
-| 비교 | 무엇을 보여주는가 |
-|------|------------------|
-| A1 vs B1 | VLM 오케스트레이션 + skill 분리의 효과 |
-| B1 vs B2 | Mimic 데이터 증강의 효과 (VLM+VLA 구조 내에서) |
-| B2 vs C1 | RL expert 데이터의 효과 (증강 텔레옵 vs RL rollout) |
-| C1 vs C2 | RL + Mimic 합산의 효과 |
-
-### 6-2. 실험 조건 (5개)
-
-모든 조건에서 task는 동일: **"약병 찾아서 빨간 컵 옆에 놓아"**
-모든 조건에서 VLA 모델은 동일: **π0-FAST**
-
-#### Group A: E2E 베이스라인 (단일 VLA, VLM 없음)
-
-| 조건 | VLM | RL | 데이터 | 설명 |
-|------|-----|----|--------|------|
-| **A1** | ✗ | ✗ | 전체 task 텔레옵 50개 | E2E 베이스라인 |
-
-- 사람이 전체 task(약병 탐색 → 잡기 → 빨간 컵 탐색 → 옆에 놓기)를 처음부터 끝까지 시범
-- 에피소드당 30~60초, 성공 에피소드만 저장
-- **고정 instruction 하나**로 VLA fine-tune: "find the medicine bottle and place it next to the red cup"
-- VLM 없음, skill 분리 없음, 중간 phase 전환을 VLA가 implicit하게 해야 함
-
-#### Group B: VLM + VLA, 텔레옵만 (RL 없음)
-
-| 조건 | VLM | RL | 데이터 | 설명 |
-|------|-----|----|--------|------|
-| **B1** | ✓ | ✗ | skill별 텔레옵 20~40개 | VLM+VLA, 텔레옵 only |
-| **B2** | ✓ | ✗ | skill별 텔레옵 + Mimic 1K | VLM+VLA, 텔레옵+증강 |
-
-- 우리 파이프라인과 동일한 VLM+VLA 구조 (VLM 오케스트레이션 + skill별 VLA)
-- 단, **RL을 거치지 않음** — 텔레옵 데이터를 바로 VLA fine-tune에 사용
-- B1: Skill-2 텔레옵 10~20개 + Skill-3 텔레옵 10~20개 → VLA fine-tune
-- B2: B1 텔레옵을 Isaac Lab Mimic으로 skill별 1K개로 증강 → VLA fine-tune
-- B1의 텔레옵 데이터는 **우리 파이프라인 Phase 1에서 수집하는 것과 동일** (추가 수집 불필요)
-
-#### Group C: VLM + VLA + RL Expert (우리 최종 파이프라인)
-
-| 조건 | VLM | RL | 데이터 | 설명 |
-|------|-----|----|--------|------|
-| **C1** | ✓ | ✓ | RL rollout 1K | 우리 파이프라인 (1K) |
-| **C2** | ✓ | ✓ | RL rollout 1K + Mimic 1K | 우리 파이프라인 (RL+Mimic) |
-
-- 우리 최종 파이프라인: 텔레옵 → BC → RL → Expert Rollout → VLA fine-tune
-- VLM 오케스트레이션 동일
-- C1: RL Expert rollout 1K개 (성공 에피소드, DR 적용)
-- C2: RL rollout 1K + Mimic 1K 합산 (데이터 소스 다양성)
-
-### 6-3. 데이터 수집 요약
-
-| 데이터 | 수집 방법 | 사용 조건 | 수집 비용 |
-|--------|----------|----------|----------|
-| 전체 task 텔레옵 50개 | 사람이 E2E 시범 (30~60초/개) | A1 | 높음 (사람 ~50분) |
-| skill별 텔레옵 20~40개 | 사람이 skill별 시범 (5~10초/개) | B1, B2 | 낮음 (사람 ~10분) |
-| skill별 Mimic 1K | 텔레옵에서 keypoint 보간 증강 | B2, C2 | 자동 |
-| RL rollout 1K | RL Expert 자동 실행 | C1, C2 | 자동 (sim) |
-
-### 6-4. 예상 스토리라인
-
-- **A1 성공률이 매우 낮음** (5~15%) → 단일 VLA는 phase 전환을 implicit하게 처리할 수 없다
-- **A1 vs B1**: B1이 크게 우세 → VLM 오케스트레이션의 핵심 기여 증명
-- **B1 vs B2**: B2가 약간 우세 → Mimic 증강이 소규모 텔레옵에서 유효
-- **B2 vs C1**: C1이 우세 → RL Expert 데이터가 사람 텔레옵+증강보다 품질 높음
-- **C1 vs C2**: C2가 약간 우세 → 데이터 소스 다양성이 VLA 일반화에 도움
-
-핵심 메시지: **"데이터 양(A1: 50개 E2E)보다 구조(B1: VLM+skill 20~40개)가 중요하고, 구조 위에 RL 데이터(C1: 1K rollout)를 올리면 더 좋아진다."**
-
-### 6-5. 평가 프로토콜
-
-**Stage A — Sim (3090 Desktop + A100 서버)**:
-- 5개 조건 전부 sim에서 각 30회+
-- 5 × 30 = 150회
-- 하위 조건 탈락, 상위 2~3개만 Stage B로
-
-**Stage B — Real Robot**:
-- 선별된 조건만 실기 각 30회+
-- 95% binomial CI
-
-**성공 판정**:
-```
-약병이 빨간 컵으로부터 XY 20cm 이내 + Z 높이 차이 10cm 이내 + gripper open
-```
-
-**실패 유형 분류**:
-
-| 실패 유형 | 의미 | 주로 어디서 발생 |
-|-----------|------|----------------|
-| navigation miss (source) | 약병을 못 찾음 | A1, B1 |
-| grasp fail | 약병 파지 실패 | 전 조건 |
-| navigation miss (dest) | 빨간 컵을 못 찾음 | A1 (★ E2E 최대 실패 지점) |
-| drop during carry | 운반 중 낙하 | 전 조건 |
-| placement fail | 빨간 컵 옆에 못 놓음 | 전 조건 |
-
-`navigation miss (dest)` — 물체를 잡은 후 빨간 컵을 탐색하지 못하는 실패. E2E(A1)에서 가장 많이 발생할 것으로 예상. VLM+VLA(B/C)에서는 VLM이 추적 대상을 명시적으로 전환하므로 발생률이 크게 낮아짐. 이 실패 유형의 비율 차이가 파이프라인의 핵심 contribution을 보여줌.
-
-**Go 기준**:
-- Skill별 단독 sim 평가: 70%+ 성공률
-- VLM+VLA 통합 sim 평가: 50%+ 성공률 (C1 또는 C2에서)
-- E2E 대비 우위: C 그룹 성공률 > A1 성공률 (통계적 유의)
-
-### 6-6. 평가 시 물체 배치
-
-```python
-# 약병: env origin에서 1.5~3.0m, 랜덤 방향, 바닥
-# 빨간 컵: env origin에서 2.0~4.0m, 랜덤 방향, 바닥
-# 약병과 빨간 컵 최소 이격: 1.0m
-# 실내 환경: 가구/장애물 배치 (cluttered indoor)
-# 5개 조건 모두 동일한 물체 배치 세트에서 평가 (공정 비교)
-```
-
----
-
-## 7. 문서 업데이트
-
-다음 문서의 해당 섹션을 새 task에 맞게 갱신해야 함:
-
-| 문서 | 갱신 섹션 |
-|------|----------|
-| `1_전체_파이프라인.md` | §1(문제 정의), §4(VLM 루프), §5(3-Skill 설명), §14(실험 설계), §16(체크리스트) |
-| `2_Sim_데이터_수집_파이프라인.md` | §3-3(Skill-3 학습), §4-5(Skill-3 데이터 수집), §7(Phase 4.5 평가) |
-| `3_코드_현황_정리.md` | §1(아키텍처), §1-4(핵심 설계 결정), §7(비교 실험), §8(남은 작업) |
-
----
-
-## 8. 물체 사용 전략 (Phase별)
-
-### 8-1. 텔레옵 (Phase 1, BC warm-start용)
-
-**약병 + 빨간 컵만 사용한다.**
-
-텔레옵 데모는 Skill-2 10~20개, Skill-3 10~20개로 총 20~40개뿐이다. 여기서 다른 물체를 섞으면 물체당 데모 수가 너무 적어져서 BC가 의미 있는 행동 패턴을 학습하지 못한다.
-
-```bash
-# Skill-2 텔레옵: 약병을 잡는 시범
-# source_object = 약병 (5_HTP)
-# dest_object = 빨간 컵 (배경으로 존재, 잡지 않음)
-
-# Skill-3 텔레옵 (combined 모드): 약병을 빨간 컵 옆에 놓는 시범
-# source_object = 약병
-# dest_object = 빨간 컵 (place 기준점)
-```
-
-`--multi_object_json` 플래그는 사용하지 않는다. 대신 약병 USD를 직접 지정:
-```bash
-python record_teleop.py --num_demos 20 \
-  --skill combined \
-  --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd \
-  --dest_object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd \
-  --gripper_contact_prim_path "/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1" \
-  --arm_limit_json calibration/arm_limits_measured.json
-```
-
-### 8-2. RL 학습 (Phase 1, Expert 정책 학습)
-
-**Skill-2 (ApproachAndGrasp)**: 약병 50% + 나머지 22종 50% 혼합.
-
-약병만으로 학습하면 약병 형태에 과적합되어 sim2real 전이 시 깨질 수 있다. 다중 물체를 섞으면 다양한 형태/크기에 대한 robust한 grasp 전략이 나온다. 기존 `obj_bbox(3D)` + `obj_category(1D)`가 Actor obs에 있으므로, 물체별 차별화 학습이 가능하다.
-
-구현: `object_catalog.json`에서 약병의 sampling weight를 50%로, 나머지 21종을 균등하게 50%로 설정.
-
-```python
-# object_catalog.json에 weight 필드 추가 또는 train_lekiwi.py에서 sampling 로직:
-# 약병(5_HTP): weight = 0.5
-# 나머지 21종: weight = 0.5 / 21 ≈ 0.024 each
-```
-
-**Skill-3 (CarryAndPlace)**: 약병만 사용.
-
-source object = 약병 고정, destination object = 빨간 컵 고정. Handoff buffer가 Skill-2의 약병 성공 상태에서 샘플링되므로, Skill-3에서 다른 물체가 올 수 없다. 다중 물체가 필요하면 Skill-2의 handoff buffer를 다중 물체로 생성해야 하지만, 최종 평가가 약병 고정이므로 불필요하다.
-
-**Skill-1 (Navigate)**: 물체 무관. 방향 추종 전용이므로 기존 그대로.
-
-### 8-3. VLA 데이터 수집 (Phase 2, Expert Rollout)
-
-**Skill-2**: RL Expert가 다중 물체(22종)로 학습되었으므로, rollout도 다중 물체로 수행하여 VLA 학습 데이터의 다양성을 확보한다. 단, instruction에 물체명을 반영:
-- 약병 에피소드: "approach the medicine bottle and grasp it"
-- 다른 물체 에피소드: "approach the {object_name} and grasp it"
-
-**Skill-3**: 약병 + 빨간 컵 고정. Instruction: "place the medicine bottle next to the red cup"
-
-**Navigate**: 기존과 동일 (방향 명령 + 장애물 회피).
-
-### 8-4. 요약
-
-| Phase | Skill-2 물체 | Skill-3 source | Skill-3 dest | 이유 |
-|-------|-------------|----------------|--------------|------|
-| 텔레옵 (BC) | 약병만 | 약병 | 빨간 컵 | 데모 20개 → 물체 분산 불가 |
-| RL 학습 | 약병 50% + 22종 50% | 약병 | 빨간 컵 | 다양성으로 robust grasp |
-| VLA 데이터 수집 | 22종 전체 | 약병 | 빨간 컵 | VLA 일반화 |
-| 평가 | 약병 | 약병 | 빨간 컵 | 최종 task 고정 |
-
----
-
-## 9. 구현 순서 권장
+## 핵심 설계 원칙 요약
 
 ```
-1. lekiwi_skill3_env.py 수정 (가장 큰 변경, 핵심)
-   → 빨간 컵 스폰, success criteria, obs 변경
-   → 단독 테스트: python train_lekiwi.py --skill carry_and_place --num_envs 4 로 env 로드 확인
-
-2. lekiwi_skill2_env.py 수정 (빨간 컵 배경 스폰 추가)
-   → 기존 RL 학습에 영향 없음을 확인
-
-3. record_teleop.py 수정 (combined 모드 목적지 변경)
-   → 텔레옵 테스트 가능
-
-4. vlm_prompts.py + vlm_orchestrator.py 수정 (VLM 오케스트레이션)
-   → Phase 4.5에서 필요, 당장은 아님
-
-5. collect_demos.py 수정 (instruction 템플릿)
-   → Phase 2에서 필요
-
-6. eval_full_system.py 수정 (평가 스크립트)
-   → Phase 4.5에서 필요
-
-7. 문서 갱신
+1. 관측 가능한 것만 보상한다 (FOV 내 → reward)
+2. 물리적 사실은 종료로 반영한다 (모든 충돌 → termination)
+3. 관측 불가능한 위험은 간접적으로 억제한다 (후진 페널티 → 뒤쪽 충돌 감소)
+4. 위 3가지가 결합되면 RL이 자연스럽게 학습하는 행동:
+   - 전방 장애물 → 직접 회피
+   - 뒤로 갈 일 → 회전 후 전진
+   - 결과: 항상 카메라가 이동 방향을 바라봄 → VLA 증류 시 카메라 입력으로 재현 가능
 ```
