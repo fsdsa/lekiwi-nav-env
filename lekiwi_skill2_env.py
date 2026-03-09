@@ -1419,7 +1419,27 @@ class Skill2Env(DirectRLEnv):
             lifted = self.object_grasped & ((obj_z - env_z) > success_h)
             self.task_success[lifted] = True
 
+        # Drop detection: grasped인데 EE 멀어지거나 gripper 열리면 drop
+        if self.object_grasped.any():
+            gripper_pos_drop = self.robot.data.joint_pos[:, self.gripper_idx]
+            gripper_wide_open = gripper_pos_drop > 0.9
 
+            if self._fixed_jaw_body_idx >= 0:
+                wrist_pos_d = self.robot.data.body_pos_w[:, self._fixed_jaw_body_idx, :]
+                wrist_quat_d = self.robot.data.body_quat_w[:, self._fixed_jaw_body_idx, :]
+                ee_pos_d = wrist_pos_d + quat_apply(wrist_quat_d, self._ee_local_offset.expand_as(wrist_pos_d))
+                ee_obj_dist_d = torch.norm(ee_pos_d - self.object_pos_w, dim=-1)
+                ee_far = ee_obj_dist_d > self.cfg.grasp_drop_detect_dist
+            else:
+                ee_far = metrics["object_dist"] > self.cfg.grasp_drop_detect_dist
+
+            contact_force_d = self._contact_force_per_env()
+            no_contact_d = contact_force_d < self.cfg.lift_contact_threshold
+
+            dropped = self.object_grasped & (ee_far | (gripper_wide_open & no_contact_d))
+            if dropped.any():
+                self.object_grasped[dropped] = False
+                self.just_dropped[dropped] = True
 
         # GRASP timeout
         if self.cfg.grasp_timeout_steps > 0:
@@ -1678,6 +1698,7 @@ class Skill2Env(DirectRLEnv):
         self.extras["task_success_mask"] = self.task_success.clone()
         self.extras["just_grasped_mask"] = self.just_grasped.clone()
         self.extras["object_grasped_mask"] = self.object_grasped.clone()
+        self.extras["just_dropped_mask"] = self.just_dropped.clone()
         self.extras["object_height_mask"] = (self.object_pos_w[:, 2] - self.scene.env_origins[:, 2]).clone()
         # Contact sensor: lift sustain 판정용 (teleop 0.65와 동일 threshold)
         if self.cfg.grasp_require_contact:
@@ -1851,3 +1872,4 @@ class Skill2Env(DirectRLEnv):
 
         # DR 적용 (v8 그대로)
         self._apply_domain_randomization(env_ids)
+

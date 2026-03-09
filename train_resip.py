@@ -1,52 +1,34 @@
 #!/usr/bin/env python3
 """
-Residual PPO for LeKiwi — v7
+Residual PPO for LeKiwi — v6.5
 
-Based on v6.4, adds 4 targeted fixes for observed failure modes:
+v6.5 changes (from v6.4):
+  1. LIFTED_POSE corrected to match teleop data (22-episode measured average)
+  2. R4b sigma tightened (σ=2.0 → σ=1.0) — correct pose allows tighter guidance
+  3. R9  Drop penalty (−50) + milestone reset for re-grasp
+  4. R10 Grip sustain bonus (×5, Gaussian around grip=0.50)
+  5. R11 Object topple penalty (−2/step + −20 one-time) — keep bottle upright for place
 
-═══════════════════════════════════════════════════════════════════════════
-FAILURE MODES (from eval logs)
-═══════════════════════════════════════════════════════════════════════════
+All v6 rewards UNCHANGED:
+  R1  Gripper open milestone     +10    one-time, gates R2/R3
+  R2  Arm approach (XY)          ×30    delta, base-subtracted
+  R3  Verified grasp             +100   one-time, 5-step sustained (env eg flag)
+  R4  Lift height                ×200   per-step, sustain≥3, grip closed, ee<0.20
+  R5  Sustained lift bonus       ×50    per-step after 15 steps held
+  R6  Soft-lift milestone        +100   one-time after 15 steps held
+  R7  Time penalty               −0.01
 
-1. Lift-then-drop: robot lifts object to objZ=0.5, grip opens to 1.2 → drop
-   Root cause: R4 rewards height linearly → agent maximizes height
-   Fix: R4 now uses Gaussian centered at target height (0.12m)
+v6.4 rewards UNCHANGED:
+  R4b Lifted pose (×30, Gaussian σ=1.0) — per-step during lift [POSE CORRECTED]
+  R8  Ground contact penalty (−0.5)   — blocks floor-press exploit
 
-2. Grip opens after grasp: no incentive to maintain grip closure
-   Root cause: zero reward for grip state post-grasp
-   Fix: R9 grip-hold +0.5/step, gated on HELD state (not ms_gr)
+v6.5 NEW:
+  R9  Drop penalty               −50    one-time per drop, resets milestones for re-grasp
+  R10 Grip sustain               ×5     per-step during lift, peak at grip=0.50
+  R11 Object topple penalty      −2/s   per-step if bottle fallen before grasp
+                                 −20    one-time when first toppled
 
-3. Object toppled + hover: robot knocks object over, hovers above it
-   Root cause: no penalty for object falling, no termination
-   Fix: R10 drop penalty (-50 one-time) + early termination after drop
-
-4. Arm oscillation during lift: arm vibrates up/down
-   Root cause: no smoothness incentive post-grasp
-   Fix: R11 stability bonus (low arm velocity → reward)
-
-═══════════════════════════════════════════════════════════════════════════
-REWARD CHAIN (v7)
-═══════════════════════════════════════════════════════════════════════════
-
-  R1   Gripper open milestone     +10    (v6 identical)
-  R2   Arm approach (XY)          ×30    (v6 identical)
-  R3   Verified grasp             +100   (v6 identical)
-  R4*  Lift height BAND           ×200   Gaussian at 0.12m, σ=0.05  [CHANGED]
-  R4b  Lifted pose                ×30    (v6.4 identical)
-  R5   Sustained lift bonus       ×50    (v6 identical)
-  R6   Soft-lift milestone        +100   (v6 identical)
-  R7   Time penalty               −0.01  (v6 identical)
-  R8   Ground contact penalty     −0.5   (v6.4 identical)
-  R9*  Grip hold                  +0.5   per-step, during HELD  [FIXED]
-  R10* Drop penalty               −50    one-time, lift→drop   [NEW]
-  R11* Arm stability              ×3.0   per-step, post-grasp  [NEW]
-
-  * = new or changed from v6.4
-
-Action scales reduced:
-  arm:     0.20 → 0.15
-  gripper: 0.30 → 0.20
-  base:    0.35 → 0.25
+Warmup: 3600 steps (2×1800), decay 60 iters — 2 full BC attempts per iter
 """
 from __future__ import annotations
 
@@ -56,11 +38,11 @@ import os
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Args
 # ═══════════════════════════════════════════════════════════════════════════════
-parser = argparse.ArgumentParser(description="ResiP v7")
+parser = argparse.ArgumentParser(description="ResiP v6.5")
 
 parser.add_argument("--bc_checkpoint", type=str, required=True)
 parser.add_argument("--skill", type=str, required=True,
-                    choices=["navigate", "approach_and_grasp", "carry_and_place"])
+                    choices=["approach_and_grasp", "carry_and_place"])
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--num_env_steps", type=int, default=700)
 parser.add_argument("--object_usd", type=str, default="")
@@ -90,10 +72,10 @@ parser.add_argument("--clip_vloss", type=lambda x: x.lower() == "true", default=
 parser.add_argument("--lr_actor", type=float, default=3e-4)
 parser.add_argument("--lr_critic", type=float, default=5e-3)
 
-# Residual — v7: tighter scales
-parser.add_argument("--action_scale_arm", type=float, default=0.15)
-parser.add_argument("--action_scale_gripper", type=float, default=0.20)
-parser.add_argument("--action_scale_base", type=float, default=0.25)
+# Residual
+parser.add_argument("--action_scale_arm", type=float, default=0.20)
+parser.add_argument("--action_scale_gripper", type=float, default=0.30)
+parser.add_argument("--action_scale_base", type=float, default=0.35)
 parser.add_argument("--action_scale", type=float, default=None)
 parser.add_argument("--actor_hidden_size", type=int, default=256)
 parser.add_argument("--actor_num_layers", type=int, default=2)
@@ -102,7 +84,7 @@ parser.add_argument("--critic_num_layers", type=int, default=2)
 parser.add_argument("--init_logstd", type=float, default=-1.0)
 parser.add_argument("--action_head_std", type=float, default=0.0)
 
-# Warmup
+# Warmup — BC full sequence ~1600 steps, reset every 1800 for multiple attempts
 parser.add_argument("--warmup_steps_initial", type=int, default=3600)
 parser.add_argument("--warmup_steps_final", type=int, default=0)
 parser.add_argument("--warmup_decay_iters", type=int, default=60)
@@ -121,26 +103,18 @@ parser.add_argument("--lift_min_sustain", type=int, default=3)
 parser.add_argument("--lift_milestone_steps", type=int, default=15)
 parser.add_argument("--r4b_scale", type=float, default=30.0)
 parser.add_argument("--r8_penalty", type=float, default=-0.5)
-# v7 new
-parser.add_argument("--lift_target_height", type=float, default=0.12,
-                    help="R4 target lift height (Gaussian center)")
-parser.add_argument("--lift_height_sigma", type=float, default=0.05,
-                    help="R4 Gaussian sigma for height band")
-parser.add_argument("--r9_grip_hold", type=float, default=0.5,
-                    help="R9 grip hold reward per step (gated on held, not ms_gr)")
-parser.add_argument("--r10_drop_penalty", type=float, default=-50.0,
-                    help="R10 drop penalty (one-time)")
-parser.add_argument("--r11_stability_scale", type=float, default=3.0,
-                    help="R11 arm stability bonus scale")
-parser.add_argument("--drop_terminate", type=lambda x: x.lower() == "true", default=True,
-                    help="Terminate episode on drop-after-lift")
-parser.add_argument("--drop_grace_steps", type=int, default=30,
-                    help="Steps after drop before termination (allow brief recovery)")
+# v6.5 new reward args
+parser.add_argument("--r9_penalty", type=float, default=-50.0)
+parser.add_argument("--r10_scale", type=float, default=5.0)
+parser.add_argument("--r11_per_step", type=float, default=-2.0)
+parser.add_argument("--r11_onetime", type=float, default=-20.0)
+parser.add_argument("--topple_height_thresh", type=float, default=0.027,
+                    help="Object height below this = toppled (standing≈0.033, fallen≈0.020)")
 
 # Eval/save
 parser.add_argument("--eval_interval", type=int, default=5)
 parser.add_argument("--eval_first", type=lambda x: x.lower() == "true", default=True)
-parser.add_argument("--save_dir", type=str, default="checkpoints/resip_v7")
+parser.add_argument("--save_dir", type=str, default="checkpoints/resip")
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--resume_resip", type=str, default=None)
 
@@ -167,7 +141,7 @@ from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. Utilities (v6 identical)
+# 3. Utilities
 # ═══════════════════════════════════════════════════════════════════════════════
 class RunningMeanStdClip:
     def __init__(self, epsilon=1e-4, shape=(), clip_value=10.0, device="cuda"):
@@ -205,7 +179,7 @@ def compute_gae(values, nv, rewards, dones, nd, S, gamma, lam):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. Environment (v6.4 identical)
+# 4. Environment
 # ═══════════════════════════════════════════════════════════════════════════════
 class LeKiwiEnvWrapper:
     def __init__(self, env):
@@ -226,21 +200,6 @@ class LeKiwiEnvWrapper:
 
 
 def make_env(skill, num_envs, args):
-    if skill == "navigate":
-        from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
-        cfg = Skill1EnvCfg()
-        cfg.scene.num_envs = num_envs
-        cfg.sim.device = "cuda:0"
-        cfg.enable_domain_randomization = True
-        cfg.arm_limit_write_to_sim = False
-        cfg.force_tucked_pose = True   # navigate: arm tucked
-        cfg.episode_length_s = 10.0
-        if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
-            cfg.arm_limit_json = args.arm_limit_json
-        env = Skill1Env(cfg=cfg)
-        print(f"  Env: {skill}, n={num_envs}, dev={env.device}")
-        return LeKiwiEnvWrapper(env)
-
     if skill == "approach_and_grasp":
         from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
         cfg = Skill2EnvCfg()
@@ -314,17 +273,14 @@ def main():
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     print(f"Seed: {seed}")
 
-    is_navigate = (args.skill == "navigate")
-
     env = make_env(args.skill, args.num_envs, args)
     dev = env.device
     N = env.num_envs
 
-    if not is_navigate:
-        from lekiwi_skill2_env import EE_LOCAL_OFFSET
-        jaw_idx, _ = env.env.robot.find_bodies(["Wrist_Roll_08c_v1"])
-        jaw_idx = jaw_idx[0]
-        ee_off = torch.tensor(EE_LOCAL_OFFSET, device=dev).unsqueeze(0)
+    from lekiwi_skill2_env import EE_LOCAL_OFFSET
+    jaw_idx, _ = env.env.robot.find_bodies(["Wrist_Roll_08c_v1"])
+    jaw_idx = jaw_idx[0]
+    ee_off = torch.tensor(EE_LOCAL_OFFSET, device=dev).unsqueeze(0)
 
     dp, dpc = load_frozen_dp(args.bc_checkpoint, dev)
     OD, AD = dpc["obs_dim"], dpc["act_dim"]
@@ -332,10 +288,6 @@ def main():
     # Scale
     if args.action_scale is not None:
         scale = torch.full((AD,), args.action_scale, device=dev)
-    elif is_navigate:
-        # Navigate: arm/gripper passthrough (scale=0), only base residual
-        scale = torch.zeros(AD, device=dev)
-        scale[6:9] = args.action_scale_base
     else:
         scale = torch.zeros(AD, device=dev)
         scale[0:5] = args.action_scale_arm
@@ -391,110 +343,82 @@ def main():
     done_b = torch.zeros((S, N), device=dev)
     val_b  = torch.zeros((S, N), device=dev)
 
-    # Navigate-specific state
-    _nav_prev_action = torch.zeros(N, AD, device=dev)  # for action smoothness
+    # Constants (v6 identical)
+    GV  = args.grasp_verify_steps
+    LMS = args.lift_min_sustain
+    LMI = args.lift_milestone_steps
+    LHT = 0.05
+    HELD_EE_MAX = 0.20
+
+    # v6.5: lifted pose target — measured from 22 teleop episodes
+    # (combined_skill2_20260227, final 10 steps average)
+    LIFTED_POSE = torch.tensor([-0.045, -0.194, 0.277, -0.906, 0.020], device=dev)
+
+    # Per-env state (v6 + v6.5 additions)
+    ms_go   = torch.zeros(N, dtype=torch.bool, device=dev)
+    ms_gr   = torch.zeros(N, dtype=torch.bool, device=dev)
+    ms_li   = torch.zeros(N, dtype=torch.bool, device=dev)
+    ms_sl   = torch.zeros(N, dtype=torch.bool, device=dev)
+    ms_topple = torch.zeros(N, dtype=torch.bool, device=dev)  # v6.5: topple tracking
+    g_sus   = torch.zeros(N, dtype=torch.long, device=dev)
+    l_sus   = torch.zeros(N, dtype=torch.long, device=dev)
+    p_ee_xy = torch.zeros(N, device=dev)
+    p_bs_xy = torch.zeros(N, device=dev)
+
+    # Diagnostics
+    r_gr     = torch.zeros(N, dtype=torch.long, device=dev)
+    r_egr    = torch.zeros(N, dtype=torch.long, device=dev)
+    r_li     = torch.zeros(N, dtype=torch.long, device=dev)
+    r_sl     = torch.zeros(N, dtype=torch.long, device=dev)
+    r_moz    = torch.zeros(N, device=dev)
+    r_mgs    = torch.zeros(N, dtype=torch.long, device=dev)
+    r_mls    = torch.zeros(N, dtype=torch.long, device=dev)
+    r_mcf    = torch.zeros(N, device=dev)
+    r_cgs    = torch.zeros(1, device=dev)
+    r_cgn    = torch.zeros(1, dtype=torch.long, device=dev)
+    r_ggs    = torch.zeros(1, device=dev)
+    r_ggn    = torch.zeros(1, dtype=torch.long, device=dev)
+    r_bgs    = torch.zeros(1, device=dev)
+    r_bgn    = torch.zeros(1, dtype=torch.long, device=dev)
+    r_bls    = torch.zeros(1, device=dev)
+    r_bln    = torch.zeros(1, dtype=torch.long, device=dev)
+    _ldbg    = 0
+    _r2_sum  = 0.0
+    _open_ct = 0
     _clip_ct = 0
     _clip_n  = 0
+    _r4b_sum = 0.0
+    _r8_n    = 0
+    _r9_n    = 0       # v6.5: drop count
+    _r10_sum = 0.0     # v6.5: grip sustain reward sum
+    _r11_n   = 0       # v6.5: topple count
 
-    if is_navigate:
-        # Navigate reward params (mirrors Skill1Env._get_rewards)
-        NAV_MAX_LIN = float(env.env.cfg.max_lin_vel)
-        NAV_MAX_ANG = float(env.env.cfg.max_ang_vel)
-        NAV_LIN_STD = 0.25   # exp kernel σ for linear tracking
-        NAV_ANG_STD = 0.25   # exp kernel σ for angular tracking
-        NAV_W_LIN   = 1.5    # linear tracking weight
-        NAV_W_ANG   = 1.5    # angular tracking weight
-        NAV_W_SMOOTH = -0.005
-        NAV_W_TIME   = -0.01
-        _nav_rew_lin_sum = 0.0
-        _nav_rew_ang_sum = 0.0
-    else:
-        # Constants
-        GV  = args.grasp_verify_steps
-        LMS = args.lift_min_sustain
-        LMI = args.lift_milestone_steps
-        LHT = 0.05
-        HELD_EE_MAX = 0.20
+    # ── Helpers ──
+    def ee_pos():
+        wp = env.env.robot.data.body_pos_w[:, jaw_idx, :]
+        wq = env.env.robot.data.body_quat_w[:, jaw_idx, :]
+        return wp + quat_apply(wq, ee_off.expand_as(wp))
 
-        # v7: lift height band parameters
-        LIFT_TARGET = float(args.lift_target_height)  # 0.12m
-        LIFT_SIGMA  = float(args.lift_height_sigma)   # 0.05m
+    def ee_obj_dist_3d():
+        d = torch.norm(ee_pos() - env.env.object_pos_w, dim=-1).view(-1)
+        return torch.nan_to_num(d, nan=1.0)
 
-        # v6.4: lifted pose target
-        LIFTED_POSE = torch.tensor([-0.02, -1.00, 1.00, 0.30, -0.55], device=dev)
+    def ee_obj_dist_xy():
+        d = torch.norm(ee_pos()[:, :2] - env.env.object_pos_w[:, :2], dim=-1).view(-1)
+        return torch.nan_to_num(d, nan=1.0)
 
-        # Per-env state
-        ms_go   = torch.zeros(N, dtype=torch.bool, device=dev)
-        ms_gr   = torch.zeros(N, dtype=torch.bool, device=dev)
-        ms_li   = torch.zeros(N, dtype=torch.bool, device=dev)
-        ms_sl   = torch.zeros(N, dtype=torch.bool, device=dev)
-        ms_dr   = torch.zeros(N, dtype=torch.bool, device=dev)
-        g_sus   = torch.zeros(N, dtype=torch.long, device=dev)
-        l_sus   = torch.zeros(N, dtype=torch.long, device=dev)
-        p_ee_xy = torch.zeros(N, device=dev)
-        p_bs_xy = torch.zeros(N, device=dev)
+    def base_obj_dist_xy():
+        d = torch.norm(env.env.robot.data.root_pos_w[:, :2]
+                       - env.env.object_pos_w[:, :2], dim=-1).view(-1)
+        return torch.nan_to_num(d, nan=1.0)
 
-        # v7: drop detection state
-        ever_lifted   = torch.zeros(N, dtype=torch.bool, device=dev)
-        peak_oh       = torch.zeros(N, device=dev)
-        drop_counter  = torch.zeros(N, dtype=torch.long, device=dev)
-
-        # Diagnostics
-        r_gr     = torch.zeros(N, dtype=torch.long, device=dev)
-        r_egr    = torch.zeros(N, dtype=torch.long, device=dev)
-        r_li     = torch.zeros(N, dtype=torch.long, device=dev)
-        r_sl     = torch.zeros(N, dtype=torch.long, device=dev)
-        r_moz    = torch.zeros(N, device=dev)
-        r_mgs    = torch.zeros(N, dtype=torch.long, device=dev)
-        r_mls    = torch.zeros(N, dtype=torch.long, device=dev)
-        r_mcf    = torch.zeros(N, device=dev)
-        r_cgs    = torch.zeros(1, device=dev)
-        r_cgn    = torch.zeros(1, dtype=torch.long, device=dev)
-        r_ggs    = torch.zeros(1, device=dev)
-        r_ggn    = torch.zeros(1, dtype=torch.long, device=dev)
-        r_bgs    = torch.zeros(1, device=dev)
-        r_bgn    = torch.zeros(1, dtype=torch.long, device=dev)
-        r_bls    = torch.zeros(1, device=dev)
-        r_bln    = torch.zeros(1, dtype=torch.long, device=dev)
-        _ldbg    = 0
-        _r2_sum  = 0.0
-        _open_ct = 0
-        _r4b_sum = 0.0
-        _r8_n    = 0
-        _r9_sum  = 0.0
-        _r10_n   = 0
-        _r11_sum = 0.0
-        _drop_n  = 0
-
-        # ── Helpers ──
-        def ee_pos():
-            wp = env.env.robot.data.body_pos_w[:, jaw_idx, :]
-            wq = env.env.robot.data.body_quat_w[:, jaw_idx, :]
-            return wp + quat_apply(wq, ee_off.expand_as(wp))
-
-        def ee_obj_dist_3d():
-            d = torch.norm(ee_pos() - env.env.object_pos_w, dim=-1).view(-1)
-            return torch.nan_to_num(d, nan=1.0)
-
-        def ee_obj_dist_xy():
-            d = torch.norm(ee_pos()[:, :2] - env.env.object_pos_w[:, :2], dim=-1).view(-1)
-            return torch.nan_to_num(d, nan=1.0)
-
-        def base_obj_dist_xy():
-            d = torch.norm(env.env.robot.data.root_pos_w[:, :2]
-                           - env.env.object_pos_w[:, :2], dim=-1).view(-1)
-            return torch.nan_to_num(d, nan=1.0)
-
-        def reset_ep(mask):
-            ms_go[mask] = False; ms_gr[mask] = False
-            ms_li[mask] = False; ms_sl[mask] = False
-            ms_dr[mask] = False
-            g_sus[mask] = 0; l_sus[mask] = 0
-            ever_lifted[mask] = False
-            peak_oh[mask] = 0.0
-            drop_counter[mask] = 0
-            p_ee_xy[mask] = ee_obj_dist_xy()[mask]
-            p_bs_xy[mask] = base_obj_dist_xy()[mask]
+    def reset_ep(mask):
+        ms_go[mask] = False; ms_gr[mask] = False
+        ms_li[mask] = False; ms_sl[mask] = False
+        ms_topple[mask] = False  # v6.5
+        g_sus[mask] = 0; l_sus[mask] = 0
+        p_ee_xy[mask] = ee_obj_dist_xy()[mask]
+        p_bs_xy[mask] = base_obj_dist_xy()[mask]
 
     # ── Print config ──
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -503,25 +427,18 @@ def main():
     next_obs = env.reset(); next_done = torch.zeros(N, device=dev); dp.reset()
 
     print(f"\n{'='*60}")
-    print(f"  ResiP v7 — {args.skill}")
+    print(f"  ResiP v6.5 — {args.skill}")
     print(f"  N={N} S={S} B={B} iters={NI}")
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     print(f"  rew_norm={'ON' if args.normalize_reward else 'OFF'}")
-    if is_navigate:
-        print(f"  Navigate: lin_w={NAV_W_LIN} ang_w={NAV_W_ANG} σ={NAV_LIN_STD}")
-        print(f"  smooth={NAV_W_SMOOTH} time={NAV_W_TIME}")
-        print(f"  max_lin={NAV_MAX_LIN} max_ang={NAV_MAX_ANG}")
-    else:
-        print(f"  R1=GripOpen(+10) R2=ArmXY(×30,base-sub)")
-        print(f"  R3=VGrasp(+100,{GV}s)")
-        print(f"  R4=LiftBand(×200,target={LIFT_TARGET},σ={LIFT_SIGMA})")
-        print(f"  R4b=LiftPose(×{args.r4b_scale},σ=2.0)")
-        print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
-        print(f"  R8=GCF({args.r8_penalty})")
-        print(f"  R9=GripHold(+{args.r9_grip_hold}) R10=Drop({args.r10_drop_penalty})")
-        print(f"  R11=Stability(×{args.r11_stability_scale})")
-        print(f"  drop_terminate={args.drop_terminate} grace={args.drop_grace_steps}")
+    print(f"  R1=GripOpen(+10) R2=ArmXY(×30,base-sub)")
+    print(f"  R3=VGrasp(+100,{GV}s) R4=Lift(×200,sus≥{LMS},ee<{HELD_EE_MAX})")
+    print(f"  R4b=LiftPose(×{args.r4b_scale},σ=1.0) POSE={LIFTED_POSE.tolist()}")
+    print(f"  R5=SustBonus(×50,{LMI}s) R6=SoftLift(+100) R7=Time(-0.01)")
+    print(f"  R8=GCF({args.r8_penalty})")
+    print(f"  R9=Drop({args.r9_penalty}+reset) R10=GripSustain(×{args.r10_scale})")
+    print(f"  R11=Topple({args.r11_per_step}/s,{args.r11_onetime},thresh={args.topple_height_thresh})")
     print(f"  warmup: {args.warmup_steps_initial}→{args.warmup_steps_final}/{args.warmup_decay_iters}")
     print(f"{'='*60}\n")
 
@@ -532,12 +449,9 @@ def main():
 
         next_obs = env.reset(); dp.reset()
         next_done = torch.zeros(N, device=dev)
-        _nav_prev_action.zero_()
-
-        if not is_navigate:
-            ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_(); ms_dr.zero_()
-            g_sus.zero_(); l_sus.zero_()
-            ever_lifted.zero_(); peak_oh.zero_(); drop_counter.zero_()
+        ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_()
+        ms_topple.zero_()  # v6.5
+        g_sus.zero_(); l_sus.zero_()
 
         # Warmup
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
@@ -553,14 +467,12 @@ def main():
                 next_obs = env.reset(); dp.reset()
                 next_done = torch.zeros(N, device=dev)
 
-        if is_navigate:
-            print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | step={gs} | wu={ws}")
-        else:
-            p_ee_xy = ee_obj_dist_xy()
-            p_bs_xy = base_obj_dist_xy()
-            print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | "
-                  f"step={gs} | wu={ws} | "
-                  f"EE: {p_ee_xy.mean():.3f}/{p_ee_xy.min():.3f}")
+        p_ee_xy = ee_obj_dist_xy()
+        p_bs_xy = base_obj_dist_xy()
+
+        print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | "
+              f"step={gs} | wu={ws} | "
+              f"EE: {p_ee_xy.mean():.3f}/{p_ee_xy.min():.3f}")
 
         # ── Rollout ──
         for step in range(S):
@@ -590,185 +502,181 @@ def main():
             next_obs = torch.nan_to_num(next_obs, nan=0.0)
             done = ter | tru
 
-            # ── Reward computation ──
-            if is_navigate:
-                # ══════════════════════════════════════════════════
-                # Navigate reward (direction tracking, mirrors Skill1Env)
-                # ══════════════════════════════════════════════════
-                cmd = env.env._direction_cmd                       # (N, 3)
-                bvel = env.env.robot.data.root_lin_vel_b            # (N, 3)
-                actual_lin = bvel[:, :2]                            # (N, 2) body vx, vy
-                actual_wz = env.env.robot.data.root_ang_vel_b[:, 2] # (N,)
+            # ── Read state ──
+            ee_xy = ee_obj_dist_xy()
+            ee_3d = ee_obj_dist_3d()
+            bs_xy = base_obj_dist_xy()
+            grip = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
+            eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
+            jg = info.get("just_grasped_mask", env.env.just_grasped).view(-1).float()
+            oh = info.get("object_height_mask",
+                (env.env.object_pos_w[:, 2] - env.env.scene.env_origins[:, 2])).view(-1)
+            cf = info.get("contact_force_raw", torch.zeros(N, device=dev)).view(-1)
+            gcf = info.get("ground_contact_force_raw", torch.zeros(N, device=dev)).view(-1)
 
-                target_lin = cmd[:, :2] * NAV_MAX_LIN               # (N, 2) m/s
-                target_wz  = cmd[:, 2]  * NAV_MAX_ANG               # (N,)   rad/s
+            rew = torch.zeros(N, device=dev)
 
-                lin_err = (target_lin - actual_lin).pow(2).sum(dim=-1)
-                ang_err = (target_wz - actual_wz).pow(2)
+            # ══════════════════════════════════════════════════════
+            # R1: GRIPPER OPEN MILESTONE (+10) — v6 identical
+            # ══════════════════════════════════════════════════════
+            nop = (grip > 0.8) & (~ms_go) & (~ms_gr)
+            rew += nop.float() * 10.0
+            ms_go |= nop
 
-                rew_lin = NAV_W_LIN * torch.exp(-lin_err / (NAV_LIN_STD ** 2))
-                rew_ang = NAV_W_ANG * torch.exp(-ang_err / (NAV_ANG_STD ** 2))
+            # ══════════════════════════════════════════════════════
+            # R2: ARM APPROACH XY (×30, base-subtracted) — v6 identical
+            # ══════════════════════════════════════════════════════
+            aok = (~ms_gr) & ms_go
+            ee_p  = p_ee_xy - ee_xy
+            bs_p  = p_bs_xy - bs_xy
+            arm_p = ee_p - bs_p
+            _r2_val = aok.float() * torch.clamp(arm_p * 30.0, -1.0, 3.0)
+            rew += _r2_val
+            _r2_sum += torch.nan_to_num(_r2_val, nan=0.0).sum().item()
+            _open_ct += nop.sum().item()
 
-                # Action smoothness (base dims only)
-                delta_base = action[:, 6:9] - _nav_prev_action[:, 6:9]
-                rew_smooth = NAV_W_SMOOTH * (delta_base ** 2).sum(dim=-1)
-                _nav_prev_action = action.detach().clone()
+            # ══════════════════════════════════════════════════════
+            # R3: VERIFIED GRASP (+100, 5-step sustained) — v6 identical
+            # ══════════════════════════════════════════════════════
+            gc = eg & ms_go & (~ms_gr)
+            g_sus[gc] += 1
+            g_sus[~gc & (~ms_gr)] = 0
+            r_mgs = torch.max(r_mgs, g_sus)
 
-                rew = rew_lin + rew_ang + rew_smooth + NAV_W_TIME
-                _nav_rew_lin_sum += rew_lin.sum().item()
-                _nav_rew_ang_sum += rew_ang.sum().item()
+            vg = (g_sus >= GV) & (~ms_gr)
+            rew += vg.float() * 100.0
+            ms_gr |= vg
+            r_gr += vg.long()
+            r_egr += (jg > 0).long()
 
-                # Done masking
-                dm = done.view(-1).bool()
-                rew[dm] = 0.0
-            else:
-                # ══════════════════════════════════════════════════
-                # Grasp/Lift reward (R1-R11)
-                # ══════════════════════════════════════════════════
-                ee_xy = ee_obj_dist_xy()
-                ee_3d = ee_obj_dist_3d()
-                bs_xy = base_obj_dist_xy()
-                grip = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
-                eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
-                jg = info.get("just_grasped_mask", env.env.just_grasped).view(-1).float()
-                oh = info.get("object_height_mask",
-                    (env.env.object_pos_w[:, 2] - env.env.scene.env_origins[:, 2])).view(-1)
-                cf = info.get("contact_force_raw", torch.zeros(N, device=dev)).view(-1)
-                gcf = info.get("ground_contact_force_raw", torch.zeros(N, device=dev)).view(-1)
+            if vg.any():
+                r_ggs += grip[vg].sum()
+                r_ggn += vg.sum()
+                r_bgs += bs_xy[vg].sum()
+                r_bgn += vg.sum()
 
-                arm_vel = env.env.robot.data.joint_vel[:, env.env.arm_idx]
-                arm_vel_norm = torch.norm(arm_vel, dim=-1)
+            # ══════════════════════════════════════════════════════
+            # R4: LIFT HEIGHT (×200, sustain≥3, ee<0.20) — v6 identical
+            # ══════════════════════════════════════════════════════
+            gc2 = grip < float(env.env.cfg.grasp_gripper_threshold)
+            held = (oh > LHT) & ms_gr & gc2 & (ee_3d < HELD_EE_MAX)
 
-                rew = torch.zeros(N, device=dev)
+            l_sus[held] += 1
+            l_sus[~held] = 0
+            r_mls = torch.max(r_mls, l_sus)
 
-                # R1: GRIPPER OPEN MILESTONE (+10)
-                nop = (grip > 0.8) & (~ms_go) & (~ms_gr)
-                rew += nop.float() * 10.0
-                ms_go |= nop
+            hp = torch.clamp((oh - 0.05) / (0.17 - 0.05), 0.0, 1.0)
+            lok = l_sus >= LMS
+            rew += ms_gr.float() * held.float() * lok.float() * hp * 200.0
 
-                # R2: ARM APPROACH XY (×30, base-subtracted)
-                aok = (~ms_gr) & ms_go
-                ee_p  = p_ee_xy - ee_xy
-                bs_p  = p_bs_xy - bs_xy
-                arm_p = ee_p - bs_p
-                _r2_val = aok.float() * torch.clamp(arm_p * 30.0, -1.0, 3.0)
-                rew += _r2_val
-                _r2_sum += torch.nan_to_num(_r2_val, nan=0.0).sum().item()
-                _open_ct += nop.sum().item()
+            # ══════════════════════════════════════════════════════
+            # R4b: LIFTED POSE APPROACH (×30, Gaussian σ=1.0) [v6.5 CORRECTED]
+            # ══════════════════════════════════════════════════════
+            arm_joints = env.env.robot.data.joint_pos[:, :5]
+            joint_err = torch.norm(arm_joints - LIFTED_POSE, dim=-1)
+            # σ=1.0 → denominator = 2σ² = 2.0 (v6.4 was 8.0 = σ=2.0)
+            pose_sim = torch.exp(-(joint_err ** 2) / 2.0)
+            r4b_r = ms_gr.float() * held.float() * lok.float() * pose_sim * args.r4b_scale
+            rew += r4b_r
+            _r4b_sum += r4b_r.sum().item()
 
-                # R3: VERIFIED GRASP (+100, 5-step sustained)
-                gc = eg & ms_go & (~ms_gr)
-                g_sus[gc] += 1
-                g_sus[~gc & (~ms_gr)] = 0
-                r_mgs = torch.max(r_mgs, g_sus)
+            # ══════════════════════════════════════════════════════
+            # R5: SUSTAINED LIFT BONUS (×50, 15+ steps) — v6 identical
+            # ══════════════════════════════════════════════════════
+            gq = torch.exp(-((grip - 0.50) / 0.20) ** 2)
+            sus = held & (l_sus >= LMI)
+            rew += sus.float() * gq * 50.0
 
-                vg = (g_sus >= GV) & (~ms_gr)
-                rew += vg.float() * 100.0
-                ms_gr |= vg
-                r_gr += vg.long()
-                r_egr += (jg > 0).long()
+            # ══════════════════════════════════════════════════════
+            # R10: GRIP SUSTAIN BONUS [v6.5 NEW]
+            # ══════════════════════════════════════════════════════
+            # Teleop hold grip: mean=0.54, p10=0.47, p90=0.63
+            # Target=0.50, σ=0.15 → peak at tight grip, smooth falloff
+            grip_sustain_q = torch.exp(-((grip - 0.50) / 0.15) ** 2)
+            r10_r = ms_gr.float() * held.float() * lok.float() * grip_sustain_q * args.r10_scale
+            rew += r10_r
+            _r10_sum += r10_r.sum().item()
 
-                if vg.any():
-                    r_ggs += grip[vg].sum()
-                    r_ggn += vg.sum()
-                    r_bgs += bs_xy[vg].sum()
-                    r_bgn += vg.sum()
+            # ══════════════════════════════════════════════════════
+            # R6: SOFT-LIFT MILESTONE (+100) — v6 identical
+            # ══════════════════════════════════════════════════════
+            sl = sus & (gq > 0.3) & (~ms_sl)
+            rew += sl.float() * 100.0
+            ms_sl |= sl
+            r_sl += sl.long()
 
-                # R4: LIFT HEIGHT BAND (×200, Gaussian)
-                gc2 = grip < float(env.env.cfg.grasp_gripper_threshold)
-                held = (oh > LHT) & ms_gr & gc2 & (ee_3d < HELD_EE_MAX)
+            # ══════════════════════════════════════════════════════
+            # R7: TIME PENALTY — v6 identical
+            # ══════════════════════════════════════════════════════
+            rew -= 0.01
 
-                l_sus[held] += 1
-                l_sus[~held] = 0
-                r_mls = torch.max(r_mls, l_sus)
+            # ══════════════════════════════════════════════════════
+            # R8: GRIPPER-GROUND CONTACT PENALTY [v6.4]
+            # ══════════════════════════════════════════════════════
+            grip_on_ground = (gcf > 1.0) & (oh < 0.05)
+            rew += grip_on_ground.float() * args.r8_penalty
+            _r8_n += grip_on_ground.sum().item()
 
-                hp = torch.exp(-((oh - LIFT_TARGET) ** 2) / (2.0 * LIFT_SIGMA ** 2))
-                hp = hp * (oh > LHT).float()
-                lok = l_sus >= LMS
-                rew += ms_gr.float() * held.float() * lok.float() * hp * 200.0
+            # ══════════════════════════════════════════════════════
+            # R9: DROP PENALTY [v6.5 NEW]
+            # ══════════════════════════════════════════════════════
+            # env의 drop detection: EE 멀어짐 OR gripper 열림+contact 없음
+            # → object_grasped False로 리셋 + just_dropped True
+            jd = info.get("just_dropped_mask",
+                          torch.zeros(N, dtype=torch.bool, device=dev)).view(-1).float()
+            rew += jd * args.r9_penalty
+            _r9_n += (jd > 0).sum().item()
 
-                # R4b: LIFTED POSE APPROACH (×30, Gaussian σ=2.0)
-                arm_joints = env.env.robot.data.joint_pos[:, :5]
-                joint_err = torch.norm(arm_joints - LIFTED_POSE, dim=-1)
-                pose_sim = torch.exp(-(joint_err ** 2) / 8.0)
-                r4b_r = ms_gr.float() * held.float() * lok.float() * pose_sim * args.r4b_scale
-                rew += r4b_r
-                _r4b_sum += r4b_r.sum().item()
+            # Drop 후 milestones 리셋 → re-grasp 시도 가능
+            # R1(open) → R2(approach) → R3(grasp) 경로 재활성화
+            drop_mask = jd > 0
+            if drop_mask.any():
+                ms_gr[drop_mask] = False
+                ms_li[drop_mask] = False
+                ms_sl[drop_mask] = False
+                g_sus[drop_mask] = 0
+                l_sus[drop_mask] = 0
 
-                # R5: SUSTAINED LIFT BONUS (×50, 15+ steps)
-                gq = torch.exp(-((grip - 0.50) / 0.20) ** 2)
-                sus = held & (l_sus >= LMI)
-                rew += sus.float() * gq * 50.0
+            # ══════════════════════════════════════════════════════
+            # R11: OBJECT TOPPLE PENALTY [v6.5 NEW]
+            # ══════════════════════════════════════════════════════
+            # 약병: standing objZ≈0.033, fallen objZ≈0.020
+            # 쓰러진 채 잡으면 place 시 세울 수 없음
+            # grasp 전에만 적용 (lift 중 Z 변화는 별개)
+            toppled = (oh < args.topple_height_thresh) & (~ms_gr)
+            newly_toppled = toppled & (~ms_topple)
+            rew += toppled.float() * args.r11_per_step     # per-step 누적
+            rew += newly_toppled.float() * args.r11_onetime  # 첫 발생 추가
+            ms_topple |= toppled
+            _r11_n += newly_toppled.sum().item()
 
-                # R6: SOFT-LIFT MILESTONE (+100)
-                sl = sus & (gq > 0.3) & (~ms_sl)
-                rew += sl.float() * 100.0
-                ms_sl |= sl
-                r_sl += sl.long()
+            # ── Diagnostics ──
+            nl = (l_sus >= LMI) & (~ms_li)
+            r_li += nl.long(); ms_li |= nl
+            if nl.any():
+                r_bls += bs_xy[nl].sum()
+                r_bln += nl.sum()
 
-                # R7: TIME PENALTY
-                rew -= 0.01
+            _hi = oh > LHT
+            if _hi.any() and _ldbg % 200 == 0:
+                print(f"  [LIFT] n={_hi.sum().item()} cf={cf[_hi].min():.1f}~{cf[_hi].max():.1f} "
+                      f"grip={grip[_hi].min():.2f}~{grip[_hi].max():.2f} "
+                      f"ee3d={ee_3d[_hi].min():.3f} held={held.sum().item()} mg={ms_gr[_hi].sum().item()}")
+            if _hi.any(): _ldbg += 1
 
-                # R8: GRIPPER-GROUND CONTACT PENALTY
-                grip_on_ground = (gcf > 1.0) & (oh < 0.05)
-                rew += grip_on_ground.float() * args.r8_penalty
-                _r8_n += grip_on_ground.sum().item()
+            r_mcf = torch.max(r_mcf, cf)
+            if eg.any():
+                r_cgs += cf[eg].sum(); r_cgn += eg.sum()
+                r_moz[eg] = torch.max(r_moz[eg], oh[eg])
 
-                # R9: GRIP HOLD (per-step, during HELD only)
-                grip_holding = held & (grip < 0.55)
-                r9_r = grip_holding.float() * args.r9_grip_hold
-                rew += r9_r
-                _r9_sum += r9_r.sum().item()
+            p_ee_xy = ee_xy.clone()
+            p_bs_xy = bs_xy.clone()
 
-                # R10: DROP PENALTY (one-time)
-                ever_lifted |= (oh > 0.08) & ms_gr
-                peak_oh = torch.max(peak_oh, oh * ms_gr.float())
-                dropped = ever_lifted & (oh < 0.025) & (~ms_dr)
-                rew += dropped.float() * args.r10_drop_penalty
-                ms_dr |= dropped
-                _r10_n += dropped.sum().item()
+            # ── Done masking ──
+            dm = done.view(-1).bool()
+            rew[dm] = 0.0
 
-                if args.drop_terminate:
-                    drop_counter[dropped & (drop_counter == 0)] = 1
-                    drop_counter[(drop_counter > 0) & (~dropped)] += 1
-                    force_done = drop_counter > args.drop_grace_steps
-                    if force_done.any():
-                        done = done | force_done.unsqueeze(-1) if done.ndim > 1 else done | force_done
-
-                # R11: ARM STABILITY BONUS (per-step, post-grasp)
-                stability = torch.exp(-arm_vel_norm * 0.5)
-                r11_r = ms_gr.float() * held.float() * stability * args.r11_stability_scale
-                rew += r11_r
-                _r11_sum += r11_r.sum().item()
-
-                # ── Diagnostics ──
-                nl = (l_sus >= LMI) & (~ms_li)
-                r_li += nl.long(); ms_li |= nl
-                if nl.any():
-                    r_bls += bs_xy[nl].sum()
-                    r_bln += nl.sum()
-
-                _hi = oh > LHT
-                if _hi.any() and _ldbg % 200 == 0:
-                    print(f"  [LIFT] n={_hi.sum().item()} cf={cf[_hi].min():.1f}~{cf[_hi].max():.1f} "
-                          f"grip={grip[_hi].min():.2f}~{grip[_hi].max():.2f} "
-                          f"ee3d={ee_3d[_hi].min():.3f} held={held.sum().item()} mg={ms_gr[_hi].sum().item()}"
-                          f" drop={ms_dr.sum().item()}")
-                if _hi.any(): _ldbg += 1
-
-                r_mcf = torch.max(r_mcf, cf)
-                if eg.any():
-                    r_cgs += cf[eg].sum(); r_cgn += eg.sum()
-                    r_moz[eg] = torch.max(r_moz[eg], oh[eg])
-
-                p_ee_xy = ee_xy.clone()
-                p_bs_xy = bs_xy.clone()
-
-                # Done masking
-                dm = done.view(-1).bool()
-                rew[dm] = 0.0
-
-                if dm.any(): reset_ep(dm)
+            if dm.any(): reset_ep(dm)
 
             rew = torch.nan_to_num(rew, nan=0.0)
             if rew_norm is not None and not ev:
@@ -780,107 +688,74 @@ def main():
             next_done = done.view(-1).float()
 
         # ── Summary ──
+        sr = (r_li > 0).float().mean().item()
+        tg, teg = r_gr.sum().item(), r_egr.sum().item()
+        tl, tsl = r_li.sum().item(), r_sl.sum().item()
+
+        fed = torch.nan_to_num(ee_obj_dist_3d(), nan=9.99)
+        bd = torch.nan_to_num(base_obj_dist_xy(), nan=9.99)
+        gv = torch.nan_to_num(env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1), nan=0.5)
+
+        d = ""
+        eg2 = r_moz > 0
+        if eg2.any(): d += f" | ObjZ:{r_moz[eg2].max():.3f}/{r_moz[eg2].mean():.3f} n={eg2.sum().item()}"
+        d += f" | GSus:{r_mgs.max().item()} LSus:{r_mls.max().item()} n{LMI}+={(r_mls >= LMI).sum().item()}"
+        mc = r_mcf.max().item()
+        ac = r_mcf[r_mcf > 0].mean().item() if (r_mcf > 0).any() else 0
+        d += f" | CF:{mc:.0f}/{ac:.0f} n={(r_mcf > 0).sum().item()}"
+        if r_cgn.item() > 0: d += f" cf@g={(r_cgs / r_cgn).item():.3f}"
+        if r_ggn.item() > 0: d += f" | GAG:{(r_ggs / r_ggn).item():.3f}(n={r_ggn.item()})"
+        if r_bgn.item() > 0: d += f" B@G:{(r_bgs / r_bgn).item():.3f}"
+        if r_bln.item() > 0: d += f" B@L:{(r_bls / r_bln).item():.3f}"
+
+        for t in [r_gr, r_egr, r_li, r_sl, r_moz, r_mgs, r_mls, r_mcf,
+                  r_cgs, r_cgn, r_ggs, r_ggn, r_bgs, r_bgn, r_bls, r_bln]:
+            t.zero_()
+
         fps = S * N / max(time.time() - it0, 1e-6)
         cr = _clip_ct / max(_clip_n, 1)
-        _clip_ct = 0; _clip_n = 0
-        avg_ret = rew_b.sum(0).mean().item()
+        r2a = _r2_sum / max(S * N, 1)
+        r4ba = _r4b_sum / max(S * N, 1)
+        r10a = _r10_sum / max(S * N, 1)
+        diag2 = (f" | R2avg={r2a:.3f} Opens={_open_ct} ClipR={cr:.3f}"
+                 f" R4b={r4ba:.3f} R8=({_r8_n}) R9=({_r9_n}) R10={r10a:.3f} R11=({_r11_n})")
+        _r2_sum = 0.0; _open_ct = 0; _clip_ct = 0; _clip_n = 0
+        _r4b_sum = 0.0; _r8_n = 0; _r9_n = 0; _r10_sum = 0.0; _r11_n = 0
 
-        if is_navigate:
-            rla = _nav_rew_lin_sum / max(S * N, 1)
-            raa = _nav_rew_ang_sum / max(S * N, 1)
-            _nav_rew_lin_sum = 0.0; _nav_rew_ang_sum = 0.0
+        print(f"  SR={sr:.2%} | G={tg}(env:{teg}) | L={tl} | SL={tsl} | "
+              f"EE={fed.min():.3f}({fed.mean():.3f}) | "
+              f"Base={bd.min():.3f}({bd.mean():.3f}) | "
+              f"Grip={gv.min():.2f}/{gv.mean():.2f}/{gv.max():.2f} | "
+              f"R={rew_b.sum(0).mean():.1f} | FPS={fps:.0f}{d}{diag2}")
 
-            print(f"  R_lin={rla:.3f} R_ang={raa:.3f} | "
-                  f"R={avg_ret:.1f} | Cl={cr:.3f} | FPS={fps:.0f}")
-
-            if ev:
-                # Navigate: track by avg return (higher = better tracking)
-                if avg_ret > bsr:
-                    bsr = avg_ret
-                    torch.save({"residual_policy_state_dict": rpol.state_dict(),
-                        "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
-                        "avg_return": avg_ret,
-                        "iteration": gi, "global_step": gs, "args": vars(args)},
-                        save_dir / "resip_best.pt")
-                    print(f"  ★ Best R={avg_ret:.1f}")
-                if gi % 10 == 0 or gi <= 10:
-                    torch.save({"residual_policy_state_dict": rpol.state_dict(),
-                        "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
-                        "iteration": gi, "args": vars(args)},
-                        save_dir / f"resip_iter{gi}.pt")
-                print(f"  Best: R={bsr:.1f}")
-                continue
-        else:
-            sr = (r_li > 0).float().mean().item()
-            tg, teg = r_gr.sum().item(), r_egr.sum().item()
-            tl, tsl = r_li.sum().item(), r_sl.sum().item()
-
-            fed = torch.nan_to_num(ee_obj_dist_3d(), nan=9.99)
-            bd = torch.nan_to_num(base_obj_dist_xy(), nan=9.99)
-            gv = torch.nan_to_num(env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1), nan=0.5)
-
-            d = ""
-            eg2 = r_moz > 0
-            if eg2.any(): d += f" | ObjZ:{r_moz[eg2].max():.3f}/{r_moz[eg2].mean():.3f} n={eg2.sum().item()}"
-            d += f" | GSus:{r_mgs.max().item()} LSus:{r_mls.max().item()} n{LMI}+={(r_mls >= LMI).sum().item()}"
-            mc = r_mcf.max().item()
-            ac = r_mcf[r_mcf > 0].mean().item() if (r_mcf > 0).any() else 0
-            d += f" | CF:{mc:.0f}/{ac:.0f} n={(r_mcf > 0).sum().item()}"
-            if r_cgn.item() > 0: d += f" cf@g={(r_cgs / r_cgn).item():.3f}"
-            if r_ggn.item() > 0: d += f" | GAG:{(r_ggs / r_ggn).item():.3f}(n={r_ggn.item()})"
-            if r_bgn.item() > 0: d += f" B@G:{(r_bgs / r_bgn).item():.3f}"
-            if r_bln.item() > 0: d += f" B@L:{(r_bls / r_bln).item():.3f}"
-
-            for t in [r_gr, r_egr, r_li, r_sl, r_moz, r_mgs, r_mls, r_mcf,
-                      r_cgs, r_cgn, r_ggs, r_ggn, r_bgs, r_bgn, r_bls, r_bln]:
-                t.zero_()
-
-            r2a = _r2_sum / max(S * N, 1)
-            r4ba = _r4b_sum / max(S * N, 1)
-            r9a = _r9_sum / max(S * N, 1)
-            r11a = _r11_sum / max(S * N, 1)
-            diag2 = (f" | R2={r2a:.3f} Op={_open_ct} Cl={cr:.3f}"
-                     f" R4b={r4ba:.3f} R8=({_r8_n})"
-                     f" R9={r9a:.3f} R10=({_r10_n}) R11={r11a:.3f}"
-                     f" Drop={_drop_n}")
-            _r2_sum = 0.0; _open_ct = 0
-            _r4b_sum = 0.0; _r8_n = 0; _r9_sum = 0.0; _r10_n = 0; _r11_sum = 0.0
-            _drop_n = 0
-
-            print(f"  SR={sr:.2%} | G={tg}(env:{teg}) | L={tl} | SL={tsl} | "
-                  f"EE={fed.min():.3f}({fed.mean():.3f}) | "
-                  f"Base={bd.min():.3f}({bd.mean():.3f}) | "
-                  f"Grip={gv.min():.2f}/{gv.mean():.2f}/{gv.max():.2f} | "
-                  f"R={avg_ret:.1f} | FPS={fps:.0f}{d}{diag2}")
-
-            if ev:
-                if sr > bsr: bsr = sr
-                if tsl > bsl:
-                    bsl = tsl
-                    torch.save({"residual_policy_state_dict": rpol.state_dict(),
-                        "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
-                        "success_rate": sr, "soft_lifts": tsl, "grasps": tg,
-                        "iteration": gi, "global_step": gs, "args": vars(args)},
-                        save_dir / "resip_best.pt")
-                    print(f"  ★ Best SL={tsl}")
-                if tg > bgr:
-                    bgr = tg
-                    torch.save({"residual_policy_state_dict": rpol.state_dict(),
-                        "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
-                        "success_rate": sr, "grasps": tg,
-                        "iteration": gi, "global_step": gs, "args": vars(args)},
-                        save_dir / "resip_best_grasp.pt")
-                    print(f"  ★ Best G={tg}")
-                if gi % 10 == 0 or gi <= 10:
-                    torch.save({"residual_policy_state_dict": rpol.state_dict(),
-                        "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
-                        "iteration": gi, "args": vars(args)},
-                        save_dir / f"resip_iter{gi}.pt")
-                print(f"  Best: SR={bsr:.2%} SL={bsl} G={bgr}")
-                continue
+        if ev:
+            if sr > bsr: bsr = sr
+            if tsl > bsl:
+                bsl = tsl
+                torch.save({"residual_policy_state_dict": rpol.state_dict(),
+                    "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
+                    "success_rate": sr, "soft_lifts": tsl, "grasps": tg,
+                    "iteration": gi, "global_step": gs, "args": vars(args)},
+                    save_dir / "resip_best.pt")
+                print(f"  ★ Best SL={tsl}")
+            if tg > bgr:
+                bgr = tg
+                torch.save({"residual_policy_state_dict": rpol.state_dict(),
+                    "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
+                    "success_rate": sr, "grasps": tg,
+                    "iteration": gi, "global_step": gs, "args": vars(args)},
+                    save_dir / "resip_best_grasp.pt")
+                print(f"  ★ Best G={tg}")
+            if gi % 10 == 0 or gi <= 10:
+                torch.save({"residual_policy_state_dict": rpol.state_dict(),
+                    "dp_checkpoint": args.bc_checkpoint, "dp_config": dpc,
+                    "iteration": gi, "args": vars(args)},
+                    save_dir / f"resip_iter{gi}.pt")
+            print(f"  Best: SR={bsr:.2%} SL={bsl} G={bgr}")
+            continue
 
         # ═════════════════════════════════════════════════════════
-        # PPO (v6 identical)
+        # PPO
         # ═════════════════════════════════════════════════════════
         with torch.no_grad():
             ba2 = dp.base_action_normalized(next_obs)
