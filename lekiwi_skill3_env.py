@@ -186,7 +186,7 @@ class Skill3Env(Skill2Env):
             intentional_place = self.object_grasped & gripper_open & near_dest
             if intentional_place.any():
                 place_ids = intentional_place.nonzero(as_tuple=False).squeeze(-1)
-                if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+                if self._physics_grasp and getattr(self, '_grasp_attach_mode', '') == "fixed_joint":
                     self._disable_grasp_fixed_joint_for_envs(place_ids)
                 self.object_grasped[intentional_place] = False
                 self.intentional_placed[intentional_place] = True
@@ -396,9 +396,13 @@ class Skill3Env(Skill2Env):
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         truncated = self.task_success | time_out
 
-        # Logging
+        # Logging (saved BEFORE auto-reset clears flags)
         self.extras["task_success_rate"] = self.task_success.float().mean()
+        self.extras["place_success_mask"] = self.task_success.clone()
         self.extras["drop_rate"] = dropped.float().mean()
+        self.extras["object_grasped_mask"] = self.object_grasped.clone()
+        self.extras["just_dropped_mask"] = self.just_dropped.clone()
+        self.extras["object_height_mask"] = (self.object_pos_w[:, 2] - self.scene.env_origins[:, 2]).clone()
 
         return terminated, truncated
 
@@ -430,7 +434,7 @@ class Skill3Env(Skill2Env):
         if num == 0:
             return
 
-        if self._physics_grasp and self._grasp_attach_mode == "fixed_joint":
+        if self._physics_grasp and getattr(self, '_grasp_attach_mode', '') == "fixed_joint":
             self._disable_grasp_fixed_joint_for_envs(env_ids)
 
         if self.handoff_buffer is not None and len(self.handoff_buffer) > 0:
@@ -589,7 +593,7 @@ class Skill3Env(Skill2Env):
 
         # 물체를 gripper 근처에 배치 (tucked pose에서 gripper는 base 바로 위)
         self.object_pos_w[env_ids, :2] = default_root_state[:, :2]
-        self.object_pos_w[env_ids, 2] = default_root_state[:, 2] + float(self.cfg.grasp_attach_height)
+        self.object_pos_w[env_ids, 2] = default_root_state[:, 2] + float(self.cfg.grasp_success_height)
 
         # Object sim write + velocity zero
         if not self._multi_object and self.object_rigid is not None:

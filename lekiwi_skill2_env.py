@@ -1676,7 +1676,7 @@ class Skill2Env(DirectRLEnv):
         ) > self.cfg.max_dist_from_origin
         env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
         fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
-        terminated = out_of_bounds | fell
+        terminated = out_of_bounds | fell | self.just_dropped
 
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         truncated = self.task_success | time_out
@@ -1872,4 +1872,5 @@ class Skill2Env(DirectRLEnv):
 
         # DR 적용 (v8 그대로)
         self._apply_domain_randomization(env_ids)
+
 

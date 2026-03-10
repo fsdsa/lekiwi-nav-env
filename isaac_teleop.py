@@ -55,7 +55,7 @@ LEADER_REST_RAD6 = [
     0.215753,    # gripper (18.09 deg)
 ]
 
-SIGNS = [1.0, 1.0, 1.0, 1.0, 1.814, 1.0]  # wrist_roll: 기어비 실측 π/1.7321=1.814
+SIGNS = [1.0, 1.0, 1.0, 1.0, 1.814, 1.0]
 
 SMOOTH_ALPHA = 0.12
 MAX_SPEED_RAD_S = 2.0
