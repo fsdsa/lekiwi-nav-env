@@ -1167,7 +1167,7 @@ Phase 3: 포맷 변환
 Phase 4.5: Sim Full-System Evaluation (3090 Desktop + A100 서버)
   [⬜] eval_full_system.py 구현
   [✅] A100: VLM 추론 API (conda vllm, vLLM 0.17.0, port 8000) — 검증 완료
-  [⬜] A100: VLA 추론 API (conda lerobotpi0, Pi0-FAST, port 8002) — `bash setup_lerobotpi0.sh`
+  [✅] A100: VLA 추론 API (conda lerobotpi0 `~/yes/envs/lerobotpi0`, Pi0-FAST, port 8002) — env 설치 완료
   [⬜] 3090↔A100 통신 레이어 구축 및 검증
   [⬜] Skill별 단독 sim 평가 (Navigate/Skill-2/Skill-3, 각 50회+)
   [⬜] VLM + VLA 통합 sim 평가 (전체 task, 각 조건 30회+)

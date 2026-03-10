@@ -80,7 +80,7 @@ bash feedback/setup_server_env.sh rl       # BC/RL만
 스크립트가 생성하는 conda 환경:
 - `rl_train`: Isaac Sim 5.0.0.0 (headless) + Isaac Lab v2.2.0 + skrl 1.4.3
 - `vllm`: vLLM 0.17.0 + Qwen2.5-VL-7B-Instruct (VLM 추론, OpenAI-compatible API)
-- `lerobotpi0`: π0-FAST + LeRobot (VLA 추론, 생성: `bash setup_lerobotpi0.sh`)
+- `lerobotpi0`: π0-FAST + LeRobot (VLA 추론, `~/yes/envs/lerobotpi0`)
 
 ### 3-4. Isaac Lab 설치 (스크립트에 포함)
 
@@ -131,8 +131,15 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 |------|------|-------|------|
 | `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | ✅ 설치됨 |
 | `vllm` | vLLM 0.17.0 + Qwen2.5-VL-7B (VLM 추론, OpenAI API) | Phase 4.5 + Phase 5 | ✅ 설치됨 |
-| `lerobotpi0` | π0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ⬜ `bash setup_lerobotpi0.sh` |
+| `lerobotpi0` | π0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ✅ 설치됨 (`~/yes/envs/lerobotpi0`) |
 | `groot` | GR00T N1.6 (VLA 파인튜닝, 선택) | Phase 4 | ⬜ |
+
+**conda 경로 참고:**
+- `rl_train`, `vllm`: `~/miniconda3/envs/`
+- `lerobotpi0`: `~/yes/envs/lerobotpi0`
+
+**모델 캐시:**
+- Qwen2.5-VL-7B-Instruct: `~/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct` (다운로드 완료)
 
 **VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB):**
 ```
@@ -349,7 +356,25 @@ python vla_inference_server.py \
     --port 8002
 ```
 
-> **lerobotpi0 환경 미생성 시**: `bash setup_lerobotpi0.sh` 실행 (최초 1회)
+> lerobotpi0 환경 경로: `~/yes/envs/lerobotpi0` (설치 완료)
+
+#### USD 카메라 prim 경로 (lekiwi_robot.usd)
+
+로봇 USD에 이미 카메라가 포함되어 있으므로, Isaac Lab `Camera` 센서에 prim_path만 지정하면 된다 (spawn 불필요):
+
+| 카메라 | USD prim 경로 | 용도 |
+|--------|---------------|------|
+| base RGB | `.../Realsense/RSD455/Camera_OmniVision_OV9782_Color` | VLM instruction + VLA 입력 |
+| base depth | `.../Realsense/RSD455/Camera_Pseudo_Depth` | depth safety layer |
+| wrist RGB | `.../Wrist_Roll_08c_v1/visuals/mesh_002_3/wrist_camera` | VLA 입력 (정밀 파지) |
+
+Isaac Lab env_pattern 예시:
+```
+/World/envs/env_.*/Robot/LeKiwi/base_plate_layer1_v5/Realsense/RSD455/Camera_OmniVision_OV9782_Color
+/World/envs/env_.*/Robot/LeKiwi/Wrist_Roll_08c_v1/visuals/mesh_002_3/wrist_camera
+```
+
+> **참고**: `Realsense/RSD455`는 Omniverse 서버의 `rsd455.usd`를 참조한다. Isaac Sim에서 로드 시 자동 resolve되지만, 순수 pxr(로컬)에서는 참조 실패로 빈 Xform으로 보인다.
 
 #### 3090 Desktop: sim 평가 실행
 
