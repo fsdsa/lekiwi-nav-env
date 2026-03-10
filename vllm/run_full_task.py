@@ -64,8 +64,8 @@ parser.add_argument("--safety_dist", type=float, default=0.3)
 parser.add_argument("--enable_safety", action="store_true", default=True)
 
 # Timing
-parser.add_argument("--vlm_interval", type=int, default=30,
-                    help="VLM 호출 간격 (sim steps, 30 = ~3s at 10Hz)")
+parser.add_argument("--vlm_interval", type=int, default=1,
+                    help="VLM 호출 시도 간격 (steps, 비동기 _pending으로 자동 throttle)")
 parser.add_argument("--max_total_steps", type=int, default=6000,
                     help="최대 스텝 (6000 = 10분 at 10Hz)")
 

@@ -103,7 +103,7 @@ PYTHONPATH="vllm:.:$PYTHONPATH" python vllm/run_full_task.py \
 | `--dest_object` | (없음) | 수동 지정 시 VLM classify 건너뜀 |
 | `--vlm_server` | http://localhost:8000 | vLLM 서버 URL |
 | `--vla_server` | http://localhost:8002 | VLA 서버 URL |
-| `--vlm_interval` | 30 | VLM 호출 간격 (steps, 30 = ~3초) |
+| `--vlm_interval` | 1 | VLM 호출 시도 간격 (비동기, _pending으로 자동 throttle) |
 | `--max_total_steps` | 6000 | 최대 실행 (6000 = ~10분) |
 | `--camera_width` | 640 | 카메라 해상도 |
 | `--camera_height` | 400 | 카메라 해상도 |
