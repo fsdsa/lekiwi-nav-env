@@ -130,8 +130,8 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 | 환경 | 용도 | Phase | 상태 |
 |------|------|-------|------|
 | `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | ✅ 설치됨 |
-| `vllm` | vLLM 0.17.0 + Qwen2.5-VL-7B (VLM 추론, OpenAI API) | Phase 4.5 + Phase 5 | ✅ 설치됨 |
-| `lerobotpi0` | π0-FAST + LeRobot (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ✅ 설치됨 (`~/yes/envs/lerobotpi0`) |
+| `vllm` | vLLM 0.17.0 + Qwen2.5-VL-7B (VLM 추론, OpenAI API, gpu_util=0.50) | Phase 4.5 + Phase 5 | ✅ 검증 완료 |
+| `lerobotpi0` | π0-FAST 2.9B + lerobot 0.4.4 (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ✅ 검증 완료 (`~/yes/envs/lerobotpi0`) |
 | `groot` | GR00T N1.6 (VLA 파인튜닝, 선택) | Phase 4 | ⬜ |
 
 **conda 경로 참고:**
@@ -141,13 +141,23 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 **모델 캐시:**
 - Qwen2.5-VL-7B-Instruct: `~/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct` (다운로드 완료)
 
-**VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB):**
+**lerobotpi0 환경 설치 (검증 완료 2026-03-10):**
+```bash
+pip install "lerobot[pi]@git+https://github.com/huggingface/lerobot.git@v0.4.4"
+pip install transformers==4.53.3   # Pi0 전용, 최신 버전 NOT 호환
+huggingface-cli login              # google/paligemma-3b-pt-224 gated model 접근 필수
 ```
-vLLM (Qwen 7B bf16):  --gpu-memory-utilization 0.45 → ~18GB 선점
-Pi0-FAST (VLA):        나머지 ~22GB 사용 (실제 ~6-8GB)
-합계:                  ~24-26GB / 40GB
+**필수 패치:**
+- `_prepare_attention_masks_4d`에서 `.bool()` 호출 추가 (dtype mismatch 방지)
+- `validate_action_token_prefix=False` 설정 (action token prefix 검증 비활성화)
+
+**VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB, 검증 완료 2026-03-10):**
 ```
-> `--gpu-memory-utilization 0.45`는 vLLM이 KV cache를 위해 GPU 메모리를 선점하는 비율. 0.70 이상이면 VLA가 OOM.
+vLLM (Qwen 7B bf16):  --gpu-memory-utilization 0.50 → ~19.8GB 선점
+Pi0-FAST 2.9B (VLA):   ~5.9GB 사용
+합계:                  ~25.9GB / 40GB
+```
+> `--gpu-memory-utilization 0.50`는 vLLM이 KV cache를 위해 GPU 메모리를 선점하는 비율. 0.70 이상이면 VLA가 OOM.
 
 ---
 
@@ -344,19 +354,21 @@ VLM 추론 서버 (vLLM, OpenAI-compatible API):
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate vllm && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
 bash run_vllm_server.sh
-# → port 8000, gpu-memory-utilization 0.45
+# → port 8000, gpu-memory-utilization 0.50, ~19.8GB
 ```
 
-VLA 추론 서버 (Pi0-FAST):
+VLA 추론 서버 (Pi0-FAST 2.9B, lerobot 0.4.4):
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh && conda activate lerobotpi0 && \
 cd ~/IsaacLab/scripts/lekiwi_nav_env && \
 python vla_inference_server.py \
     --checkpoint ~/datasets/lekiwi_vla/best_model/ \
     --port 8002
+# → ~5.9GB VRAM. transformers==4.53.3 필수. HF login 필수.
+# → 패치: _prepare_attention_masks_4d .bool(), validate_action_token_prefix=False
 ```
 
-> lerobotpi0 환경 경로: `~/yes/envs/lerobotpi0` (설치 완료)
+> lerobotpi0 환경 경로: `~/yes/envs/lerobotpi0` (검증 완료 2026-03-10)
 
 #### USD 카메라 prim 경로 (lekiwi_robot.usd)
 

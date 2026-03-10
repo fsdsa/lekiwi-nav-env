@@ -1,9 +1,59 @@
 """
-VLM Prompt 설정 — Navigate / Skill 전환 판단
+VLM Prompt 설정
+
+구조:
+  1. CLASSIFY_SYSTEM_PROMPT: 유저 지시어 → source/dest 추출 (1회)
+  2. INSTRUCT_SYSTEM_PROMPT: 이미지 → VLA instruction 생성 (0.3Hz)
+  3. NAVIGATE_SYSTEM_PROMPT: Navigate 전용 방향 command (레거시, ResiP용)
 """
 
 # ═══════════════════════════════════════════════════════════════════════
-# Navigate: 방향 command 결정
+# 1. Classify: 유저 지시어 → source/dest 추출 (text-only, 1회)
+# ═══════════════════════════════════════════════════════════════════════
+
+CLASSIFY_SYSTEM_PROMPT = """You are a task parser for a mobile manipulator robot.
+Given a user command, extract:
+- source_object: the object to pick up
+- dest_object: the object/location to place it near (if any)
+- mode: "relative_placement" (pick A, place next to B) or "single_pickup" (just pick up A)
+
+Output JSON only, no explanation.
+Example: {"mode": "relative_placement", "source_object": "medicine bottle", "dest_object": "red cup"}"""
+
+CLASSIFY_USER_TEMPLATE = """User command: {user_command}"""
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2. Instruct: 이미지 → VLA instruction 생성 (0.3Hz, 비동기)
+#    VLM이 상황 판단 + 자연어 instruction 직접 생성
+# ═══════════════════════════════════════════════════════════════════════
+
+INSTRUCT_SYSTEM_PROMPT = """You are the commander of a mobile manipulator robot.
+You see through a front-facing camera (RealSense D455, 87° FOV).
+
+User request: "{user_request}"
+Source object: "{source_object}"
+Destination object: "{dest_object}"
+
+Look at the camera image and output ONE short English instruction for the robot's next action.
+
+Situation assessment guidelines:
+- If {source_object} is NOT visible → give a search/explore instruction (e.g., "turn right slowly to search for the {source_object}")
+- If {source_object} is visible but far away → navigate toward it (e.g., "move forward toward the {source_object}")
+- If {source_object} is close and reachable → grasp instruction (e.g., "approach and pick up the {source_object}")
+- If robot is holding the object and {dest_object} is NOT visible → search for destination (e.g., "turn left to find the {dest_object}")
+- If robot is holding the object and {dest_object} is visible → approach and place (e.g., "move toward the {dest_object} and place the {source_object} next to it")
+- If task is complete → output exactly "done"
+
+Rules:
+1. Output ONLY the instruction, one sentence, in English.
+2. Be specific about direction (left, right, forward, backward).
+3. Never explain your reasoning.
+4. Previous instruction was: "{prev_instruction}" """
+
+INSTRUCT_USER_TEMPLATE = """What should the robot do next?"""
+
+# ═══════════════════════════════════════════════════════════════════════
+# 3. Navigate: 방향 command (레거시 — ResiP Navigate 전용)
 # ═══════════════════════════════════════════════════════════════════════
 
 NAVIGATE_SYSTEM_PROMPT = """You are a mobile robot navigation controller. You see through a front-facing camera (RealSense D455, 87° FOV).
@@ -28,27 +78,7 @@ NAVIGATE_USER_TEMPLATE = """Target: {target_object}
 Command:"""
 
 # ═══════════════════════════════════════════════════════════════════════
-# Skill 전환: 현재 상황 판단
-# ═══════════════════════════════════════════════════════════════════════
-
-SKILL_TRANSITION_SYSTEM_PROMPT = """You are a mobile robot task coordinator. You see through a front-facing camera.
-
-Current task: Find {target_object}, pick it up, then find {dest_object} and place the {target_object} next to it.
-
-Based on what you see, output the current skill phase:
-- NAVIGATE_SEARCH: target object not visible, keep exploring
-- NAVIGATE_TO_TARGET: target object visible but far away, move toward it
-- APPROACH_AND_LIFT: target object is close and centered, ready to approach and grasp
-- NAVIGATE_TO_DEST: holding object, destination not visible, keep exploring
-- NAVIGATE_TO_DEST_CLOSE: holding object, destination visible, move toward it
-- CARRY_AND_PLACE: holding object, destination is close, ready to place
-
-Only output the phase name, nothing else."""
-
-SKILL_TRANSITION_USER_TEMPLATE = """Phase:"""
-
-# ═══════════════════════════════════════════════════════════════════════
-# Command → obs direction_cmd 매핑
+# Command → direction 매핑 (Navigate ResiP용)
 # ═══════════════════════════════════════════════════════════════════════
 
 COMMAND_TO_DIRECTION = {
@@ -59,7 +89,7 @@ COMMAND_TO_DIRECTION = {
     "STOP":       [0.0, 0.0, 0.0],
 }
 
-# Skill phase → 어떤 policy를 실행할지
+# Skill phase → policy 매핑 (레거시)
 PHASE_TO_SKILL = {
     "NAVIGATE_SEARCH":      "navigate",
     "NAVIGATE_TO_TARGET":   "navigate",

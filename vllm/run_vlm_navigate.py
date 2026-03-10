@@ -105,7 +105,6 @@ import torch
 from PIL import Image
 
 import isaaclab.sim as sim_utils
-from isaaclab.sensors import CameraCfg
 
 from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
 from vlm_prompts import (
