@@ -306,6 +306,17 @@ def main():
         ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_(); g_sus.zero_(); l_sus.zero_()
         if IS_S3: s3_ms_place.zero_()
 
+        if IS_S3 and gi <= 2:
+            _dest_w = env.env.dest_object_pos_w
+            _robot_w = env.env.robot.data.root_pos_w
+            _env_o = env.env.scene.env_origins
+            _dd_pre = torch.norm(_dest_w[:, :2] - _robot_w[:, :2], dim=-1)
+            print(f"  [PRE-WARMUP] DD: mean={_dd_pre.mean():.3f} min={_dd_pre.min():.3f} max={_dd_pre.max():.3f}")
+            for _di in range(min(4, N)):
+                print(f"    env{_di}: dest=({_dest_w[_di,0]:.2f},{_dest_w[_di,1]:.2f},{_dest_w[_di,2]:.2f}) "
+                      f"robot=({_robot_w[_di,0]:.2f},{_robot_w[_di,1]:.2f},{_robot_w[_di,2]:.2f}) "
+                      f"origin=({_env_o[_di,0]:.2f},{_env_o[_di,1]:.2f},{_env_o[_di,2]:.2f}) dd={_dd_pre[_di]:.3f}")
+
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
         ws = max(0, int(args.warmup_steps_initial + (args.warmup_steps_final - args.warmup_steps_initial) * prog))
         WU_RESET = 1800
