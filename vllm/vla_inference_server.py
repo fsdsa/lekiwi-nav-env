@@ -1,9 +1,9 @@
 """
-VLA Inference Server — Pi0-FAST via LeRobot 0.4.4
+VLA Inference Server — Pi0-FAST via LeRobot 0.5.0
 FastAPI server that accepts images + state → returns 9D action chunk.
 
 Usage:
-    conda activate lerobotpi0
+    conda activate lerobotpi0v2
     python vla_inference_server.py --port 8002
 """
 
@@ -19,14 +19,8 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-# ── Pi0-FAST import (lerobot 0.4.x) ──
-from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy, PI0FastPytorch
-
-# Monkey-patch: _prepare_attention_masks_4d needs bool input
-_orig_prepare_att = PI0FastPytorch._prepare_attention_masks_4d
-def _patched_prepare_att(self, att_2d_masks, dtype=None):
-    return _orig_prepare_att(self, att_2d_masks.bool(), dtype=dtype)
-PI0FastPytorch._prepare_attention_masks_4d = _patched_prepare_att
+# ── Pi0-FAST import (lerobot 0.5.0) ──
+from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy
 
 app = FastAPI(title="VLA Inference Server (Pi0-FAST)")
 
