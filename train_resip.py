@@ -317,7 +317,16 @@ def main():
                 next_obs = env.reset(); dp.reset(); next_done = torch.zeros(N, device=dev)
 
         if IS_S3:
-            dd0 = torch.norm(env.env.dest_object_pos_w[:, :2] - env.env.robot.data.root_pos_w[:, :2], dim=-1).view(-1)
+            _dest_w = env.env.dest_object_pos_w
+            _robot_w = env.env.robot.data.root_pos_w
+            _env_o = env.env.scene.env_origins
+            dd0 = torch.norm(_dest_w[:, :2] - _robot_w[:, :2], dim=-1).view(-1)
+            if gi <= 2:
+                # Debug: check positions for first 4 envs
+                for _di in range(min(4, N)):
+                    print(f"  [DBG] env{_di}: dest=({_dest_w[_di,0]:.2f},{_dest_w[_di,1]:.2f},{_dest_w[_di,2]:.2f}) "
+                          f"robot=({_robot_w[_di,0]:.2f},{_robot_w[_di,1]:.2f},{_robot_w[_di,2]:.2f}) "
+                          f"origin=({_env_o[_di,0]:.2f},{_env_o[_di,1]:.2f},{_env_o[_di,2]:.2f}) dd={dd0[_di]:.3f}")
             s3_prev_dd[:] = dd0; s3_min_dd.fill_(99.0)
             _s3_prog_sum = 0.0; _s3_head_sum = 0.0
             print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | step={gs} | wu={ws} | DD: {dd0.mean():.3f}/{dd0.min():.3f}")
