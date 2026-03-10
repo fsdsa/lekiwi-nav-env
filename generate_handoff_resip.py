@@ -134,6 +134,13 @@ def main():
     obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
     dp.reset()
 
+    # Verify env_origins are non-zero (origin subtraction depends on this)
+    _eo = env.scene.env_origins
+    if _eo.abs().sum() < 0.01:
+        print("  [WARN] env_origins are all zeros! Buffer will contain absolute coordinates.")
+    else:
+        print(f"  env_origins range: x[{_eo[:,0].min():.1f},{_eo[:,0].max():.1f}] y[{_eo[:,1].min():.1f},{_eo[:,1].max():.1f}]")
+
     # Warmup
     if args.warmup_steps > 0:
         print(f"  BC warmup: {args.warmup_steps} steps...")

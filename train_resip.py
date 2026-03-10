@@ -306,17 +306,6 @@ def main():
         ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_(); g_sus.zero_(); l_sus.zero_()
         if IS_S3: s3_ms_place.zero_()
 
-        if IS_S3 and gi <= 2:
-            _dest_w = env.env.dest_object_pos_w
-            _robot_w = env.env.robot.data.root_pos_w
-            _env_o = env.env.scene.env_origins
-            _dd_pre = torch.norm(_dest_w[:, :2] - _robot_w[:, :2], dim=-1)
-            print(f"  [PRE-WARMUP] DD: mean={_dd_pre.mean():.3f} min={_dd_pre.min():.3f} max={_dd_pre.max():.3f}")
-            for _di in range(min(4, N)):
-                print(f"    env{_di}: dest=({_dest_w[_di,0]:.2f},{_dest_w[_di,1]:.2f},{_dest_w[_di,2]:.2f}) "
-                      f"robot=({_robot_w[_di,0]:.2f},{_robot_w[_di,1]:.2f},{_robot_w[_di,2]:.2f}) "
-                      f"origin=({_env_o[_di,0]:.2f},{_env_o[_di,1]:.2f},{_env_o[_di,2]:.2f}) dd={_dd_pre[_di]:.3f}")
-
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
         ws = max(0, int(args.warmup_steps_initial + (args.warmup_steps_final - args.warmup_steps_initial) * prog))
         WU_RESET = 1800
@@ -328,16 +317,7 @@ def main():
                 next_obs = env.reset(); dp.reset(); next_done = torch.zeros(N, device=dev)
 
         if IS_S3:
-            _dest_w = env.env.dest_object_pos_w
-            _robot_w = env.env.robot.data.root_pos_w
-            _env_o = env.env.scene.env_origins
-            dd0 = torch.norm(_dest_w[:, :2] - _robot_w[:, :2], dim=-1).view(-1)
-            if gi <= 2:
-                # Debug: check positions for first 4 envs
-                for _di in range(min(4, N)):
-                    print(f"  [DBG] env{_di}: dest=({_dest_w[_di,0]:.2f},{_dest_w[_di,1]:.2f},{_dest_w[_di,2]:.2f}) "
-                          f"robot=({_robot_w[_di,0]:.2f},{_robot_w[_di,1]:.2f},{_robot_w[_di,2]:.2f}) "
-                          f"origin=({_env_o[_di,0]:.2f},{_env_o[_di,1]:.2f},{_env_o[_di,2]:.2f}) dd={dd0[_di]:.3f}")
+            dd0 = torch.norm(env.env.dest_object_pos_w[:, :2] - env.env.robot.data.root_pos_w[:, :2], dim=-1).view(-1)
             s3_prev_dd[:] = dd0; s3_min_dd.fill_(99.0)
             _s3_prog_sum = 0.0; _s3_head_sum = 0.0
             print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | step={gs} | wu={ws} | DD: {dd0.mean():.3f}/{dd0.min():.3f}")
