@@ -710,9 +710,9 @@ env_origin 기준 상대 좌표로 저장되며, `_reset_from_handoff`에서 des
 
 **방법 B: 단독 수집** — Handoff Buffer의 상태 중 하나를 sim에 로드하고, 사람이 10~20개 시범을 보인다. 물체를 이미 잡은 상태에서 시작하여 목적지 물체(빨간 컵) 옆으로 이동하고 내려놓는다. Handoff Buffer가 충분히 확보된 후 사용.
 
-#### 3-4-2. BC 학습
+#### 3-4-2. BC 학습 — Diffusion Policy + Obs Augmentation
 
-Skill-2와 동일한 방식이되, obs 구성이 다르다.
+Skill-2와 동일한 Diffusion Policy BC를 사용하되, obs 구성이 다르고 **obs augmentation이 필수**이다.
 
 ```
 BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + dest_object_rel(3) + grip_force(1) + obj_bbox(3) + obj_category(1) = 29D
@@ -733,13 +733,33 @@ BC obs = arm(5) + grip(1) + base_body_vel(3) + base_vel(6) + arm_vel(6) + dest_o
 
 dest_object_rel: 목적지 물체(빨간 컵) 위치의 body-frame 상대 벡터. grip_force: 그리퍼가 물체를 누르는 힘. obj_bbox/obj_category: 물체 크기와 종류를 알아야 운반 중 적절한 속도/자세 조절을 학습할 수 있다.
 
-네트워크 구조는 Skill-3 RL Actor와 동일 (`models.py` PolicyNet, 입력 차원 29D).
+**⚠️ Obs Augmentation 필수**: Skill-3 데모는 Phase 2(Transit) 직후에 시작하여 base_vel이 이미 non-zero이다. eval에서는 정지 상태(base_vel=0)로 시작하므로, augmentation 없이 학습하면 모델이 "base_vel=0 → 정지 유지" 패턴에 갇힌다 (autoregressive trap). gripper position도 eval에서 데모와 다를 수 있어서 gripper noise도 필요하다.
+
+| Augmentation | 파라미터 | 대상 obs dims | 효과 |
+|------|------|------|------|
+| `--vel_dropout 0.5` | p=0.5 | [6:15] base_vel 9D | base_vel=0에서도 이동 학습 |
+| `--grip_noise 0.25` | σ=0.25 | [5] gripper 1D | gripper 불일치에 robust |
+| `--armvel_dropout 0.3` | p=0.3 | [15:21] arm_vel 6D | arm velocity 불일치에 robust |
 
 ```bash
-# 텔레옵 데이터 (idle 프레임 제거)
-python train_bc.py --demo_dir demos_skill3/ --epochs 300 --expected_obs_dim 29 \
-    --filter_active --loss gmm --n_components 5 --eval \
-    --save_dir checkpoints/skill3/
+python train_diffusion_bc.py \
+  --demo_path demos_skill3/combined_skill3_20260227_091123.hdf5 \
+  --obs_dim 29 --down_dims 64 128 256 --epochs 300 \
+  --vel_dropout 0.5 --grip_noise 0.25 --armvel_dropout 0.3 \
+  --save_dir checkpoints/dp_bc_skill3_aug
+```
+
+**검증 (2026-03-10)**: augmentation 적용 시 carry→base 이동→arm 내리기(obj_z→0.002)→gripper 열기(grip→-0.20)→arm 복귀 전체 시퀀스 동작 확인. 단, base가 dest까지 완주하지 못하고 0.4m에서 정지 후 place → ResiP로 보정 예정.
+
+**eval 명령어**:
+```bash
+python eval_dp_bc.py --skill carry_and_place \
+  --dp_checkpoint checkpoints/dp_bc_skill3_aug/dp_bc_epoch300.pt \
+  --demo demos_skill3/combined_skill3_20260227_091123.hdf5 \
+  --object_usd ~/isaac-objects/.../5_HTP/model_clean.usd \
+  --num_episodes 3
+# --open_loop_demo: 데모 obs 직접 넣어 모델 sanity check
+# --obs_override: grip_force, bbox를 데모값으로 교체
 ```
 
 #### 3-4-3. RL 학습
