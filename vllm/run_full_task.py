@@ -31,7 +31,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
+
+# Add own dir first (for vlm_orchestrator etc.), then parent (for lekiwi_skill*_env)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from isaaclab.app import AppLauncher
 

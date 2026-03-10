@@ -5,8 +5,8 @@
 ```
 [A100 서버 — 항상 실행]
   vLLM (port 8000)  ─ Qwen2.5-VL-7B-Instruct, ~19.8GB VRAM
-  VLA  (port 8002)  ─ Pi0-FAST 2.9B via LeRobot, ~5.9GB VRAM
-                      합계 ~26GB / 40GB
+  VLA  (port 8002)  ─ Pi0-FAST 2.9B via LeRobot 0.5.0, ~7.7GB VRAM
+                      합계 ~27.5GB / 40GB
 
 [3090 로컬 — 유저가 실행]
   run_full_task.py  ─ Isaac Sim + 카메라 + 제어 루프
@@ -23,9 +23,9 @@
         │
 3. Isaac Sim 환경 로드 + 카메라 초기화
         │
-4. 메인 루프 (6.5 Hz)
+4. 메인 루프 (6.4 Hz)
    │
-   ├─ 매 30 step (~3초, VLM 비동기):
+   ├─ 매 step (VLM 비동기, _pending으로 자동 throttle ~191ms):
    │    base_cam RGB ──HTTP──→ A100 VLM → 자연어 instruction
    │    "turn right slowly to search for the medicine bottle"
    │    "approach and pick up the medicine bottle"
@@ -69,7 +69,7 @@ bash launch_vlm_server.sh
 # → port 8000, Qwen2.5-VL-7B, --gpu-memory-utilization 0.50
 
 # VLA 서버 시작 (별도 터미널)
-conda activate lerobotpi0
+conda activate lerobotpi0v2
 python vla_inference_server.py --port 8002
 # → Pi0-FAST base model (fine-tuned 모델은 --model <path>)
 ```
@@ -88,7 +88,7 @@ ssh -f -N \
 
 ```bash
 conda activate env_isaaclab
-PYTHONPATH="vllm:.:$PYTHONPATH" python vllm/run_full_task.py \
+PYTHONUNBUFFERED=1 python vllm/run_full_task.py \
   --user_command "find the medicine bottle and place it next to the red cup" \
   --object_usd <source_object.usd> \
   --headless
@@ -114,7 +114,7 @@ PYTHONPATH="vllm:.:$PYTHONPATH" python vllm/run_full_task.py \
 ### 4. 레이턴시 벤치마크
 
 ```bash
-PYTHONPATH="vllm:.:$PYTHONPATH" python vllm/test_roundtrip.py \
+PYTHONUNBUFFERED=1 python vllm/test_roundtrip.py \
   --num_steps 20 --headless
 ```
 
@@ -124,33 +124,48 @@ PYTHONPATH="vllm:.:$PYTHONPATH" python vllm/test_roundtrip.py \
 cd vllm && python test_vlm_vla.py
 ```
 
-## 검증 결과 (2026-03-10)
+## 검증 결과 (2026-03-10, lerobot 0.5.0)
 
 ### 레이턴시
 
-| 구간 | 평균 | Hz |
+| 구간 | 평균 | 비고 |
 |------|------|------|
-| Camera capture | 82ms | — |
-| JPEG encode | 1.3ms | — |
-| VLM (vLLM Qwen2.5-VL) | 210ms | ~5 Hz |
-| VLA (Pi0-FAST) | 22ms (서버 9ms) | ~45 Hz |
-| 전체 루프 | 153ms | **6.5 Hz** |
+| VLM (vLLM Qwen2.5-VL) | 191ms | 비동기, ~86회/200step |
+| VLA (Pi0-FAST) | 27-58ms | 동기 |
+| 전체 루프 | ~156ms | **6.4 Hz** |
 
 ### 동작 확인
 
 - VLM classify: 한국어/영어 모두 정확 추출 (source+dest)
-- VLM instruct: 상황별 자연어 instruction 생성 ("turn right slowly to search...", "move forward to find...")
+- VLM instruct: 상황별 자연어 instruction 생성 ("move forward to find the medicine bottle" → "move forward to find the red cup")
 - VLA: base+wrist cam + instruction → 32D action → 9D truncate
-- Depth safety: 0.3m 이내 장애물 감지 → base 정지
-- 전체 통합: 200 steps (30초) 완주, VLM 7회 호출, safety 47회 트리거
+- Depth safety: 0.3m 이내 장애물 감지 → base 정지 (17회/200step)
+- 전체 통합: 200 steps (31초) 완주
 
 ### GPU 메모리 (A100 40GB)
 
 ```
 VLM (vLLM Qwen2.5-VL-7B): ~19.8GB  (--gpu-memory-utilization 0.50)
-VLA (Pi0-FAST 2.9B):       ~5.9GB
-합계:                      ~25.9GB / 40GB
+VLA (Pi0-FAST 2.9B):       ~7.7GB
+합계:                      ~27.5GB / 40GB
 ```
+
+## 서버 환경 (lerobotpi0v2)
+
+```
+Python 3.12, conda env: lerobotpi0v2
+lerobot 0.5.0 (git source v0.5.0 tag + [pi] extra)
+transformers 5.3.0, torch 2.10.0+cu128
+fastapi 0.135.1, uvicorn 0.41.0
+```
+
+## 주의사항
+
+1. **attention mask `.bool()`**: `vla_inference_server.py` line 133에서 처리 (lerobot 0.4.4/0.5.0 모두 필요)
+2. **`validate_action_token_prefix = False`**: pretrained base 모델은 garbage output 시 assert
+3. **HuggingFace 로그인 필요**: `huggingface-cli login` (google/paligemma-3b-pt-224 gated repo)
+4. **`PYTHONUNBUFFERED=1`**: stdout 버퍼링 방지 (로그 실시간 출력)
+5. **`sys.path` 순서**: `run_full_task.py`는 자신의 디렉토리(vllm/) 먼저, 부모 디렉토리 다음에 추가 (상위 레거시 모듈 충돌 방지)
 
 ## 실제 테스트 시 변경할 것
 
@@ -158,12 +173,3 @@ VLA (Pi0-FAST 2.9B):       ~5.9GB
 2. **`--dest_object_usd`**: destination 물체 USD 경로
 3. **VLA 모델**: fine-tuned Pi0 체크포인트 (`vla_inference_server.py --model <path>`)
 4. **`--user_command`**: 실제 태스크 지시어
-
-## 필수 패치 (서버 lerobotpi0 환경)
-
-Pi0-FAST 실행 시 필요한 패치 2개:
-
-1. **lerobot attention mask**: `vla_inference_server.py` 내 monkey-patch 포함
-2. **action token prefix validation**: `config.validate_action_token_prefix = False`
-
-HuggingFace 로그인 필요: `huggingface-cli login` (google/paligemma-3b-pt-224 gated repo)

@@ -80,7 +80,7 @@ bash feedback/setup_server_env.sh rl       # BC/RL만
 스크립트가 생성하는 conda 환경:
 - `rl_train`: Isaac Sim 5.0.0.0 (headless) + Isaac Lab v2.2.0 + skrl 1.4.3
 - `vllm`: vLLM 0.17.0 + Qwen2.5-VL-7B-Instruct (VLM 추론, OpenAI-compatible API)
-- `lerobotpi0`: π0-FAST + LeRobot (VLA 추론, `~/yes/envs/lerobotpi0`)
+- `lerobotpi0v2`: π0-FAST + LeRobot 0.5.0 (VLA 추론, `~/yes/envs/lerobotpi0v2`, Python 3.12)
 
 ### 3-4. Isaac Lab 설치 (스크립트에 포함)
 
@@ -131,31 +131,35 @@ echo 'export LEKIWI_USD_PATH=~/Downloads/lekiwi_robot.usd' >> ~/.bashrc
 |------|------|-------|------|
 | `rl_train` | BC/RL 학습 (Isaac Sim headless) | Phase 1 | ✅ 설치됨 |
 | `vllm` | vLLM 0.17.0 + Qwen2.5-VL-7B (VLM 추론, OpenAI API, gpu_util=0.50) | Phase 4.5 + Phase 5 | ✅ 검증 완료 |
-| `lerobotpi0` | π0-FAST 2.9B + lerobot 0.4.4 (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ✅ 검증 완료 (`~/yes/envs/lerobotpi0`) |
+| `lerobotpi0v2` | π0-FAST 2.9B + lerobot 0.5.0 (VLA 파인튜닝 + 추론) | Phase 4 + Phase 4.5 + Phase 5 | ✅ 검증 완료 (`~/yes/envs/lerobotpi0v2`, Python 3.12) |
 | `groot` | GR00T N1.6 (VLA 파인튜닝, 선택) | Phase 4 | ⬜ |
 
 **conda 경로 참고:**
 - `rl_train`, `vllm`: `~/miniconda3/envs/`
-- `lerobotpi0`: `~/yes/envs/lerobotpi0`
+- `lerobotpi0v2`: `~/yes/envs/lerobotpi0v2`
 
 **모델 캐시:**
 - Qwen2.5-VL-7B-Instruct: `~/.cache/huggingface/hub/models--Qwen--Qwen2.5-VL-7B-Instruct` (다운로드 완료)
 
-**lerobotpi0 환경 설치 (검증 완료 2026-03-10):**
+**lerobotpi0v2 환경 설치 (검증 완료 2026-03-10):**
 ```bash
-pip install "lerobot[pi]@git+https://github.com/huggingface/lerobot.git@v0.4.4"
-pip install transformers==4.53.3   # Pi0 전용, 최신 버전 NOT 호환
+conda create -n lerobotpi0v2 python=3.12 -y
+conda activate lerobotpi0v2
+pip install "lerobot[pi]@git+https://github.com/huggingface/lerobot.git@v0.5.0"
+pip install fastapi uvicorn
 huggingface-cli login              # google/paligemma-3b-pt-224 gated model 접근 필수
 ```
-**필수 패치:**
-- `_prepare_attention_masks_4d`에서 `.bool()` 호출 추가 (dtype mismatch 방지)
+**주의사항:**
+- lerobot 0.5.0은 Python 3.12+ 필수 (PyPI에 없음, git source 설치)
+- transformers 5.3.0, torch 2.10.0 자동 설치
+- attention_mask를 `.bool()`로 전달 필요 (vla_inference_server.py에서 처리)
 - `validate_action_token_prefix=False` 설정 (action token prefix 검증 비활성화)
 
-**VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB, 검증 완료 2026-03-10):**
+**VLM+VLA 동시 추론 GPU 메모리 분배 (A100 40GB, 검증 완료 2026-03-10, lerobot 0.5.0):**
 ```
 vLLM (Qwen 7B bf16):  --gpu-memory-utilization 0.50 → ~19.8GB 선점
-Pi0-FAST 2.9B (VLA):   ~5.9GB 사용
-합계:                  ~25.9GB / 40GB
+Pi0-FAST 2.9B (VLA):   ~7.7GB 사용 (lerobot 0.5.0)
+합계:                  ~27.5GB / 40GB
 ```
 > `--gpu-memory-utilization 0.50`는 vLLM이 KV cache를 위해 GPU 메모리를 선점하는 비율. 0.70 이상이면 VLA가 OOM.
 
@@ -357,18 +361,17 @@ bash run_vllm_server.sh
 # → port 8000, gpu-memory-utilization 0.50, ~19.8GB
 ```
 
-VLA 추론 서버 (Pi0-FAST 2.9B, lerobot 0.4.4):
+VLA 추론 서버 (Pi0-FAST 2.9B, lerobot 0.5.0):
 ```bash
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate lerobotpi0 && \
-cd ~/IsaacLab/scripts/lekiwi_nav_env && \
-python vla_inference_server.py \
-    --checkpoint ~/datasets/lekiwi_vla/best_model/ \
-    --port 8002
-# → ~5.9GB VRAM. transformers==4.53.3 필수. HF login 필수.
-# → 패치: _prepare_attention_masks_4d .bool(), validate_action_token_prefix=False
+source ~/yes/bin/activate && conda activate lerobotpi0v2 && \
+cd ~/IsaacLab/scripts/lekiwi_nav_env/vllm && \
+python vla_inference_server.py --port 8002
+# → ~7.7GB VRAM. HF login 필수.
+# → validate_action_token_prefix=False (서버 코드 내 설정)
+# → fine-tuned 모델: --model <path>
 ```
 
-> lerobotpi0 환경 경로: `~/yes/envs/lerobotpi0` (검증 완료 2026-03-10)
+> lerobotpi0v2 환경 경로: `~/yes/envs/lerobotpi0v2` (Python 3.12, lerobot 0.5.0, 검증 완료 2026-03-10)
 
 #### USD 카메라 prim 경로 (lekiwi_robot.usd)
 
