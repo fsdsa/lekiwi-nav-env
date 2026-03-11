@@ -86,9 +86,11 @@ parser.add_argument("--resume_resip", type=str, default=None)
 # Skill-3 (CarryAndPlace) reward weights
 parser.add_argument("--r_carry_progress", type=float, default=5.0, help="Skill-3: dest progress")
 parser.add_argument("--r_heading", type=float, default=1.0, help="Skill-3: heading toward dest")
-parser.add_argument("--r_hold", type=float, default=0.5, help="Skill-3: hold bonus per step")
-parser.add_argument("--r_place_bonus", type=float, default=100.0, help="Skill-3: place success")
-parser.add_argument("--r_drop_s3", type=float, default=-50.0, help="Skill-3: drop penalty")
+parser.add_argument("--r_hold", type=float, default=2.0, help="Skill-3: hold bonus per step")
+parser.add_argument("--r_grip_hold", type=float, default=1.0, help="Skill-3: grip closed bonus per step")
+parser.add_argument("--r_arm_stable", type=float, default=0.5, help="Skill-3: arm stability during carry")
+parser.add_argument("--r_place_bonus", type=float, default=200.0, help="Skill-3: place success")
+parser.add_argument("--r_drop_s3", type=float, default=-100.0, help="Skill-3: drop penalty")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -291,8 +293,8 @@ def main():
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     if IS_S3:
-        print(f"  Skill-3: progress={args.r_carry_progress} heading={args.r_heading} hold={args.r_hold}")
-        print(f"           place={args.r_place_bonus} drop={args.r_drop_s3}")
+        print(f"  Skill-3: progress={args.r_carry_progress} heading={args.r_heading} hold={args.r_hold} grip_hold={args.r_grip_hold}")
+        print(f"           arm_stable={args.r_arm_stable} place={args.r_place_bonus} drop={args.r_drop_s3}")
     else:
         print(f"  DR=OFF | R4b=LiftPose(×{args.r4b_scale},σ=2.0) POSE={LIFTED_POSE.tolist()}")
         print(f"  R8=GCF({args.r8_penalty}) R9=Drop({args.r9_penalty})+TERM R10=Grip(×{args.r10_scale})")
@@ -346,17 +348,26 @@ def main():
                 eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
                 jd = info.get("just_dropped_mask", env.env.just_dropped).view(-1).float()
                 ps = info.get("place_success_mask", env.env.task_success).view(-1)
+                grip = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
                 dest_delta = env.env.dest_object_pos_w - env.env.robot.data.root_pos_w
                 dest_pos_b = quat_apply_inverse(env.env.robot.data.root_quat_w, dest_delta)
                 dd = torch.norm(dest_pos_b[:, :2], dim=-1).view(-1)
                 cos_h = dest_pos_b[:, 1].view(-1) / (dd + 1e-6)  # forward = +Y body
-                # R1: Carry progress
+                # R1: Carry progress (only while grasped)
                 progress = torch.clamp(s3_prev_dd - dd, -0.2, 0.2)
-                rew += progress * args.r_carry_progress
+                rew += progress * args.r_carry_progress * eg.float()
                 # R2: Heading toward dest (only while carrying)
                 rew += cos_h * args.r_heading * eg.float()
                 # R3: Hold bonus (still grasped)
                 rew += eg.float() * args.r_hold
+                # R3b: Grip hold bonus (gripper closed while grasped)
+                grip_closed = (grip < float(env.env.cfg.grasp_gripper_threshold)).float()
+                rew += eg.float() * grip_closed * args.r_grip_hold
+                # R3c: Arm stability during carry (discourage arm movement)
+                arm_vel = env.env.robot.data.joint_vel[:, :5]
+                arm_vel_norm = torch.norm(arm_vel, dim=-1)
+                arm_stable = torch.exp(-arm_vel_norm * 0.5)
+                rew += eg.float() * arm_stable * args.r_arm_stable
                 # R4: Place success (one-time)
                 new_place = ps & (~s3_ms_place)
                 rew += new_place.float() * args.r_place_bonus

@@ -1243,17 +1243,31 @@ class Skill2Env(DirectRLEnv):
         obj_xy = self.object_pos_w[env_ids, :2]
         min_sep = float(self.cfg.dest_spawn_min_separation)
 
-        # 랜덤 거리 + 랜덤 방향 (source와 가까우면 resample)
+        # 로봇 전방 기준 랜덤 스폰 (heading ± spawn_heading_max_rad 범위)
+        robot_pos = self.robot.data.root_pos_w[env_ids]
+        robot_quat = self.robot.data.root_quat_w[env_ids]
+        # LeKiwi forward = +Y body → world yaw = atan2(2*(wz), 2*(ww)) - π/2 보정 불필요
+        # 직접 forward vector 사용: quat_apply로 +Y body → world
+        fwd_body = torch.zeros(num, 3, device=self.device)
+        fwd_body[:, 1] = 1.0  # +Y = forward
+        from isaaclab.utils.math import quat_apply
+        fwd_world = quat_apply(robot_quat, fwd_body)
+        robot_heading = torch.atan2(fwd_world[:, 1], fwd_world[:, 0])
+
         for _ in range(10):
             dist = (
                 torch.rand(num, device=self.device)
                 * (self.cfg.dest_spawn_dist_max - self.cfg.dest_spawn_dist_min)
                 + self.cfg.dest_spawn_dist_min
             )
-            angle = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
+            # 로봇 전방 heading ± max_rad 범위
+            heading_noise = torch.randn(num, device=self.device) * float(self.cfg.spawn_heading_noise_std)
+            max_rad = float(self.cfg.spawn_heading_max_rad)
+            heading_noise = torch.clamp(heading_noise, -max_rad, max_rad)
+            angle = robot_heading + heading_noise
 
-            dx = env_origins[:, 0] + dist * torch.cos(angle)
-            dy = env_origins[:, 1] + dist * torch.sin(angle)
+            dx = robot_pos[:, 0] + dist * torch.cos(angle)
+            dy = robot_pos[:, 1] + dist * torch.sin(angle)
 
             sep = torch.norm(torch.stack([dx - obj_xy[:, 0], dy - obj_xy[:, 1]], dim=-1), dim=-1)
             if (sep >= min_sep).all():
