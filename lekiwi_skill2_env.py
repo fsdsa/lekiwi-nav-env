@@ -131,7 +131,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     grasp_max_object_dist: float = 0.25
     grasp_ee_max_dist: float = 0.07  # EE(캘리브레이션 좌표)~물체 중심 거리 < 이 값이면 grasp 가능 (물체 내부 판정)
     grasp_success_height: float = 0.05       # task_success 판정 높이 (순수 마찰 lift)
-    grasp_drop_detect_dist: float = 1.00     # gripper-object 거리 > 이 값이면 drop 판정
+    grasp_drop_detect_dist: float = 0.30     # gripper-object 거리 > 이 값이면 drop 판정 (gripper body 중심~물체 중심 자연 오프셋 ~0.18m)
     grasp_timeout_steps: int = 75
 
     # === Multi-object (v8 동일) ===
@@ -146,8 +146,6 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dest_spawn_dist_min: float = 4.0
     dest_spawn_dist_max: float = 5.0
     dest_spawn_min_separation: float = 1.0
-    dest_heading_noise_std: float = 0.3     # Skill-2와 동일
-    dest_heading_max_rad: float = 0.5       # ±29°
 
     # === Reward (approach/grasp/lift 전용) ===
     rew_time_penalty: float = -0.01
@@ -1245,31 +1243,17 @@ class Skill2Env(DirectRLEnv):
         obj_xy = self.object_pos_w[env_ids, :2]
         min_sep = float(self.cfg.dest_spawn_min_separation)
 
-        # 로봇 전방 기준 랜덤 스폰 (heading ± spawn_heading_max_rad 범위)
-        robot_pos = self.robot.data.root_pos_w[env_ids]
-        robot_quat = self.robot.data.root_quat_w[env_ids]
-        # LeKiwi forward = +Y body → world yaw = atan2(2*(wz), 2*(ww)) - π/2 보정 불필요
-        # 직접 forward vector 사용: quat_apply로 +Y body → world
-        fwd_body = torch.zeros(num, 3, device=self.device)
-        fwd_body[:, 1] = 1.0  # +Y = forward
-        from isaaclab.utils.math import quat_apply
-        fwd_world = quat_apply(robot_quat, fwd_body)
-        robot_heading = torch.atan2(fwd_world[:, 1], fwd_world[:, 0])
-
+        # 랜덤 거리 + 랜덤 방향 (source와 가까우면 resample)
         for _ in range(10):
             dist = (
                 torch.rand(num, device=self.device)
                 * (self.cfg.dest_spawn_dist_max - self.cfg.dest_spawn_dist_min)
                 + self.cfg.dest_spawn_dist_min
             )
-            # 로봇 전방 heading ± dest_heading_max_rad 범위
-            heading_noise = torch.randn(num, device=self.device) * float(self.cfg.dest_heading_noise_std)
-            max_rad = float(self.cfg.dest_heading_max_rad)
-            heading_noise = torch.clamp(heading_noise, -max_rad, max_rad)
-            angle = robot_heading + heading_noise
+            angle = torch.rand(num, device=self.device) * 2.0 * math.pi - math.pi
 
-            dx = robot_pos[:, 0] + dist * torch.cos(angle)
-            dy = robot_pos[:, 1] + dist * torch.sin(angle)
+            dx = env_origins[:, 0] + dist * torch.cos(angle)
+            dy = env_origins[:, 1] + dist * torch.sin(angle)
 
             sep = torch.norm(torch.stack([dx - obj_xy[:, 0], dy - obj_xy[:, 1]], dim=-1), dim=-1)
             if (sep >= min_sep).all():
@@ -1291,9 +1275,8 @@ class Skill2Env(DirectRLEnv):
         pose[:, 5] = 0.0
         pose[:, 6] = torch.sin(yaw * 0.5)   # qz
         self._dest_object_rigid.write_root_pose_to_sim(pose, env_ids)
-        if not self.cfg.dest_object_fixed:  # kinematic body는 velocity 설정 불가
-            zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
-            self._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
+        zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
+        self._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Base body velocity — v3.0 (displacement 계산 대체)
@@ -1436,27 +1419,7 @@ class Skill2Env(DirectRLEnv):
             lifted = self.object_grasped & ((obj_z - env_z) > success_h)
             self.task_success[lifted] = True
 
-        # Drop detection: grasped인데 EE 멀어지거나 gripper 열리면 drop
-        if self.object_grasped.any():
-            gripper_pos_drop = self.robot.data.joint_pos[:, self.gripper_idx]
-            gripper_wide_open = gripper_pos_drop > 0.9
 
-            if self._fixed_jaw_body_idx >= 0:
-                wrist_pos_d = self.robot.data.body_pos_w[:, self._fixed_jaw_body_idx, :]
-                wrist_quat_d = self.robot.data.body_quat_w[:, self._fixed_jaw_body_idx, :]
-                ee_pos_d = wrist_pos_d + quat_apply(wrist_quat_d, self._ee_local_offset.expand_as(wrist_pos_d))
-                ee_obj_dist_d = torch.norm(ee_pos_d - self.object_pos_w, dim=-1)
-                ee_far = ee_obj_dist_d > self.cfg.grasp_drop_detect_dist
-            else:
-                ee_far = metrics["object_dist"] > self.cfg.grasp_drop_detect_dist
-
-            contact_force_d = self._contact_force_per_env()
-            no_contact_d = contact_force_d < self.cfg.lift_contact_threshold
-
-            dropped = self.object_grasped & (ee_far | (gripper_wide_open & no_contact_d))
-            if dropped.any():
-                self.object_grasped[dropped] = False
-                self.just_dropped[dropped] = True
 
         # GRASP timeout
         if self.cfg.grasp_timeout_steps > 0:
@@ -1693,7 +1656,9 @@ class Skill2Env(DirectRLEnv):
         ) > self.cfg.max_dist_from_origin
         env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
         fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
-        terminated = out_of_bounds | fell | self.just_dropped
+        # v6.8: Object topple detection — objZ < 0.03 means object fell over (standing ~0.033)
+        object_toppled = ((self.object_pos_w[:, 2] - env_z) < 0.03) & (self.episode_length_buf > 20)
+        terminated = out_of_bounds | fell | object_toppled
 
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
         truncated = self.task_success | time_out
@@ -1715,7 +1680,6 @@ class Skill2Env(DirectRLEnv):
         self.extras["task_success_mask"] = self.task_success.clone()
         self.extras["just_grasped_mask"] = self.just_grasped.clone()
         self.extras["object_grasped_mask"] = self.object_grasped.clone()
-        self.extras["just_dropped_mask"] = self.just_dropped.clone()
         self.extras["object_height_mask"] = (self.object_pos_w[:, 2] - self.scene.env_origins[:, 2]).clone()
         # Contact sensor: lift sustain 판정용 (teleop 0.65와 동일 threshold)
         if self.cfg.grasp_require_contact:
@@ -1889,5 +1853,4 @@ class Skill2Env(DirectRLEnv):
 
         # DR 적용 (v8 그대로)
         self._apply_domain_randomization(env_ids)
-
 
