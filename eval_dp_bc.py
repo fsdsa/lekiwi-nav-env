@@ -263,7 +263,7 @@ def _restore_init_state(ep_data):
         env.object_rigid.write_root_state_to_sim(obj_state, env_id)
         env.object_pos_w[0] = ee_pos
 
-        # ── 4. gripper를 0.35까지 닫으면서 매 스텝 물체를 EE에 텔레포트 ──
+        # ── 4. gripper를 0.45까지 닫으면서 매 스텝 물체를 EE에 텔레포트 ──
         grasp_grip = 0.45
         n_close = 240
         for i in range(n_close):
@@ -308,20 +308,8 @@ def _restore_init_state(ep_data):
         env._fallback_teleport_carry[0] = False
         env.object_pos_w[0] = env.object_rigid.data.root_pos_w[0]
 
-        # dest object 위치 복원
-        dest_rel_body = torch.tensor(ep_data["obs"][0, 21:24], dtype=torch.float32, device=device)
-        robot_pos_w = env.robot.data.root_pos_w[0]
-        robot_quat_w = env.robot.data.root_quat_w[0]
-        dest_rel_world = quat_apply(robot_quat_w.unsqueeze(0), dest_rel_body.unsqueeze(0))[0]
-        dest_pos_w = robot_pos_w + dest_rel_world
-        env.dest_object_pos_w[0] = dest_pos_w
-
-        if hasattr(env, '_dest_object_rigid') and env._dest_object_rigid is not None:
-            dest_state = env._dest_object_rigid.data.root_state_w.clone()
-            dest_state[0, 0:3] = dest_pos_w
-            dest_state[0, 7:] = 0.0
-            env._dest_object_rigid.write_root_pose_to_sim(dest_state[0:1, :7], env_id)
-            env._dest_object_rigid.update(env.sim.cfg.dt)
+        # dest object 랜덤 스폰 (데모 위치 대신 매번 새 위치)
+        env._spawn_dest_object(env_id)
 
     else:
         # Skill-2
