@@ -146,6 +146,8 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dest_spawn_dist_min: float = 4.0
     dest_spawn_dist_max: float = 5.0
     dest_spawn_min_separation: float = 1.0
+    dest_heading_noise_std: float = 0.15    # dest는 전방 좁은 범위 스폰
+    dest_heading_max_rad: float = 0.35      # ±20° 이내
 
     # === Reward (approach/grasp/lift 전용) ===
     rew_time_penalty: float = -0.01
@@ -1260,9 +1262,9 @@ class Skill2Env(DirectRLEnv):
                 * (self.cfg.dest_spawn_dist_max - self.cfg.dest_spawn_dist_min)
                 + self.cfg.dest_spawn_dist_min
             )
-            # 로봇 전방 heading ± max_rad 범위
-            heading_noise = torch.randn(num, device=self.device) * float(self.cfg.spawn_heading_noise_std)
-            max_rad = float(self.cfg.spawn_heading_max_rad)
+            # 로봇 전방 heading ± dest_heading_max_rad 범위
+            heading_noise = torch.randn(num, device=self.device) * float(self.cfg.dest_heading_noise_std)
+            max_rad = float(self.cfg.dest_heading_max_rad)
             heading_noise = torch.clamp(heading_noise, -max_rad, max_rad)
             angle = robot_heading + heading_noise
 
@@ -1289,8 +1291,9 @@ class Skill2Env(DirectRLEnv):
         pose[:, 5] = 0.0
         pose[:, 6] = torch.sin(yaw * 0.5)   # qz
         self._dest_object_rigid.write_root_pose_to_sim(pose, env_ids)
-        zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
-        self._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
+        if not self.cfg.dest_object_fixed:  # kinematic body는 velocity 설정 불가
+            zero_vel = torch.zeros(num, 6, dtype=torch.float32, device=self.device)
+            self._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids)
 
     # ═══════════════════════════════════════════════════════════════════
     #  Base body velocity — v3.0 (displacement 계산 대체)
