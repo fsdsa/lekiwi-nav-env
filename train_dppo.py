@@ -113,8 +113,8 @@ parser.add_argument("--warmup_reset_interval", type=int, default=1800,
                          "(handles terminated envs during warmup)")
 
 # Eval/save
-parser.add_argument("--eval_interval", type=int, default=10)
-parser.add_argument("--save_interval", type=int, default=50)
+parser.add_argument("--eval_interval", type=int, default=5)
+parser.add_argument("--save_interval", type=int, default=10)
 parser.add_argument("--save_dir", type=str, default="checkpoints/dppo")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--resume", type=str, default=None)
