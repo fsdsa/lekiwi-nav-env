@@ -38,10 +38,10 @@ args = parser.parse_args()
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
-import copy, math, torch
+import torch
 import numpy as np
 from isaaclab.utils.math import quat_apply
-from diffusion_policy import DiffusionPolicyAgent, LinearNormalizer
+from diffusion_policy import DiffusionPolicyAgent
 
 # Import DPPO model classes (no Isaac Lab dependency)
 from dppo_model import DPPODiffusion

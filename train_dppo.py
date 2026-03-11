@@ -15,16 +15,14 @@ Demo data analysis (22 episodes, mean 1750 steps):
   RL rollout 150×8=1200 covers Phase 3-5 (arm precision, grasp, lift)
   Total: 660+1200=1860 steps → covers 95%+ of episodes
 
-Reward (9 components, chunk-level):
+Reward (7 components, chunk-level):
   R1  Approach progress    ×15     dense, pre-grasp only
   R2  Verified grasp       +200    sparse, one-time (5-step sustained)
   R3  Lift height          ×100    dense, height above standing_z
   R4  Sustained lift       +500    sparse, one-time (≥100 steps)
   R5  Drop penalty         −200    sparse + episode terminate
-  R6  Ground contact       −2.0    dense, per chunk
+  R6  Ground contact       −2.0    dense, per chunk (gripper touches ground)
   R7  Time penalty         −0.1    dense, per chunk
-  R8  Too close            −5.0    base < 0.15m, arm can't reach down
-  R9  Too far              −3.0    base > 0.46m, arm can't reach object
 
 Usage:
     python train_dppo.py \
@@ -98,18 +96,6 @@ parser.add_argument("--r_success_bonus", type=float, default=500.0)
 parser.add_argument("--r_drop_penalty", type=float, default=-200.0)
 parser.add_argument("--r_ground_penalty", type=float, default=-2.0)
 parser.add_argument("--r_time_penalty", type=float, default=-0.1)
-parser.add_argument("--r_too_close_penalty", type=float, default=-5.0,
-                    help="Penalty per chunk when base is too close to grasp")
-parser.add_argument("--r_too_far_penalty", type=float, default=-3.0,
-                    help="Penalty per chunk when base is too far to reach")
-parser.add_argument("--base_too_close_dist", type=float, default=0.18,
-                    help="Base-obj XY dist below which arm can't reach down. "
-                         "Demo: grasp happens at ~0.25m base_dist (stored) / "
-                         "~0.40m obj_rel (body frame). 0.18 is well below working range.")
-parser.add_argument("--base_too_far_dist", type=float, default=0.46,
-                    help="Base-obj XY dist above which arm certainly can't reach. "
-                         "Demo: obj_rel at grasp ≈ 0.40m body frame. "
-                         "0.46 gives margin for DPPO to find better positioning.")
 parser.add_argument("--object_standing_height", type=float, default=0.035,
                     help="Object Z when standing on ground (5_HTP bottle ≈ 0.033)")
 parser.add_argument("--lift_height_range", type=float, default=0.15,
@@ -308,8 +294,6 @@ def main():
     LIFT_H_MIN = args.object_standing_height + 0.015  # just above standing → 0.050
     OBJ_STAND_H = args.object_standing_height          # 0.035
     LIFT_RANGE = args.lift_height_range                 # 0.15
-    BASE_TOO_CLOSE = args.base_too_close_dist           # 0.18
-    BASE_TOO_FAR = args.base_too_far_dist               # 0.46
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     best_sr, best_sl, best_g = 0.0, 0, 0
@@ -359,8 +343,6 @@ def main():
     print(f"  R4 Success +{args.r_success_bonus} (sus≥{LMI})")
     print(f"  R5 Drop {args.r_drop_penalty}+term  R6 Ground {args.r_ground_penalty}")
     print(f"  R7 Time {args.r_time_penalty}")
-    print(f"  R8 TooClose {args.r_too_close_penalty} (<{BASE_TOO_CLOSE}m)")
-    print(f"  R9 TooFar {args.r_too_far_penalty} (>{BASE_TOO_FAR}m)")
     print(f"  ── Phase Timing (from demo analysis) ──")
     print(f"  approach→~150  grip_open→~465  grasp→~1159  lift→~1373")
     print(f"  warmup covers t=0~{WU} (approach+open+early extend)")
@@ -421,7 +403,7 @@ def main():
         first_b[0] = 1.0
 
         # Diagnostics
-        dg, dl, dd, dgcf, dml, dtc, dtf = 0, 0, 0, 0, 0, 0, 0
+        dg, dl, dd, dgcf, dml = 0, 0, 0, 0, 0
 
         # ═══ Rollout ═══
         for step in range(S):
@@ -506,21 +488,6 @@ def main():
             ad = torch.clamp(prev_bd - cbd, -0.1, 0.1)
             cr += am.float() * ad * args.r_approach_scale
 
-            # ── R8: Too-close penalty ──
-            # Demo: base stabilizes at 0.22~0.30m (mean 0.25m) from object.
-            # Below 0.18m the arm's kinematic chain can't reach down to ground level.
-            too_close = am & (cbd < BASE_TOO_CLOSE)
-            cr += too_close.float() * args.r_too_close_penalty
-            dtc += too_close.sum().item()
-
-            # ── R9: Too-far penalty ──
-            # Demo: successful grasps all happen with base at 0.22~0.30m.
-            # At 0.46m+ the arm physically cannot reach the object.
-            # Weaker than R8 because R1 approach already pushes closer.
-            too_far = am & (cbd > BASE_TOO_FAR)
-            cr += too_far.float() * args.r_too_far_penalty
-            dtf += too_far.sum().item()
-
             prev_bd[:] = cbd
 
             # ── R7: Time penalty ──
@@ -573,7 +540,7 @@ def main():
         fbd = base_obj_xy()
         fgr = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
         print(f"  SR={sr:.2%} | G={dg} L={dl} D={dd} GCF={dgcf} MaxLSus={dml} | "
-              f"TC={dtc} TF={dtf} | R={rew_b.sum(0).mean():.1f} | "
+              f"R={rew_b.sum(0).mean():.1f} | "
               f"EE={fed.min():.3f}({fed.mean():.3f}) "
               f"Base={fbd.min():.3f}({fbd.mean():.3f}) "
               f"Grip={fgr.min():.2f}/{fgr.mean():.2f}/{fgr.max():.2f} | "
