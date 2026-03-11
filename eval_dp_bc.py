@@ -115,8 +115,6 @@ env_cfg.arm_limit_write_to_sim = False
 env_cfg.dr_action_delay_steps = 0
 env_cfg.grasp_contact_threshold = 0.1
 env_cfg.grasp_max_object_dist = 0.50
-env_cfg.grasp_joint_break_force = 1e8
-env_cfg.grasp_joint_break_torque = 1e8
 
 if demo_file is not None:
     hdf5_attrs = dict(demo_file.attrs)
@@ -134,7 +132,11 @@ else:
     env_cfg.spawn_heading_noise_std = 0.1
     env_cfg.spawn_heading_max_rad = 0.26
 
-env_cfg.episode_length_s = 240.0
+# 데모 max step=1535 + grace 500 = 2035 steps. step_dt=0.04 → 81.4초. 여유 포함
+env_cfg.episode_length_s = 100.0
+env_cfg.dest_spawn_dist_min = 0.6
+env_cfg.dest_spawn_dist_max = 0.7
+env_cfg.dest_spawn_min_separation = 0.3
 
 if args.object_usd:
     env_cfg.object_usd = os.path.expanduser(args.object_usd)
@@ -263,7 +265,7 @@ def _restore_init_state(ep_data):
         env.object_rigid.write_root_state_to_sim(obj_state, env_id)
         env.object_pos_w[0] = ee_pos
 
-        # ── 4. gripper를 0.45까지 닫으면서 매 스텝 물체를 EE에 텔레포트 ──
+        # ── 4. gripper를 0.35까지 닫으면서 매 스텝 물체를 EE에 텔레포트 ──
         grasp_grip = 0.45
         n_close = 240
         for i in range(n_close):
@@ -291,7 +293,7 @@ def _restore_init_state(ep_data):
             env.object_rigid.update(env.sim.cfg.dt)
 
         # ── 5. 자유 settle (마찰만으로 유지되는지 확인) ──
-        for _ in range(30):
+        for _ in range(120):
             env.robot.write_data_to_sim()
             env.sim.step()
         env.robot.update(env.sim.cfg.dt)
@@ -308,7 +310,7 @@ def _restore_init_state(ep_data):
         env._fallback_teleport_carry[0] = False
         env.object_pos_w[0] = env.object_rigid.data.root_pos_w[0]
 
-        # dest object 랜덤 스폰 (데모 위치 대신 매번 새 위치)
+        # dest object 랜덤 스폰 (로봇 전방 heading 기준)
         env._spawn_dest_object(env_id)
 
     else:
@@ -410,12 +412,29 @@ while episode < args.num_episodes and simulation_app.is_running():
 
     if step_count % 50 == 0:
         o_grip = obs_t[0, 5].item()
-        o_obj = obs_t[0, 21:24].cpu().tolist()
+        o_dest = obs_t[0, 21:24].cpu().tolist()
         a = action[0].cpu().tolist()
         obj_z = env.object_rigid.data.root_pos_w[0, 2].item()
-        print(f"  [t={step_count}] grip={o_grip:.3f} obj_z={obj_z:.3f} "
-              f"obj_rel={[f'{x:.3f}' for x in o_obj]} "
-              f"act={[f'{x:.2f}' for x in a]}", flush=True)
+        env_z = env.scene.env_origins[0, 2].item() if hasattr(env.scene, "env_origins") else 0.0
+        obj_h = obj_z - env_z
+        dest_xy = (o_dest[0]**2 + o_dest[1]**2)**0.5
+        grip_f = obs_t[0, 24].item() if obs_t.shape[1] > 24 else 0.0
+        grasped = env.object_grasped[0].item() if hasattr(env, "object_grasped") else False
+        # EE-object distance (drop 판정 기준)
+        if hasattr(env, '_fixed_jaw_body_idx') and env._fixed_jaw_body_idx >= 0:
+            from isaaclab.utils.math import quat_apply as _qa
+            _wp = env.robot.data.body_pos_w[0, env._fixed_jaw_body_idx]
+            _wq = env.robot.data.body_quat_w[0, env._fixed_jaw_body_idx]
+            _ee = _wp + _qa(_wq.unsqueeze(0), env._ee_local_offset)[0]
+            ee_obj_d = torch.norm(_ee - env.object_rigid.data.root_pos_w[0]).item()
+        else:
+            ee_obj_d = -1.0
+        base_act = a[6:9]
+        print(f"  [t={step_count}] grip={o_grip:.3f} obj_h={obj_h:.3f} dest_d={dest_xy:.3f} "
+              f"grip_f={grip_f:.1f} ee_obj={ee_obj_d:.3f} grasped={grasped} "
+              f"base=[{base_act[0]:.2f},{base_act[1]:.2f},{base_act[2]:.2f}] "
+              f"arm=[{a[0]:.2f},{a[1]:.2f},{a[2]:.2f},{a[3]:.2f},{a[4]:.2f}] grip_act={a[5]:.2f}",
+              flush=True)
         # 데모 obs vs eval obs 비교 (첫 3회만 상세)
         if cur_demo_obs is not None and step_count < len(cur_demo_obs) and step_count < 150:
             dt = cur_demo_obs[step_count]
@@ -438,13 +457,25 @@ while episode < args.num_episodes and simulation_app.is_running():
     done = terminated.any() or truncated.any()
     if done:
         episode += 1
-        success = info.get("task_success", torch.zeros(1)).any().item()
+        _ps = info.get("place_success_mask", info.get("task_success", torch.zeros(1)))
+        success = _ps.any().item() if hasattr(_ps, 'any') else bool(_ps)
         if success:
             successes += 1
         status = "SUCCESS" if success else "FAIL"
-        print(f"  Episode {episode}/{args.num_episodes}: {status} "
-              f"({step_count} steps, "
-              f"cumulative: {successes}/{episode} = {successes/episode*100:.0f}%)",
+        # 종료 원인 분석
+        reasons = []
+        if success:
+            reasons.append("PLACE_SUCCESS")
+        else:
+            reasons.append("TIMEOUT")
+        reason_str = "+".join(reasons) if reasons else "UNKNOWN"
+        # 종료 시점 상태
+        fin_grip = env.robot.data.joint_pos[0, env.gripper_idx].item()
+        fin_obj_h = env.object_rigid.data.root_pos_w[0, 2].item() - (env.scene.env_origins[0, 2].item() if hasattr(env.scene, "env_origins") else 0.0)
+        fin_dest_d = torch.norm(env.dest_object_pos_w[0, :2] - env.robot.data.root_pos_w[0, :2]).item() if hasattr(env, 'dest_object_pos_w') else -1.0
+        print(f"  Episode {episode}/{args.num_episodes}: {status} ({reason_str}) "
+              f"| {step_count} steps | grip={fin_grip:.3f} obj_h={fin_obj_h:.3f} dest_d={fin_dest_d:.3f} "
+              f"| cumulative: {successes}/{episode} = {successes/episode*100:.0f}%",
               flush=True)
         step_count = 0
         dp_agent.reset()

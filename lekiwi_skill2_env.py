@@ -131,7 +131,7 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     grasp_max_object_dist: float = 0.25
     grasp_ee_max_dist: float = 0.07  # EE(캘리브레이션 좌표)~물체 중심 거리 < 이 값이면 grasp 가능 (물체 내부 판정)
     grasp_success_height: float = 0.05       # task_success 판정 높이 (순수 마찰 lift)
-    grasp_drop_detect_dist: float = 0.30     # gripper-object 거리 > 이 값이면 drop 판정 (gripper body 중심~물체 중심 자연 오프셋 ~0.18m)
+    grasp_drop_detect_dist: float = 1.00     # gripper-object 거리 > 이 값이면 drop 판정
     grasp_timeout_steps: int = 75
 
     # === Multi-object (v8 동일) ===
@@ -146,8 +146,8 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     dest_spawn_dist_min: float = 4.0
     dest_spawn_dist_max: float = 5.0
     dest_spawn_min_separation: float = 1.0
-    dest_heading_noise_std: float = 0.15    # dest는 전방 좁은 범위 스폰
-    dest_heading_max_rad: float = 0.35      # ±20° 이내
+    dest_heading_noise_std: float = 0.3     # Skill-2와 동일
+    dest_heading_max_rad: float = 0.5       # ±29°
 
     # === Reward (approach/grasp/lift 전용) ===
     rew_time_penalty: float = -0.01

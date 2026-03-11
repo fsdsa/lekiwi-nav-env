@@ -84,13 +84,13 @@ parser.add_argument("--save_dir", type=str, default="checkpoints/resip")
 parser.add_argument("--seed", type=int, default=None)
 parser.add_argument("--resume_resip", type=str, default=None)
 # Skill-3 (CarryAndPlace) reward weights
-parser.add_argument("--r_carry_progress", type=float, default=5.0, help="Skill-3: dest progress")
-parser.add_argument("--r_heading", type=float, default=1.0, help="Skill-3: heading toward dest")
-parser.add_argument("--r_hold", type=float, default=2.0, help="Skill-3: hold bonus per step")
-parser.add_argument("--r_grip_hold", type=float, default=1.0, help="Skill-3: grip closed bonus per step")
-parser.add_argument("--r_arm_stable", type=float, default=0.5, help="Skill-3: arm stability during carry")
-parser.add_argument("--r_place_bonus", type=float, default=200.0, help="Skill-3: place success")
-parser.add_argument("--r_drop_s3", type=float, default=-100.0, help="Skill-3: drop penalty")
+parser.add_argument("--r_carry_progress", type=float, default=20.0, help="R1: base→dest progress")
+parser.add_argument("--r_ee_progress", type=float, default=30.0, help="R2: EE→dest XY progress")
+parser.add_argument("--r_hold", type=float, default=0.2, help="R3: hold bonus")
+parser.add_argument("--r_place_prelim", type=float, default=100.0, help="R4: 1차 place")
+parser.add_argument("--r_place_final", type=float, default=200.0, help="R5: 최종 place")
+parser.add_argument("--r_drop_s3", type=float, default=-50.0, help="R6: drop penalty")
+parser.add_argument("--r_time", type=float, default=-0.01, help="R7: time penalty")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -260,12 +260,20 @@ def main():
 
     IS_S3 = args.skill == "carry_and_place"
     # Skill-3 state buffers
-    s3_prev_dd = torch.full((N,), 10.0, device=dev)
-    s3_ms_place = torch.zeros(N, dtype=torch.bool, device=dev)
-    s3_n_place = torch.zeros(N, dtype=torch.long, device=dev)
+    s3_prev_dd = torch.full((N,), 10.0, device=dev)        # prev dest dist (robot-dest)
+    s3_prev_ee_dest = torch.full((N,), 10.0, device=dev)  # prev EE-dest XY dist
+    s3_prev_obj_z = torch.zeros(N, device=dev)             # prev obj_z
+    s3_ms_prelim = torch.zeros(N, dtype=torch.bool, device=dev)   # 1차 place 달성
+    s3_ms_final = torch.zeros(N, dtype=torch.bool, device=dev)    # 최종 place 달성
+    s3_n_prelim = torch.zeros(N, dtype=torch.long, device=dev)
+    s3_n_final = torch.zeros(N, dtype=torch.long, device=dev)
     s3_n_drop = torch.zeros(N, dtype=torch.long, device=dev)
     s3_min_dd = torch.full((N,), 99.0, device=dev)
     _s3_prog_sum = 0.0; _s3_head_sum = 0.0
+
+    PLACE_OBJ_Z_MIN = float(env.env.cfg.place_obj_z_min)  # 0.032
+    PLACE_OBJ_Z_MAX = float(env.env.cfg.place_obj_z_max)  # 0.034
+    PLACE_RADIUS = float(env.env.cfg.place_radius)         # 0.172
 
     def ee_pos():
         wp = env.env.robot.data.body_pos_w[:, jaw_idx, :]; wq = env.env.robot.data.body_quat_w[:, jaw_idx, :]
@@ -281,7 +289,8 @@ def main():
         g_sus[mask] = 0; l_sus[mask] = 0
         p_ee_xy[mask] = ee_obj_dist_xy()[mask]; p_bs_xy[mask] = base_obj_dist_xy()[mask]
     def reset_ep_s3(mask):
-        s3_prev_dd[mask] = 10.0; s3_ms_place[mask] = False
+        s3_prev_dd[mask] = 10.0; s3_prev_ee_dest[mask] = 10.0; s3_prev_obj_z[mask] = 0.0
+        s3_ms_prelim[mask] = False; s3_ms_final[mask] = False
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     bsr, bsl, bgr = 0.0, 0, 0; tt = 0; t0 = time.time()
@@ -293,8 +302,8 @@ def main():
     print(f"  scale: arm={args.action_scale_arm} grip={args.action_scale_gripper} base={args.action_scale_base}")
     print(f"  lr: a={args.lr_actor} c={args.lr_critic} kl={args.target_kl} ent={args.ent_coef}")
     if IS_S3:
-        print(f"  Skill-3: progress={args.r_carry_progress} heading={args.r_heading} hold={args.r_hold} grip_hold={args.r_grip_hold}")
-        print(f"           arm_stable={args.r_arm_stable} place={args.r_place_bonus} drop={args.r_drop_s3}")
+        print(f"  Skill-3: R1 base_prog={args.r_carry_progress} R2 ee_prog={args.r_ee_progress} R3 hold={args.r_hold}")
+        print(f"           R4 prelim={args.r_place_prelim} R5 final={args.r_place_final} R6 drop={args.r_drop_s3} R7 time={args.r_time}")
     else:
         print(f"  DR=OFF | R4b=LiftPose(×{args.r4b_scale},σ=2.0) POSE={LIFTED_POSE.tolist()}")
         print(f"  R8=GCF({args.r8_penalty}) R9=Drop({args.r9_penalty})+TERM R10=Grip(×{args.r10_scale})")
@@ -306,7 +315,7 @@ def main():
         ev = (gi - int(args.eval_first)) % args.eval_interval == 0
         next_obs = env.reset(); dp.reset(); next_done = torch.zeros(N, device=dev)
         ms_go.zero_(); ms_gr.zero_(); ms_li.zero_(); ms_sl.zero_(); g_sus.zero_(); l_sus.zero_()
-        if IS_S3: s3_ms_place.zero_()
+        if IS_S3: s3_ms_prelim.zero_(); s3_ms_final.zero_()
 
         prog = min(1.0, (gi - 1) / max(1, args.warmup_decay_iters))
         ws = max(0, int(args.warmup_steps_initial + (args.warmup_steps_final - args.warmup_steps_initial) * prog))
@@ -320,7 +329,8 @@ def main():
 
         if IS_S3:
             dd0 = torch.norm(env.env.dest_object_pos_w[:, :2] - env.env.robot.data.root_pos_w[:, :2], dim=-1).view(-1)
-            s3_prev_dd[:] = dd0; s3_min_dd.fill_(99.0)
+            ee_dest0 = torch.norm(ee_pos()[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1).view(-1)
+            s3_prev_dd[:] = dd0; s3_prev_ee_dest[:] = ee_dest0; s3_min_dd.fill_(99.0)
             _s3_prog_sum = 0.0; _s3_head_sum = 0.0
             print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | step={gs} | wu={ws} | DD: {dd0.mean():.3f}/{dd0.min():.3f}")
         else:
@@ -344,39 +354,55 @@ def main():
             rew = torch.zeros(N, device=dev)
 
             if IS_S3:
-                # ── Skill-3: CarryAndPlace rewards ──
+                # ── Skill-3: CarryAndPlace rewards (6 terms) ──
                 eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
                 jd = info.get("just_dropped_mask", env.env.just_dropped).view(-1).float()
-                ps = info.get("place_success_mask", env.env.task_success).view(-1)
-                grip = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
+
+                # Distances
                 dest_delta = env.env.dest_object_pos_w - env.env.robot.data.root_pos_w
                 dest_pos_b = quat_apply_inverse(env.env.robot.data.root_quat_w, dest_delta)
                 dd = torch.norm(dest_pos_b[:, :2], dim=-1).view(-1)
-                cos_h = dest_pos_b[:, 1].view(-1) / (dd + 1e-6)  # forward = +Y body
-                # R1: Carry progress (only while grasped)
+                cos_h = dest_pos_b[:, 1].view(-1) / (dd + 1e-6)
+
+                # EE→dest XY distance
+                ee_p = ee_pos()
+                ee_dest_xy = torch.norm(ee_p[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1).view(-1)
+
+                obj_pos = env.env.object_pos_w
+                dest_pos = env.env.dest_object_pos_w
+                env_z = env.env.scene.env_origins[:, 2]
+                obj_z = (obj_pos[:, 2] - env_z).view(-1)
+                obj_dest_xy = torch.norm(obj_pos[:, :2] - dest_pos[:, :2], dim=-1).view(-1)
+
+                # Place condition
+                upright = (obj_z >= PLACE_OBJ_Z_MIN) & (obj_z <= PLACE_OBJ_Z_MAX)
+                near_dest = obj_dest_xy < PLACE_RADIUS
+                place_cond = upright & near_dest
+
+                # R1: Base→dest progress (grasped only)
                 progress = torch.clamp(s3_prev_dd - dd, -0.2, 0.2)
                 rew += progress * args.r_carry_progress * eg.float()
-                # R2: Heading toward dest (only while carrying)
-                rew += cos_h * args.r_heading * eg.float()
-                # R3: Hold bonus (still grasped)
+                # R2: EE→dest XY progress (grasped only)
+                ee_progress = torch.clamp(s3_prev_ee_dest - ee_dest_xy, -0.2, 0.2)
+                rew += ee_progress * args.r_ee_progress * eg.float()
+                # R3: Hold bonus (grasped)
                 rew += eg.float() * args.r_hold
-                # R3b: Grip hold bonus (gripper closed while grasped)
-                grip_closed = (grip < float(env.env.cfg.grasp_gripper_threshold)).float()
-                rew += eg.float() * grip_closed * args.r_grip_hold
-                # R3c: Arm stability during carry (discourage arm movement)
-                arm_vel = env.env.robot.data.joint_vel[:, :5]
-                arm_vel_norm = torch.norm(arm_vel, dim=-1)
-                arm_stable = torch.exp(-arm_vel_norm * 0.5)
-                rew += eg.float() * arm_stable * args.r_arm_stable
-                # R4: Place success (one-time)
-                new_place = ps & (~s3_ms_place)
-                rew += new_place.float() * args.r_place_bonus
-                s3_ms_place |= new_place; s3_n_place += new_place.long()
+                # R4: 1차 place 성공 (one-time)
+                new_prelim = place_cond & (~eg) & (~s3_ms_prelim)
+                rew += new_prelim.float() * args.r_place_prelim
+                s3_ms_prelim |= (place_cond & (~eg)); s3_n_prelim += new_prelim.long()
+                # R4: 최종 place 성공 (env grace_done 시)
+                final_ps = info.get("place_success_mask", env.env.task_success).view(-1)
+                new_final = final_ps & (~s3_ms_final)
+                rew += new_final.float() * args.r_place_final
+                s3_ms_final |= final_ps; s3_n_final += new_final.long()
                 # R5: Drop penalty
                 rew += jd * args.r_drop_s3; s3_n_drop += (jd > 0).long()
                 # R6: Time penalty
-                rew -= 0.01
-                s3_prev_dd[:] = dd; s3_min_dd = torch.min(s3_min_dd, dd)
+                rew += args.r_time
+
+                s3_prev_dd[:] = dd; s3_prev_ee_dest[:] = ee_dest_xy; s3_prev_obj_z[:] = obj_z
+                s3_min_dd = torch.min(s3_min_dd, dd)
                 _s3_prog_sum += progress.sum().item(); _s3_head_sum += (cos_h * eg.float()).sum().item()
             else:
                 # ── Skill-2: ApproachAndGrasp rewards (R1-R11) ──
@@ -449,16 +475,18 @@ def main():
         fps = S * N / max(time.time() - it0, 1e-6); cr = _clip_ct / max(_clip_n, 1)
         if IS_S3:
             # ── Skill-3 diagnostics ──
-            tp = s3_n_place.sum().item(); td = s3_n_drop.sum().item()
-            sr = (s3_n_place > 0).float().mean().item()
+            tp = s3_n_prelim.sum().item(); tf = s3_n_final.sum().item(); td = s3_n_drop.sum().item()
+            sr = (s3_n_final > 0).float().mean().item()
+            sr_prelim = (s3_n_prelim > 0).float().mean().item()
             dd_now = torch.norm(env.env.dest_object_pos_w[:, :2] - env.env.robot.data.root_pos_w[:, :2], dim=-1).view(-1)
             gv = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
             pa = _s3_prog_sum / max(S*N, 1); ha = _s3_head_sum / max(S*N, 1)
-            print(f"  SR={sr:.2%} | Place={tp} Drop={td} | DD={dd_now.min():.2f}/{dd_now.mean():.2f}(min:{s3_min_dd.min():.2f}) | "
+            print(f"  SR={sr:.2%}(prelim={sr_prelim:.2%}) | Place={tp}/{tf} Drop={td} | "
+                  f"DD={dd_now.min():.2f}/{dd_now.mean():.2f}(min:{s3_min_dd.min():.2f}) | "
                   f"Grip={gv.min():.2f}/{gv.mean():.2f}/{gv.max():.2f} | R={rew_b.sum(0).mean():.1f} | "
                   f"FPS={fps:.0f} | Prog={pa:.4f} Head={ha:.3f} ClipR={cr:.3f}")
             _s3_prog_sum = 0.0; _s3_head_sum = 0.0; _clip_ct = 0; _clip_n = 0
-            s3_n_place.zero_(); s3_n_drop.zero_(); s3_min_dd.fill_(99.0)
+            s3_n_prelim.zero_(); s3_n_final.zero_(); s3_n_drop.zero_(); s3_min_dd.fill_(99.0)
         else:
             # ── Skill-2 diagnostics ──
             sr = (r_li > 0).float().mean().item(); tg, teg = r_gr.sum().item(), r_egr.sum().item()
@@ -486,7 +514,7 @@ def main():
         if ev:
             if sr > bsr: bsr = sr
             if IS_S3:
-                tp_eval = (s3_n_place > 0).sum().item()  # already zeroed, use sr
+                tp_eval = (s3_n_final > 0).sum().item()
                 if sr > bsr or (sr == bsr and gi <= 10):
                     torch.save({"residual_policy_state_dict": rpol.state_dict(), "dp_checkpoint": args.bc_checkpoint,
                         "dp_config": dpc, "success_rate": sr,
