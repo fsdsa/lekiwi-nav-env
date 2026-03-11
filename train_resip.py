@@ -34,7 +34,7 @@ parser.add_argument("--bc_checkpoint", type=str, required=True)
 parser.add_argument("--skill", type=str, required=True,
                     choices=["approach_and_grasp", "carry_and_place"])
 parser.add_argument("--num_envs", type=int, default=64)
-parser.add_argument("--num_env_steps", type=int, default=700)
+parser.add_argument("--num_env_steps", type=int, default=2000)
 parser.add_argument("--object_usd", type=str, default="")
 parser.add_argument("--multi_object_json", type=str, default="")
 parser.add_argument("--dest_object_usd", type=str, default="")
@@ -74,8 +74,8 @@ parser.add_argument("--critic_num_layers", type=int, default=2)
 parser.add_argument("--init_logstd", type=float, default=-1.0)
 parser.add_argument("--action_head_std", type=float, default=0.0)
 
-# Warmup — BC full sequence ~1600 steps, reset every 1800 for multiple attempts
-parser.add_argument("--warmup_steps_initial", type=int, default=3600)
+# Warmup — disabled by default (num_env_steps=2000 covers full episode)
+parser.add_argument("--warmup_steps_initial", type=int, default=0)
 parser.add_argument("--warmup_steps_final", type=int, default=0)
 parser.add_argument("--warmup_decay_iters", type=int, default=60)
 
@@ -330,7 +330,7 @@ def main():
     val_b  = torch.zeros((S, N), device=dev)
 
     # Constants — v6.8
-    GV  = args.grasp_verify_steps       # 10 (default)
+    GV  = args.grasp_verify_steps       # 30 (default)
     LMS = args.lift_min_sustain         # 3
     LMI = args.lift_milestone_steps     # 100 (default)
     LHT = 0.05
