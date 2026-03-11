@@ -2,35 +2,36 @@
 """
 DPPO: Diffusion Policy Policy Optimization for LeKiwi Skill-2.
 
-Replaces train_resip.py. Fine-tunes the Diffusion Policy (BC) UNet directly
-using PPO on the denoising process, preserving action chunking.
+Fine-tunes BC Diffusion Policy UNet directly via PPO on denoising chain.
 
-Reward Design (7 components, chunk-level):
-  R1  Approach progress    ×15     dense, before grasp only
+Demo data analysis (22 episodes, mean 1750 steps):
+  Phase 1: Approach      t=0~150     base forward, arm folded, grip closed
+  Phase 2: Position/Open t=150~465   base stops, grip opens at ~465
+  Phase 3: Arm extend    t=465~1159  shoulder_pitch -1→+0.9, grip open
+  Phase 4: Grasp         t=1050~1159 grip closes
+  Phase 5: Lift/Retract  t=1159~1750 shoulder_pitch +0.9→-1, grip closed
+
+  Warmup 660 covers Phase 1-2 + early Phase 3 (BC handles approach+open)
+  RL rollout 150×8=1200 covers Phase 3-5 (arm precision, grasp, lift)
+  Total: 660+1200=1860 steps → covers 95%+ of episodes
+
+Reward (9 components, chunk-level):
+  R1  Approach progress    ×15     dense, pre-grasp only
   R2  Verified grasp       +200    sparse, one-time (5-step sustained)
-  R3  Lift height          ×100    dense, during lift (height-proportional)
-  R4  Sustained lift       +500    sparse, one-time (100+ steps stable lift)
+  R3  Lift height          ×100    dense, height above standing_z
+  R4  Sustained lift       +500    sparse, one-time (≥100 steps)
   R5  Drop penalty         −200    sparse + episode terminate
   R6  Ground contact       −2.0    dense, per chunk
   R7  Time penalty         −0.1    dense, per chunk
-
-Design philosophy:
-  - DPPO preserves action chunking → BC already knows HOW (sequence structure)
-  - Reward only tells WHICH outcomes are good → milestone-focused
-  - No gripper timing shaping (v6.7 lesson: per-step gripper RL fails)
-  - No arm direction shaping (DPPO handles this through UNet fine-tuning)
-  - No lifted pose reward (BC provides pose, DPPO improves precision)
-  - Running reward normalization handles scale automatically
+  R8  Too close            −5.0    base < 0.15m, arm can't reach down
+  R9  Too far              −3.0    base > 0.46m, arm can't reach object
 
 Usage:
-    cd /home/jovyan/IsaacLab/scripts/lekiwi_nav_env && \
-    PYTHONUNBUFFERED=1 LEKIWI_USD_PATH=/home/jovyan/Downloads/lekiwi_robot.usd \
     python train_dppo.py \
       --skill approach_and_grasp \
       --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt \
       --object_usd /path/to/object.usd \
-      --num_envs 1024 --headless \
-      --save_dir checkpoints/dppo_v1
+      --num_envs 1024 --headless
 """
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ import argparse
 import os
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1. Args
+# Args
 # ═══════════════════════════════════════════════════════════════════════════════
 parser = argparse.ArgumentParser(description="DPPO for LeKiwi")
 parser.add_argument("--bc_checkpoint", type=str, required=True)
@@ -53,7 +54,7 @@ parser.add_argument("--gripper_contact_prim_path", type=str,
 parser.add_argument("--arm_limit_json", type=str,
                     default="calibration/arm_limits_measured.json")
 
-# DPPO specific
+# DPPO
 parser.add_argument("--ddim_steps", type=int, default=4)
 parser.add_argument("--ft_denoising_steps", type=int, default=4)
 parser.add_argument("--min_sampling_std", type=float, default=0.08)
@@ -68,10 +69,13 @@ parser.add_argument("--final_action_clip_value", type=float, default=1.0)
 parser.add_argument("--eta", type=float, default=1.0)
 
 # PPO
-parser.add_argument("--n_steps", type=int, default=100)
+parser.add_argument("--n_steps", type=int, default=150,
+                    help="Diffusion calls per iter. 150×8=1200 env steps "
+                         "(covers 1090 steps needed after 660 warmup)")
 parser.add_argument("--total_iters", type=int, default=1000)
 parser.add_argument("--update_epochs", type=int, default=5)
-parser.add_argument("--batch_size", type=int, default=20000)
+parser.add_argument("--batch_size", type=int, default=40000,
+                    help="PPO batch. 150×1024×4=614400 total, 40k per minibatch")
 parser.add_argument("--gamma", type=float, default=0.999)
 parser.add_argument("--gae_lambda", type=float, default=0.95)
 parser.add_argument("--target_kl", type=float, default=1.0)
@@ -94,11 +98,33 @@ parser.add_argument("--r_success_bonus", type=float, default=500.0)
 parser.add_argument("--r_drop_penalty", type=float, default=-200.0)
 parser.add_argument("--r_ground_penalty", type=float, default=-2.0)
 parser.add_argument("--r_time_penalty", type=float, default=-0.1)
+parser.add_argument("--r_too_close_penalty", type=float, default=-5.0,
+                    help="Penalty per chunk when base is too close to grasp")
+parser.add_argument("--r_too_far_penalty", type=float, default=-3.0,
+                    help="Penalty per chunk when base is too far to reach")
+parser.add_argument("--base_too_close_dist", type=float, default=0.18,
+                    help="Base-obj XY dist below which arm can't reach down. "
+                         "Demo: grasp happens at ~0.25m base_dist (stored) / "
+                         "~0.40m obj_rel (body frame). 0.18 is well below working range.")
+parser.add_argument("--base_too_far_dist", type=float, default=0.46,
+                    help="Base-obj XY dist above which arm certainly can't reach. "
+                         "Demo: obj_rel at grasp ≈ 0.40m body frame. "
+                         "0.46 gives margin for DPPO to find better positioning.")
+parser.add_argument("--object_standing_height", type=float, default=0.035,
+                    help="Object Z when standing on ground (5_HTP bottle ≈ 0.033)")
+parser.add_argument("--lift_height_range", type=float, default=0.15,
+                    help="Height range for normalized lift reward (standing→max)")
 parser.add_argument("--grasp_verify_steps", type=int, default=5)
-parser.add_argument("--lift_sustain_threshold", type=int, default=100)
+parser.add_argument("--lift_sustain_threshold", type=int, default=100,
+                    help="Stable lift steps for success (100 steps ≈ 4s)")
 
 # Warmup
-parser.add_argument("--warmup_steps", type=int, default=660)
+parser.add_argument("--warmup_steps", type=int, default=660,
+                    help="BC warmup env steps. Demo: grip_open≈465, "
+                         "660 covers approach+open+early arm extension")
+parser.add_argument("--warmup_reset_interval", type=int, default=1800,
+                    help="Reset all envs every N warmup steps "
+                         "(handles terminated envs during warmup)")
 
 # Eval/save
 parser.add_argument("--eval_interval", type=int, default=10)
@@ -114,7 +140,7 @@ app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2. Imports
+# Imports
 # ═══════════════════════════════════════════════════════════════════════════════
 import random
 import time
@@ -134,7 +160,7 @@ from lekiwi_skill2_env import EE_LOCAL_OFFSET
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3. Environment
+# Environment
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class LeKiwiEnvWrapper:
@@ -164,11 +190,11 @@ def make_env(skill, num_envs, args_):
     cfg.grasp_contact_threshold = 0.55
     cfg.grasp_gripper_threshold = 0.65
     cfg.grasp_max_object_dist = 0.50
-    cfg.episode_length_s = 300.0
+    cfg.episode_length_s = 300.0    # 7500 steps max, demo avg 1750
     cfg.spawn_heading_noise_std = 0.3
     cfg.spawn_heading_max_rad = 0.5
-    cfg.grasp_success_height = 1.00     # disable env auto-reset on lift
-    cfg.lift_success_sustain_steps = 0   # we handle success ourselves
+    cfg.grasp_success_height = 1.00  # disable env auto-reset on lift
+    cfg.lift_success_sustain_steps = 0
 
     if args_.object_usd:
         cfg.object_usd = os.path.expanduser(args_.object_usd)
@@ -202,12 +228,13 @@ def load_bc_checkpoint(path, device):
         {k[11:]: v for k, v in sd.items() if k.startswith("normalizer.")},
         device=device)
     print(f"  BC: obs={cfg['obs_dim']} act={cfg['act_dim']} "
-          f"pred_h={cfg['pred_horizon']} act_h={cfg['action_horizon']}")
+          f"pred_h={cfg['pred_horizon']} act_h={cfg['action_horizon']} "
+          f"diff_steps={cfg['num_diffusion_iters']}")
     return agent.model, agent.normalizer, cfg
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. Main
+# Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
@@ -270,20 +297,25 @@ def main():
         start_itr = ck.get("iteration", 0)
         print(f"  Resumed iter={start_itr}")
 
-    S = args.n_steps
+    S = args.n_steps              # 150 diffusion calls
     K = args.ft_denoising_steps
-    WU = args.warmup_steps
-    WU_CALLS = WU // ACT_H
+    WU = args.warmup_steps        # 660 env steps
+    WU_CALLS = WU // ACT_H       # 82 diffusion calls for warmup
+    WU_RESET = args.warmup_reset_interval  # reset all envs every N warmup steps
     GV = args.grasp_verify_steps
     LMI = args.lift_sustain_threshold
     HELD_EE_MAX = 0.20
-    LIFT_H_MIN = 0.05
+    LIFT_H_MIN = args.object_standing_height + 0.015  # just above standing → 0.050
+    OBJ_STAND_H = args.object_standing_height          # 0.035
+    LIFT_RANGE = args.lift_height_range                 # 0.15
+    BASE_TOO_CLOSE = args.base_too_close_dist           # 0.18
+    BASE_TOO_FAR = args.base_too_far_dist               # 0.46
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
-    best_sr, best_sl = 0.0, 0
+    best_sr, best_sl, best_g = 0.0, 0, 0
     t_start = time.time()
 
-    # Per-env reward state
+    # Per-env reward state (persists across chunks within an iteration)
     ms_grasp = torch.zeros(N, dtype=torch.bool, device=dev)
     ms_success = torch.zeros(N, dtype=torch.bool, device=dev)
     g_sus = torch.zeros(N, dtype=torch.long, device=dev)
@@ -296,16 +328,18 @@ def main():
         return wp + quat_apply(wq, ee_off.expand_as(wp))
 
     def ee_obj_3d():
-        return torch.norm(ee_pos() - env.env.object_pos_w, dim=-1).view(-1)
+        return torch.nan_to_num(
+            torch.norm(ee_pos() - env.env.object_pos_w, dim=-1).view(-1), nan=1.0)
 
     def base_obj_xy():
-        return torch.norm(env.env.robot.data.root_pos_w[:, :2]
-                          - env.env.object_pos_w[:, :2], dim=-1).view(-1)
+        return torch.nan_to_num(
+            torch.norm(env.env.robot.data.root_pos_w[:, :2]
+                       - env.env.object_pos_w[:, :2], dim=-1).view(-1), nan=1.0)
 
     def obj_h():
         return (env.env.object_pos_w[:, 2] - env.env.scene.env_origins[:, 2]).view(-1)
 
-    def reset_rs(mask):
+    def reset_reward_state(mask):
         ms_grasp[mask] = False; ms_success[mask] = False
         g_sus[mask] = 0; l_sus[mask] = 0
         prev_bd[mask] = base_obj_xy()[mask]
@@ -313,18 +347,28 @@ def main():
     print(f"\n{'='*70}")
     print(f"  DPPO — {args.skill}")
     print(f"  N={N} S={S} ACT_H={ACT_H} K={K}")
-    print(f"  env_steps/iter = {S * ACT_H} + warmup {WU}")
+    print(f"  env_steps/iter = warmup {WU} + RL {S*ACT_H} = {WU+S*ACT_H}")
+    print(f"  Demo avg: 1750 steps → coverage {(WU+S*ACT_H)/1750*100:.0f}%")
     print(f"  actor_lr={args.actor_lr} critic_lr={args.critic_lr}")
     print(f"  gamma={args.gamma} gamma_d={args.gamma_denoising}")
     print(f"  clip={args.clip_ploss_coef}/{args.clip_ploss_coef_base}")
     print(f"  min_std={args.min_sampling_std} eta={args.eta}")
     print(f"  ── Reward ──")
     print(f"  R1 Approach ×{args.r_approach_scale}  R2 Grasp +{args.r_grasp_bonus}")
-    print(f"  R3 Lift ×{args.r_lift_scale}  R4 Success +{args.r_success_bonus} (sus≥{LMI})")
+    print(f"  R3 Lift ×{args.r_lift_scale} (base_h={OBJ_STAND_H:.3f}, range={LIFT_RANGE})")
+    print(f"  R4 Success +{args.r_success_bonus} (sus≥{LMI})")
     print(f"  R5 Drop {args.r_drop_penalty}+term  R6 Ground {args.r_ground_penalty}")
     print(f"  R7 Time {args.r_time_penalty}")
+    print(f"  R8 TooClose {args.r_too_close_penalty} (<{BASE_TOO_CLOSE}m)")
+    print(f"  R9 TooFar {args.r_too_far_penalty} (>{BASE_TOO_FAR}m)")
+    print(f"  ── Phase Timing (from demo analysis) ──")
+    print(f"  approach→~150  grip_open→~465  grasp→~1159  lift→~1373")
+    print(f"  warmup covers t=0~{WU} (approach+open+early extend)")
+    print(f"  RL covers t={WU}~{WU+S*ACT_H} (extend+grasp+lift+retract)")
     print(f"{'='*70}\n")
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  Training loop
     # ═══════════════════════════════════════════════════════════════════
     for itr in range(start_itr, args.total_iters):
         itr_t0 = time.time()
@@ -332,11 +376,15 @@ def main():
         if ev: dppo.eval()
         else: dppo.train(); dppo.actor.eval()
 
+        # ── Reset env + reward state ──
         obs = env.reset()
         ms_grasp.zero_(); ms_success.zero_(); g_sus.zero_(); l_sus.zero_()
 
-        # Warmup
+        # ── BC Warmup with periodic full-env reset ──
+        # Handles case where some envs terminate during warmup
+        # (out-of-bounds, fell, etc.) by resetting ALL envs periodically.
         if WU_CALLS > 0:
+            wu_step_count = 0
             for wi in range(WU_CALLS):
                 with torch.no_grad():
                     an, _ = dppo.sample_actions(obs, deterministic=True)
@@ -345,10 +393,26 @@ def main():
                     ).reshape(N, ACT_H, AD)
                 for ai in range(ACT_H):
                     obs, _, ter, tru, _ = env.step(act[:, ai])
-                    if (ter | tru).any(): break
+                    wu_step_count += 1
+                    if (ter | tru).any():
+                        break
+
+                # Periodic full reset to re-synchronize all envs
+                if WU_RESET > 0 and wu_step_count >= WU_RESET and wi < WU_CALLS - 1:
+                    obs = env.reset()
+                    wu_step_count = 0
+
         prev_bd[:] = base_obj_xy()
 
-        # Buffers
+        ee_d0 = ee_obj_3d()
+        bd_d0 = base_obj_xy()
+        grip_d0 = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
+        print(f"\nIter {itr}/{args.total_iters} | {'EVAL' if ev else 'TRAIN'} | "
+              f"post-warmup: EE={ee_d0.mean():.3f}/{ee_d0.min():.3f} "
+              f"Base={bd_d0.mean():.3f}/{bd_d0.min():.3f} "
+              f"Grip={grip_d0.mean():.2f}")
+
+        # ── Rollout buffers ──
         obs_b = torch.zeros(S, N, OD, device="cpu")
         chain_b = torch.zeros(S, N, K + 1, PRED_H, AD, device="cpu")
         rew_b = torch.zeros(S, N, device="cpu")
@@ -356,7 +420,8 @@ def main():
         first_b = torch.zeros(S + 1, N, device="cpu")
         first_b[0] = 1.0
 
-        dg, dl, dd, dgcf, dml = 0, 0, 0, 0, 0  # diagnostics
+        # Diagnostics
+        dg, dl, dd, dgcf, dml, dtc, dtf = 0, 0, 0, 0, 0, 0, 0
 
         # ═══ Rollout ═══
         for step in range(S):
@@ -374,11 +439,13 @@ def main():
 
             for ai in range(ACT_H):
                 obs_n, _, ter, tru, info = env.step(act[:, ai])
+                obs_n = torch.nan_to_num(obs_n, nan=0.0)
                 alive = ~cd
 
                 grip = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
                 gc = grip < float(env.env.cfg.grasp_gripper_threshold)
-                eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
+                eg = info.get("object_grasped_mask",
+                              env.env.object_grasped).view(-1)
                 jd = info.get("just_dropped_mask",
                               torch.zeros(N, dtype=torch.bool, device=dev)).view(-1)
                 oh = obj_h()
@@ -386,41 +453,41 @@ def main():
                 gcf = info.get("ground_contact_force_raw",
                                torch.zeros(N, device=dev)).view(-1)
 
-                # R6: Ground contact
-                gog = (gcf > 1.0) & (oh < 0.05) & alive
+                # ── R6: Ground contact penalty (gripper touches ground) ──
+                gog = (gcf > 1.0) & alive
                 cr += gog.float() * (args.r_ground_penalty / ACT_H)
                 dgcf += gog.sum().item()
 
-                # Grasp sustain
+                # ── Grasp sustain tracking ──
                 gc_ok = eg & (~ms_grasp) & alive
                 g_sus[gc_ok] += 1
                 g_sus[~gc_ok & (~ms_grasp)] = 0
 
-                # R2: Verified grasp
+                # ── R2: Verified grasp milestone ──
                 vg = (g_sus >= GV) & (~ms_grasp) & alive
                 if vg.any():
                     cr[vg] += args.r_grasp_bonus
                     ms_grasp |= vg
                     dg += vg.sum().item()
 
-                # Lift tracking
+                # ── Lift tracking ──
                 held = (oh > LIFT_H_MIN) & ms_grasp & gc & (ed < HELD_EE_MAX) & alive
                 l_sus[held] += 1
                 l_sus[~held & ms_grasp] = 0
                 dml = max(dml, l_sus.max().item())
 
-                # R3: Lift height
-                hp = torch.clamp((oh - 0.03) / 0.15, 0.0, 1.0)
+                # ── R3: Lift height reward ──
+                hp = torch.clamp((oh - OBJ_STAND_H) / LIFT_RANGE, 0.0, 1.0)
                 cr += held.float() * hp * (args.r_lift_scale / ACT_H)
 
-                # R4: Sustained lift success
+                # ── R4: Sustained lift success ──
                 ns = (l_sus >= LMI) & (~ms_success) & alive
                 if ns.any():
                     cr[ns] += args.r_success_bonus
                     ms_success |= ns
                     dl += ns.sum().item()
 
-                # R5: Drop penalty + terminate
+                # ── R5: Drop penalty + terminate ──
                 dropped = jd.bool() & ms_grasp & alive
                 if dropped.any():
                     cr[dropped] += args.r_drop_penalty
@@ -433,18 +500,36 @@ def main():
                 cd |= (ter | tru).view(-1).bool()
                 obs = obs_n
 
-            # R1: Approach progress (chunk-level)
+            # ── R1: Approach progress (chunk-level, pre-grasp only) ──
             cbd = base_obj_xy()
             am = (~ms_grasp) & (~cd)
             ad = torch.clamp(prev_bd - cbd, -0.1, 0.1)
             cr += am.float() * ad * args.r_approach_scale
+
+            # ── R8: Too-close penalty ──
+            # Demo: base stabilizes at 0.22~0.30m (mean 0.25m) from object.
+            # Below 0.18m the arm's kinematic chain can't reach down to ground level.
+            too_close = am & (cbd < BASE_TOO_CLOSE)
+            cr += too_close.float() * args.r_too_close_penalty
+            dtc += too_close.sum().item()
+
+            # ── R9: Too-far penalty ──
+            # Demo: successful grasps all happen with base at 0.22~0.30m.
+            # At 0.46m+ the arm physically cannot reach the object.
+            # Weaker than R8 because R1 approach already pushes closer.
+            too_far = am & (cbd > BASE_TOO_FAR)
+            cr += too_far.float() * args.r_too_far_penalty
+            dtf += too_far.sum().item()
+
             prev_bd[:] = cbd
 
-            # R7: Time
+            # ── R7: Time penalty ──
             cr += (~cd).float() * args.r_time_penalty
 
-            # Reset done envs
-            if cd.any(): reset_rs(cd)
+            # Zero reward for terminated envs, reset state
+            cr[cd] = 0.0
+            if cd.any():
+                reset_reward_state(cd)
 
             rew_b[step] = cr.cpu()
             term_b[step] = ct.float().cpu()
@@ -459,9 +544,10 @@ def main():
 
             lp_b = torch.zeros(S, N, K, PRED_H, AD, device="cpu")
             for s in range(S):
-                lp_b[s] = dppo.get_logprobs_all(obs_b[s].to(dev), chain_b[s].to(dev)).cpu()
+                lp_b[s] = dppo.get_logprobs_all(
+                    obs_b[s].to(dev), chain_b[s].to(dev)).cpu()
 
-        # Reward scaling
+        # ── Reward scaling ──
         rn = rew_b.numpy()
         if reward_scaler is not None and not ev:
             fn = first_b[:-1].numpy()
@@ -469,7 +555,7 @@ def main():
                 rn[s] = reward_scaler(rn[s], fn[s])
             rew_b = torch.from_numpy(rn).float()
 
-        # GAE
+        # ── GAE ──
         adv_b = torch.zeros(S, N)
         lg = torch.zeros(N)
         for t in reversed(range(S)):
@@ -480,30 +566,44 @@ def main():
             adv_b[t] = lg
         ret_b = adv_b + val_b
 
+        # ── Log ──
         sr = dl / N
         fps = S * ACT_H * N / max(time.time() - itr_t0, 1e-6)
-        print(f"\nIter {itr}/{args.total_iters} | {'EVAL' if ev else 'TRAIN'} | "
-              f"SR={sr:.2%} | R={rew_b.sum(0).mean():.1f} | "
-              f"G={dg} L={dl} D={dd} GCF={dgcf} MaxLSus={dml} | FPS={fps:.0f}")
+        fed = ee_obj_3d()
+        fbd = base_obj_xy()
+        fgr = env.env.robot.data.joint_pos[:, env.env.gripper_idx].view(-1)
+        print(f"  SR={sr:.2%} | G={dg} L={dl} D={dd} GCF={dgcf} MaxLSus={dml} | "
+              f"TC={dtc} TF={dtf} | R={rew_b.sum(0).mean():.1f} | "
+              f"EE={fed.min():.3f}({fed.mean():.3f}) "
+              f"Base={fbd.min():.3f}({fbd.mean():.3f}) "
+              f"Grip={fgr.min():.2f}/{fgr.mean():.2f}/{fgr.max():.2f} | "
+              f"FPS={fps:.0f}")
 
+        # ── Eval: save best ──
         if ev:
             if sr > best_sr:
                 best_sr = sr
-                torch.save({"actor_ft_state_dict": dppo.actor_ft.state_dict(),
+                torch.save({
+                    "actor_ft_state_dict": dppo.actor_ft.state_dict(),
                     "critic_state_dict": dppo.critic.state_dict(),
                     "normalizer_state_dict": dppo.normalizer.state_dict(),
                     "bc_config": bc_cfg, "iteration": itr,
-                    "success_rate": sr, "args": vars(args)}, save_dir / "dppo_best.pt")
+                    "success_rate": sr, "args": vars(args),
+                }, save_dir / "dppo_best.pt")
                 print(f"  ★ Best SR={sr:.2%}")
             if dl > best_sl:
                 best_sl = dl
-                torch.save({"actor_ft_state_dict": dppo.actor_ft.state_dict(),
+                torch.save({
+                    "actor_ft_state_dict": dppo.actor_ft.state_dict(),
                     "critic_state_dict": dppo.critic.state_dict(),
                     "normalizer_state_dict": dppo.normalizer.state_dict(),
                     "bc_config": bc_cfg, "iteration": itr,
-                    "lifts": dl, "args": vars(args)}, save_dir / "dppo_best_lift.pt")
+                    "lifts": dl, "args": vars(args),
+                }, save_dir / "dppo_best_lift.pt")
                 print(f"  ★ Best L={dl}")
-            print(f"  Best: SR={best_sr:.2%} L={best_sl}")
+            if dg > best_g:
+                best_g = dg
+            print(f"  Best: SR={best_sr:.2%} L={best_sl} G={best_g}")
             continue
 
         # ═══ PPO Update ═══
@@ -546,7 +646,8 @@ def main():
                 loss.backward()
                 if itr >= args.n_critic_warmup_itr:
                     if args.max_grad_norm:
-                        nn.utils.clip_grad_norm_(dppo.actor_ft.parameters(), args.max_grad_norm)
+                        nn.utils.clip_grad_norm_(
+                            dppo.actor_ft.parameters(), args.max_grad_norm)
                     actor_opt.step()
                 critic_opt.step()
 
@@ -558,25 +659,32 @@ def main():
         actor_sched.step(); critic_sched.step()
         vy = np.var(rf.numpy())
         evr = np.nan if vy == 0 else 1 - np.var(rf.numpy() - vf.numpy()) / vy
-        sps = int(S * ACT_H * N * (itr - start_itr + 1) / max(time.time() - t_start, 1))
+        sps = int(S * ACT_H * N * (itr - start_itr + 1)
+                  / max(time.time() - t_start, 1))
         print(f"  pg={pg.item():.4f} v={vl.item():.4f} kl={kl:.4f} "
               f"clip={np.mean(cfs):.3f} ev={evr:.3f} SPS={sps}")
 
         if (itr + 1) % args.save_interval == 0 or itr == args.total_iters - 1:
-            torch.save({"actor_ft_state_dict": dppo.actor_ft.state_dict(),
+            torch.save({
+                "actor_ft_state_dict": dppo.actor_ft.state_dict(),
                 "critic_state_dict": dppo.critic.state_dict(),
                 "normalizer_state_dict": dppo.normalizer.state_dict(),
-                "actor_opt": actor_opt.state_dict(), "critic_opt": critic_opt.state_dict(),
+                "actor_opt": actor_opt.state_dict(),
+                "critic_opt": critic_opt.state_dict(),
                 "bc_config": bc_cfg, "iteration": itr + 1,
-                "args": vars(args)}, save_dir / f"dppo_iter{itr+1}.pt")
+                "args": vars(args),
+            }, save_dir / f"dppo_iter{itr+1}.pt")
             print(f"  Saved iter {itr+1}")
 
-    print(f"\nDone in {time.time()-t_start:.0f}s | Best SR={best_sr:.2%} L={best_sl}")
-    torch.save({"actor_ft_state_dict": dppo.actor_ft.state_dict(),
+    total_time = time.time() - t_start
+    print(f"\nDone in {total_time:.0f}s | Best SR={best_sr:.2%} L={best_sl} G={best_g}")
+    torch.save({
+        "actor_ft_state_dict": dppo.actor_ft.state_dict(),
         "critic_state_dict": dppo.critic.state_dict(),
         "normalizer_state_dict": dppo.normalizer.state_dict(),
         "bc_config": bc_cfg, "iteration": args.total_iters,
-        "best_success_rate": best_sr, "args": vars(args)}, save_dir / "dppo_final.pt")
+        "best_success_rate": best_sr, "args": vars(args),
+    }, save_dir / "dppo_final.pt")
     env.env.close(); simulation_app.close()
 
 
