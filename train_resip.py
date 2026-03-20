@@ -73,7 +73,7 @@ parser.add_argument("--lr_critic", type=float, default=5e-3)
 
 # Residual
 parser.add_argument("--action_scale_arm", type=float, default=0.20)
-parser.add_argument("--action_scale_gripper", type=float, default=1.0)
+parser.add_argument("--action_scale_gripper", type=float, default=0.30)
 parser.add_argument("--action_scale_base", type=float, default=0.35)
 parser.add_argument("--action_scale", type=float, default=None)
 parser.add_argument("--actor_hidden_size", type=int, default=256)
@@ -981,6 +981,8 @@ def main_combined():
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.45   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
+    S3_ARM_BLEND_STEPS = 100  # S3 전환 후 arm blending 기간
+    s2_last_arm_action = torch.zeros(N, 6, device=dev)  # S2 마지막 arm+grip action 저장
     S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -1068,6 +1070,14 @@ def main_combined():
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
+
+            # Arm blending: S3 첫 N step에 걸쳐 S2 arm → S3 BC arm 점진 전환
+            blend_mask = (phase == 1) & (s3_step_counter < S3_ARM_BLEND_STEPS)
+            if blend_mask.any():
+                b_ids = blend_mask.nonzero(as_tuple=False).squeeze(-1)
+                alpha = (s3_step_counter[b_ids].float() / S3_ARM_BLEND_STEPS).clamp(0, 1)
+                # arm+grip [0:6] blending, base [6:9] 그대로
+                s3_action[b_ids, :6] = (1 - alpha).unsqueeze(-1) * s2_last_arm_action[b_ids] + alpha.unsqueeze(-1) * s3_action[b_ids, :6]
 
             # Merge action by phase
             is_s2 = (phase == 0)
@@ -1191,11 +1201,21 @@ def main_combined():
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 prev_src_dst_xy[t_ids] = torch.norm(
                     env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
+                # S2 마지막 arm+grip action 저장 (blending용)
+                s2_last_arm_action[t_ids] = s2_action[t_ids, :6]
                 s2_success_total += t_ids.shape[0]
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
                 _arm = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx]
-                print(f"    [S2→S3] {t_ids.shape[0]} envs at step {step} | grip={_grip[:3].tolist()} arm[0]={_arm[:1, :5].tolist()}")
+                _objz = (env.env.object_pos_w[t_ids, 2] - env.env.scene.env_origins[t_ids, 2])
+                # S2 vs S3 arm action delta
+                _s2a = s2_action[t_ids, :6]
+                _s3a = s3_action[t_ids, :6]
+                _delta = _s3a - _s2a
+                print(f"    [S2→S3] {t_ids.shape[0]} envs at step {step} | grip={_grip[:3].tolist()} arm3={_arm[:3, 3].tolist()} objZ={_objz[:3].tolist()}")
+                print(f"      s2_act[0:6]={_s2a[0].tolist()}")
+                print(f"      s3_act[0:6]={_s3a[0].tolist()}")
+                print(f"      delta[0:6] ={_delta[0].tolist()}")
 
             # ── S3 reward (R0~R5) ──
             rew = torch.zeros(N, device=dev)
@@ -1300,7 +1320,11 @@ def main_combined():
                 rew[s3m] += -0.01
 
                 # ── R0/timeout penalty ──
-                rew[s3_drop] = -10.0
+                # 진짜 drop (objZ ≤ 0.04) vs 끼임 (objZ > 0.04) 구분
+                real_drop = s3_drop & (src_h <= 0.04)
+                wedged_drop = s3_drop & (src_h > 0.04)
+                rew[real_drop] = -10.0   # 진짜 drop만 패널티
+                # wedged_drop: 패널티 없이 리셋 (agent 잘못 아님)
                 rew[s3_timeout] = -5.0
 
             rew_b[step] = rew
@@ -1312,8 +1336,18 @@ def main_combined():
                 s3_drop_total += s3_drop.sum().item()
                 s3_drop_early = (_drop_steps < 50).sum().item()
                 s3_drop_late = (_drop_steps >= 50).sum().item()
+                _jaw_d = jaw_cf[s3_drop]
+                _wrist_d = wrist_cf[s3_drop]
+                _grip_d = grip_pos[s3_drop]
+                _oh_d = src_h[s3_drop]
+                _arm_d = arm_joints[s3_drop, :5]
                 if s3_drop_early + s3_drop_late > 0:
-                    print(f"    [DROP] early(<50step)={s3_drop_early} late(≥50step)={s3_drop_late} avg_step={_drop_steps.float().mean():.0f}")
+                    _wedged = (_oh_d > 0.04).sum().item()
+                    _real = (_oh_d <= 0.04).sum().item()
+                    print(f"    [DROP] early={s3_drop_early} late={s3_drop_late} avg_step={_drop_steps.float().mean():.0f} | jaw={_jaw_d.mean():.2f} wrist={_wrist_d.mean():.2f} grip={_grip_d.mean():.3f} objZ={_oh_d.mean():.3f} | real={_real} wedged={_wedged}")
+                    if _wedged > 0:
+                        _w_mask = _oh_d > 0.04
+                        print(f"      [WEDGED] grip={_grip_d[_w_mask].mean():.3f} objZ={_oh_d[_w_mask].mean():.3f} arm={_arm_d[_w_mask].mean(dim=0).tolist()}")
             if s3_fail.any():
                 fail_ids = s3_fail.nonzero(as_tuple=False).squeeze(-1)
                 env.env._reset_idx(fail_ids)
