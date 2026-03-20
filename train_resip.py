@@ -1227,20 +1227,8 @@ def main_combined():
                 # Gripper closed check (S2 grasp와 동일 기준)
                 gripper_closed = grip_pos < float(env.env.cfg.grasp_gripper_threshold)
 
-                # Between jaws check: EE가 object bbox 안에 있는지
-                between_jaws = torch.ones(N, dtype=torch.bool, device=dev)
-                if env.env._fixed_jaw_body_idx >= 0:
-                    wrist_pos = env.env.robot.data.body_pos_w[:, env.env._fixed_jaw_body_idx, :]
-                    wrist_quat = env.env.robot.data.body_quat_w[:, env.env._fixed_jaw_body_idx, :]
-                    ee_pos = wrist_pos + quat_apply(env.env.robot.data.body_quat_w[:, env.env._fixed_jaw_body_idx, :], ee_off.expand(N, -1))
-                    ee_to_obj = torch.norm(ee_pos - src_pos, dim=-1)
-                    ee_pos_obj = quat_apply_inverse(env.env.object_quat_w, ee_pos - src_pos)
-                    half_bbox = 0.5 * env.env.object_bbox + float(env.env.cfg.grasp_bbox_margin)
-                    inside_bbox = (ee_pos_obj.abs() <= half_bbox).all(dim=-1)
-                    between_jaws = inside_bbox & (ee_to_obj < float(env.env.cfg.grasp_ee_max_dist))
-
-                # S3 hold = S2 grasp 조건 (object_standing, object_grasped 제외)
-                is_holding = has_contact & gripper_closed & between_jaws
+                # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
+                is_holding = has_contact & gripper_closed
 
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
@@ -1300,7 +1288,7 @@ def main_combined():
                     ms_place[place_cond] = True
                     rew[place_cond] += 200.0
                     s3_place_total += place_cond.sum().item()
-                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step}")
+                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
 
                 # ── R4: Phase C — rest pose return ──
                 if phase_c.any():
