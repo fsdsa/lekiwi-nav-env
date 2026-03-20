@@ -1244,8 +1244,11 @@ def main_combined():
 
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
+                # Place 시도 중 (gripper 열림 + base 가까움)이면 drop 판정 제외
+                attempting_place = (grip_pos > 0.65) & (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
                 s3_no_contact_counter[s3m & is_holding] = 0
-                s3_no_contact_counter[s3m & ~is_holding] += 1
+                s3_no_contact_counter[s3m & ~is_holding & ~attempting_place] += 1
+                s3_no_contact_counter[s3m & attempting_place] = 0  # place 시도 중 counter 리셋
                 # Drop = contact lost for S3_NO_CONTACT_STEPS + not placed (거리 무관, 재파지 불가)
                 s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
                 # S3 timeout
