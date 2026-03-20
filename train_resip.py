@@ -1206,7 +1206,7 @@ def main_combined():
                 # Contact forces
                 jaw_cf = env.env._contact_force_per_env()          # jaw↔source
                 wrist_cf = env.env._wrist_contact_force_per_env()  # wrist↔source
-                has_contact = (jaw_cf > 0.3) & (wrist_cf > 0.3)   # 양쪽 gripper 모두 접촉해야 hold
+                has_contact = (jaw_cf > 0.3) & (wrist_cf > 0.3)   # 양쪽 gripper 모두 접촉
 
                 # Robot base position
                 base_pos = env.env.robot.data.root_pos_w  # (N, 3)
@@ -1216,10 +1216,28 @@ def main_combined():
                 grip_pos = env.env.robot.data.joint_pos[:, env.env.gripper_idx]
                 arm_joints = env.env.robot.data.joint_pos[:, env.env.arm_idx]
 
+                # Gripper closed check (S2 grasp와 동일 기준)
+                gripper_closed = grip_pos < float(env.env.cfg.grasp_gripper_threshold)
+
+                # Between jaws check: EE가 object bbox 안에 있는지
+                between_jaws = torch.ones(N, dtype=torch.bool, device=dev)
+                if env.env._fixed_jaw_body_idx >= 0:
+                    wrist_pos = env.env.robot.data.body_pos_w[:, env.env._fixed_jaw_body_idx, :]
+                    wrist_quat = env.env.robot.data.body_quat_w[:, env.env._fixed_jaw_body_idx, :]
+                    ee_pos = wrist_pos + quat_apply(env.env.robot.data.body_quat_w[:, env.env._fixed_jaw_body_idx, :], ee_off.expand(N, -1))
+                    ee_to_obj = torch.norm(ee_pos - src_pos, dim=-1)
+                    ee_pos_obj = quat_apply_inverse(env.env.object_quat_w, ee_pos - src_pos)
+                    half_bbox = 0.5 * env.env.object_bbox + float(env.env.cfg.grasp_bbox_margin)
+                    inside_bbox = (ee_pos_obj.abs() <= half_bbox).all(dim=-1)
+                    between_jaws = inside_bbox & (ee_to_obj < float(env.env.cfg.grasp_ee_max_dist))
+
+                # S3 hold = S2 grasp 조건 (object_standing, object_grasped 제외)
+                is_holding = has_contact & gripper_closed & between_jaws
+
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
-                s3_no_contact_counter[s3m & has_contact] = 0
-                s3_no_contact_counter[s3m & ~has_contact] += 1
+                s3_no_contact_counter[s3m & is_holding] = 0
+                s3_no_contact_counter[s3m & ~is_holding] += 1
                 # Drop = contact lost for S3_NO_CONTACT_STEPS + not placed (거리 무관, 재파지 불가)
                 s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
                 # S3 timeout
@@ -1227,7 +1245,7 @@ def main_combined():
                 s3_fail = s3_drop | s3_timeout
 
                 # ── R_hold: Hold maintenance (annealed, 300 steps) ──
-                hold = s3m & has_contact & (src_h > 0.033) & (~ms_place) & (~s3_fail)
+                hold = s3m & is_holding & (src_h > 0.033) & (~ms_place) & (~s3_fail)
                 anneal = torch.clamp(1.0 - s3_step_counter.float() / 300.0, min=0.0)
                 rew[hold] += (0.2 * anneal)[hold]
 
