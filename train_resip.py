@@ -1322,10 +1322,10 @@ def main_combined():
             if s3_drop.any():
                 _drop_steps = s3_step_counter[s3_drop]
                 s3_drop_total += s3_drop.sum().item()
-                s3_drop_early = (_drop_steps < 10).sum().item()
-                s3_drop_late = (_drop_steps >= 10).sum().item()
+                s3_drop_early = (_drop_steps < 50).sum().item()
+                s3_drop_late = (_drop_steps >= 50).sum().item()
                 if s3_drop_early + s3_drop_late > 0:
-                    print(f"    [DROP] early(<10step)={s3_drop_early} late(≥10step)={s3_drop_late} avg_step={_drop_steps.float().mean():.0f}")
+                    print(f"    [DROP] early(<50step)={s3_drop_early} late(≥50step)={s3_drop_late} avg_step={_drop_steps.float().mean():.0f}")
             if s3_fail.any():
                 fail_ids = s3_fail.nonzero(as_tuple=False).squeeze(-1)
                 env.env._reset_idx(fail_ids)
