@@ -73,7 +73,7 @@ parser.add_argument("--lr_critic", type=float, default=5e-3)
 
 # Residual
 parser.add_argument("--action_scale_arm", type=float, default=0.20)
-parser.add_argument("--action_scale_gripper", type=float, default=0.30)
+parser.add_argument("--action_scale_gripper", type=float, default=1.0)
 parser.add_argument("--action_scale_base", type=float, default=0.35)
 parser.add_argument("--action_scale", type=float, default=None)
 parser.add_argument("--actor_hidden_size", type=int, default=256)
@@ -1082,6 +1082,35 @@ def main_combined():
             # Mark S2 phase steps as done (won't contribute to GAE)
             done_b[step][is_s2] = 1.0
 
+            # DEBUG: gripper 추적 + S3 hold env jaw/wrist 분석
+            if N <= 4:
+                _gp = env.env.robot.data.joint_pos[0, env.env.gripper_idx].item()
+                _ph = phase[0].item()
+                _s2g = s2_action[0, 5].item()
+                _s3g = s3_action[0, 5].item()
+                _act_g = action[0, 5].item()
+                _oh = (env.env.object_pos_w[0, 2] - env.env.scene.env_origins[0, 2]).item()
+                _s3s = s3_step_counter[0].item()
+                _show = (step % 10 == 0) or (_ph == 1 and _s3s <= 15)
+                if _show:
+                    _jaw = env.env._contact_force_per_env()[0].item()
+                    _wrist = env.env._wrist_contact_force_per_env()[0].item()
+                    print(f"    [DBG] step={step} {'S2' if _ph==0 else f'S3({_s3s})'} grip_pos={_gp:.3f} s2g={_s2g:.3f} s3g={_s3g:.3f} act={_act_g:.3f} objZ={_oh:.3f} jaw={_jaw:.2f} wrist={_wrist:.2f}")
+            # S3 hold env jaw vs wrist 집계 (50 step 마다)
+            if is_s3.any() and step % 50 == 0:
+                _jaw_all = env.env._contact_force_per_env()
+                _wrist_all = env.env._wrist_contact_force_per_env()
+                _s3m = is_s3
+                _jaw_s3 = _jaw_all[_s3m]
+                _wrist_s3 = _wrist_all[_s3m]
+                _jaw_only = ((_jaw_s3 > 0.3) & (_wrist_s3 <= 0.3)).sum().item()
+                _wrist_only = ((_jaw_s3 <= 0.3) & (_wrist_s3 > 0.3)).sum().item()
+                _both = ((_jaw_s3 > 0.3) & (_wrist_s3 > 0.3)).sum().item()
+                _none = ((_jaw_s3 <= 0.3) & (_wrist_s3 <= 0.3)).sum().item()
+                _oh_s3 = (env.env.object_pos_w[_s3m, 2] - env.env.scene.env_origins[_s3m, 2])
+                _held = (_oh_s3 > 0.04).sum().item()
+                print(f"    [CONTACT] step={step} S3={_s3m.sum().item()} jaw_only={_jaw_only} wrist_only={_wrist_only} both={_both} none={_none} held(objZ>0.04)={_held}")
+
             # Step env
             next_obs, _, ter, tru, info = env.step(action)
             next_obs = torch.nan_to_num(next_obs, nan=0.0)
@@ -1155,7 +1184,10 @@ def main_combined():
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 s2_success_total += t_ids.shape[0]
-                print(f"    [S2→S3] {t_ids.shape[0]} envs at step {step}")
+                # DEBUG: S2→S3 전환 시점 gripper 상태
+                _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
+                _arm = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx]
+                print(f"    [S2→S3] {t_ids.shape[0]} envs at step {step} | grip={_grip[:3].tolist()} arm[0]={_arm[:1, :5].tolist()}")
 
             # ── S3 reward (R0~R5) ──
             rew = torch.zeros(N, device=dev)
