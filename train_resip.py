@@ -239,7 +239,8 @@ def make_env(skill, num_envs, args):
         cfg.dest_heading_noise_std = 0.3
         cfg.dest_heading_max_rad = args.s3_dest_heading_max_rad
         cfg.dest_object_fixed = False
-        cfg.dest_object_mass = 50.0
+        cfg.dest_object_scale = 0.56
+        cfg.dest_object_mass = 2.0  # 적당히 무거워서 안 밀림, 50kg은 비현실적
     else:
         cfg.grasp_success_height = 1.00
 
