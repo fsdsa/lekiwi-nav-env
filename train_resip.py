@@ -974,20 +974,19 @@ def main_combined():
     ms_place = torch.zeros(N, dtype=torch.bool, device=dev)       # place 성공 milestone
     s3_no_contact_counter = torch.zeros(N, dtype=torch.long, device=dev)  # consecutive no-contact steps
     prev_base_dst_xy = torch.zeros(N, device=dev)                 # R1 delta 계산용
+    prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
-    S3_DROP_DIST = 0.4        # source↔dest XY distance > this = drop
-    S3_NO_CONTACT_STEPS = 3   # consecutive steps without contact = drop check
+    S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check
     S3_PLACE_RADIUS = 0.172   # source↔dest XY distance for place success
-    S3_DEST_CONTACT_PENALTY = -5.0
+    S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
+    S3_PHASE_B_DIST = 0.45   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
-    S3_GRIP_OVERRIDE_STEPS = 50  # S3 첫 N step: gripper를 S2 마지막 값으로 고정
-    s2_last_grip_action = torch.zeros(N, device=dev)  # S2→S3 전환 시 저장
     S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     bsr, bsl, bgr = 0.0, 0, 0
     tt = 0; t0 = time.time()
-    s2_success_total = 0; s3_success_total = 0; s3_place_total = 0; total_episodes = 0
+    s2_success_total = 0; s3_success_total = 0; s3_place_total = 0; s3_drop_total = 0; total_episodes = 0
 
     next_obs = env.reset(); s2_dp.reset(); s3_dp.reset()
     next_done = torch.zeros(N, device=dev)
@@ -1070,27 +1069,10 @@ def main_combined():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
 
-            # S3 gripper override: 첫 N step은 S2 마지막 gripper 값 유지
-            grip_override_mask = (phase == 1) & (s3_step_counter < S3_GRIP_OVERRIDE_STEPS)
-            if grip_override_mask.any():
-                ov_ids = grip_override_mask.nonzero(as_tuple=False).squeeze(-1)
-                # final action의 gripper를 S2 마지막 값으로 덮어쓰기
-                s3_action[ov_ids, 5] = s2_last_grip_action[ov_ids]
-                # PPO 저장용 residual 역산: norm = (x - min)/(max - min)*2 - 1
-                _act_stats = s3_dp.normalizer.stats["action"]
-                _a_min = _act_stats["min"][5]
-                _a_max = _act_stats["max"][5]
-                grip_norm = (s2_last_grip_action[ov_ids] - _a_min) / (_a_max - _a_min + 1e-8) * 2 - 1
-                s3_ra[ov_ids, 5] = torch.clamp((grip_norm - s3_ba[ov_ids, 5]) / s3_scale[5], -1.0, 1.0)
-
             # Merge action by phase
             is_s2 = (phase == 0)
             is_s3 = (phase == 1)
             action = torch.where(is_s2.unsqueeze(-1), s2_action, s3_action)
-
-            # Recompute log_prob with corrected s3_ra (override 반영)
-            with torch.no_grad():
-                _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
 
             # Store S3 transitions
             obs_b[step] = s3_ro
@@ -1173,7 +1155,12 @@ def main_combined():
                 rpos = env.env.robot.data.root_pos_w[t_ids]
                 rquat = env.env.robot.data.root_quat_w[t_ids]
                 fwd = quat_apply(rquat, torch.tensor([[0, 1, 0]], dtype=torch.float32, device=dev).expand(len(t_ids), -1))
-                dist = torch.rand(len(t_ids), device=dev) * (args.s3_dest_spawn_dist_max - args.s3_dest_spawn_dist_min) + args.s3_dest_spawn_dist_min
+                # Curriculum: iter 진행에 따라 max dist 점진 확장
+                curr_dist_max = min(
+                    args.s3_dest_spawn_dist_min + 0.01 * gi,  # iter당 +0.01m
+                    args.s3_dest_spawn_dist_max,
+                )
+                dist = torch.rand(len(t_ids), device=dev) * (curr_dist_max - args.s3_dest_spawn_dist_min) + args.s3_dest_spawn_dist_min
                 # heading noise (±dest_heading_max_rad)
                 angle_noise = (torch.rand(len(t_ids), device=dev) * 2 - 1) * args.s3_dest_heading_max_rad
                 cos_n = torch.cos(angle_noise); sin_n = torch.sin(angle_noise)
@@ -1202,8 +1189,8 @@ def main_combined():
                 # Initialize prev distance for delta reward
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
-                # S2 마지막 gripper action 저장 (override용)
-                s2_last_grip_action[t_ids] = s2_action[t_ids, 5]
+                prev_src_dst_xy[t_ids] = torch.norm(
+                    env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 s2_success_total += t_ids.shape[0]
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
@@ -1265,59 +1252,77 @@ def main_combined():
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
                 s3_fail = s3_drop | s3_timeout
 
-                # ── R_hold: Hold maintenance (annealed, 300 steps) ──
-                hold = s3m & is_holding & (src_h > 0.033) & (~ms_place) & (~s3_fail)
-                anneal = torch.clamp(1.0 - s3_step_counter.float() / 300.0, min=0.0)
-                rew[hold] += (0.2 * anneal)[hold]
+                # ── Phase 판정 ──
+                phase_a = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy > S3_PHASE_B_DIST)
+                phase_b = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy <= S3_PHASE_B_DIST)
+                phase_c = s3m & ms_place
 
-                # ── R1: Base → dest 0.35m 수렴 (delta, 오차 감소 시 보상) ──
-                R1_TARGET = 0.35  # 목표 거리 (0.25~0.45m 범위 중심)
-                pre_place = s3m & (~ms_place) & (~s3_fail)
+                # ── R_hold: Phase A에서 hold 보상 (anneal 없음, base 먼 동안 유지) ──
+                hold = phase_a & is_holding & (src_h > 0.033)
+                rew[hold] += 0.2
+
+                # ── R1: Phase A — base → dest 접근 (delta × 30, 잡고 있을 때만) ──
+                R1_TARGET = 0.35
                 prev_err = (prev_base_dst_xy - R1_TARGET).abs()
                 curr_err = (base_dst_xy - R1_TARGET).abs()
                 approach_delta = torch.clamp(prev_err - curr_err, -0.05, 0.05)
-                r1 = approach_delta * 10.0   # 오차 0.5m 감소 → +5.0 total
-                rew[pre_place] += r1[pre_place]
-                # Update prev distance
+                r1 = approach_delta * 30.0   # 0.5m 접근 → +15 total
+                r1_mask = phase_a & is_holding
+                rew[r1_mask] += r1[r1_mask]
+
+                # ── R_arm: Phase B — src↔dst delta shaping (팔 뻗기 유도, 잡고 있을 때만) ──
+                src_dst_delta = torch.clamp(prev_src_dst_xy - src_dst_xy, -0.05, 0.05)
+                r_arm = src_dst_delta * 30.0
+                r_arm_mask = phase_b & is_holding
+                rew[r_arm_mask] += r_arm[r_arm_mask]
+
+                # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
+                prev_src_dst_xy[s3m] = src_dst_xy[s3m]
 
-                # ── R2: Dest contact penalty ──
-                dest_cf = env.env._dest_contact_force_per_env()  # any contact with dest cup
+                # ── R2: Phase B — dest contact penalty ──
+                dest_cf = env.env._dest_contact_force_per_env()
                 dest_touching = (dest_cf > 0.3) & s3m
-                rew[dest_touching] += S3_DEST_CONTACT_PENALTY
+                rew[dest_touching] += S3_DEST_CONTACT_PENALTY  # -1.0
 
-                # ── R3: Place success (one-time milestone) ──
+                # ── R3: Place success (one-time milestone +200) ──
                 place_cond = (
                     s3m & ~ms_place
-                    & (src_h > 0.025)                   # source not toppled
-                    & (src_dst_xy < S3_PLACE_RADIUS)    # source near dest
-                    & (grip_pos > 0.9)                  # gripper open (range: -0.2~1.49)
+                    & (src_h > 0.025)
+                    & (src_dst_xy < S3_PLACE_RADIUS)
+                    & (grip_pos > 0.9)
                     & ~s3_fail
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
-                    rew[place_cond] += 50.0
+                    rew[place_cond] += 200.0
                     s3_place_total += place_cond.sum().item()
                     print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step}")
 
-                # ── R4: Rest pose return (after place, per-step Gaussian) ──
-                placed = s3m & ms_place
-                if placed.any():
-                    pose_err = torch.norm(arm_joints[placed, :5] - S3_REST_POSE, dim=-1)
+                # ── R4: Phase C — rest pose return ──
+                if phase_c.any():
+                    pose_err = torch.norm(arm_joints[phase_c, :5] - S3_REST_POSE, dim=-1)
                     r4 = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.5
-                    rew[placed] += r4
+                    rew[phase_c] += r4
 
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
 
                 # ── R0/timeout penalty ──
-                rew[s3_drop] = -10.0   # overwrite: drop is catastrophic
+                rew[s3_drop] = -10.0
                 rew[s3_timeout] = -5.0
 
             rew_b[step] = rew
 
             # ── S3 fail (drop / timeout) → force reset to S2 ──
             s3_fail = s3_drop | s3_timeout
+            if s3_drop.any():
+                _drop_steps = s3_step_counter[s3_drop]
+                s3_drop_total += s3_drop.sum().item()
+                s3_drop_early = (_drop_steps < 10).sum().item()
+                s3_drop_late = (_drop_steps >= 10).sum().item()
+                if s3_drop_early + s3_drop_late > 0:
+                    print(f"    [DROP] early(<10step)={s3_drop_early} late(≥10step)={s3_drop_late} avg_step={_drop_steps.float().mean():.0f}")
             if s3_fail.any():
                 fail_ids = s3_fail.nonzero(as_tuple=False).squeeze(-1)
                 env.env._reset_idx(fail_ids)
@@ -1331,6 +1336,7 @@ def main_combined():
                 s3_no_contact_counter[fail_ids] = 0
                 s3_step_counter[fail_ids] = 0
                 prev_base_dst_xy[fail_ids] = 0.0
+                prev_src_dst_xy[fail_ids] = 0.0
 
             # Handle env auto-resets (terminated/truncated by env)
             next_done = (ter | tru).view(-1).float()
@@ -1346,6 +1352,7 @@ def main_combined():
                 s3_no_contact_counter[reset_mask] = 0
                 s3_step_counter[reset_mask] = 0
                 prev_base_dst_xy[reset_mask] = 0.0
+                prev_src_dst_xy[reset_mask] = 0.0
                 total_episodes += reset_mask.sum().item()
 
             s3_step_count[is_s3] += 1
@@ -1404,17 +1411,24 @@ def main_combined():
         # ── Logging ──
         s3_envs = (phase == 1).sum().item()
         s3_steps = s3_step_count.sum().item()
-        # S3 phase objZ 추적
+        # S3 phase 상태 추적
         s3_mask = (phase == 1)
         if s3_mask.any():
             s3_oh = (env.env.object_pos_w[s3_mask, 2] - env.env.scene.env_origins[s3_mask, 2])
-            s3_holding = (s3_oh > 0.04).sum().item()
-            s3_dropped = (s3_oh <= 0.04).sum().item()
+            # is_holding 기반 판정 (contact AND + gripper_closed + between_jaws)
+            _jaw = env.env._contact_force_per_env()[s3_mask]
+            _wrist = env.env._wrist_contact_force_per_env()[s3_mask]
+            _grip = env.env.robot.data.joint_pos[s3_mask, env.env.gripper_idx]
+            _has_ct = (_jaw > 0.3) & (_wrist > 0.3)
+            _grip_closed = _grip < float(env.env.cfg.grasp_gripper_threshold)
+            s3_holding = (_has_ct & _grip_closed & (s3_oh > 0.033)).sum().item()
+            s3_placed = ms_place[s3_mask].sum().item()
+            s3_dropped = s3_mask.sum().item() - s3_holding - s3_placed
             s3_src_dst = torch.norm(
                 env.env.object_pos_w[s3_mask, :2] - env.env.dest_object_pos_w[s3_mask, :2], dim=-1)
             s3_base_dst = torch.norm(
                 env.env.robot.data.root_pos_w[s3_mask, :2] - env.env.dest_object_pos_w[s3_mask, :2], dim=-1)
-            print(f"  S2→S3: {s2_success_total} total | S3 envs: {s3_envs} (hold={s3_holding}, drop={s3_dropped}) | place={s3_place_total}")
+            print(f"  S2→S3: {s2_success_total} total | S3 envs: {s3_envs} (hold={s3_holding}, placed={s3_placed}, drop={s3_dropped}) | place_total={s3_place_total} drop_total={s3_drop_total}")
             print(f"  S3 objZ: min={s3_oh.min():.3f} mean={s3_oh.mean():.3f} max={s3_oh.max():.3f}")
             print(f"  S3 src→dst: min={s3_src_dst.min():.3f} mean={s3_src_dst.mean():.3f} | base→dst: min={s3_base_dst.min():.3f} mean={s3_base_dst.mean():.3f}")
         else:
