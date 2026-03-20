@@ -1249,11 +1249,13 @@ def main_combined():
                 anneal = torch.clamp(1.0 - s3_step_counter.float() / 300.0, min=0.0)
                 rew[hold] += (0.2 * anneal)[hold]
 
-                # ── R1: Base → dest approach (delta only, no per-step farming) ──
-                # Delta: reward for reducing distance (capped to prevent outliers)
+                # ── R1: Base → dest 0.35m 수렴 (delta, 오차 감소 시 보상) ──
+                R1_TARGET = 0.35  # 목표 거리 (0.25~0.45m 범위 중심)
                 pre_place = s3m & (~ms_place) & (~s3_fail)
-                approach_delta = torch.clamp(prev_base_dst_xy - base_dst_xy, -0.05, 0.05)
-                r1 = approach_delta * 10.0   # 0.5m closer → +5.0 total
+                prev_err = (prev_base_dst_xy - R1_TARGET).abs()
+                curr_err = (base_dst_xy - R1_TARGET).abs()
+                approach_delta = torch.clamp(prev_err - curr_err, -0.05, 0.05)
+                r1 = approach_delta * 10.0   # 오차 0.5m 감소 → +5.0 total
                 rew[pre_place] += r1[pre_place]
                 # Update prev distance
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
