@@ -1206,7 +1206,7 @@ def main_combined():
                 # Contact forces
                 jaw_cf = env.env._contact_force_per_env()          # jaw↔source
                 wrist_cf = env.env._wrist_contact_force_per_env()  # wrist↔source
-                has_contact = (jaw_cf > 0.3) | (wrist_cf > 0.3)   # holding source object
+                has_contact = (jaw_cf > 0.3) & (wrist_cf > 0.3)   # 양쪽 gripper 모두 접촉해야 hold
 
                 # Robot base position
                 base_pos = env.env.robot.data.root_pos_w  # (N, 3)
