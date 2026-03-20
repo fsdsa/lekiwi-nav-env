@@ -980,6 +980,8 @@ def main_combined():
     S3_PLACE_RADIUS = 0.172   # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -5.0
     S3_MAX_STEPS = 2000       # S3 phase timeout
+    S3_GRIP_OVERRIDE_STEPS = 50  # S3 첫 N step: gripper를 S2 마지막 값으로 고정
+    s2_last_grip_action = torch.zeros(N, device=dev)  # S2→S3 전환 시 저장
     S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -1068,10 +1070,27 @@ def main_combined():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
 
+            # S3 gripper override: 첫 N step은 S2 마지막 gripper 값 유지
+            grip_override_mask = is_s3 & (s3_step_counter < S3_GRIP_OVERRIDE_STEPS)
+            if grip_override_mask.any():
+                ov_ids = grip_override_mask.nonzero(as_tuple=False).squeeze(-1)
+                # final action의 gripper를 S2 마지막 값으로 덮어쓰기
+                s3_action[ov_ids, 5] = s2_last_grip_action[ov_ids]
+                # PPO 저장용 residual 역산: norm = (x - min)/(max - min)*2 - 1
+                _act_stats = s3_dp.normalizer.stats["action"]
+                _a_min = _act_stats["min"][5]
+                _a_max = _act_stats["max"][5]
+                grip_norm = (s2_last_grip_action[ov_ids] - _a_min) / (_a_max - _a_min + 1e-8) * 2 - 1
+                s3_ra[ov_ids, 5] = torch.clamp((grip_norm - s3_ba[ov_ids, 5]) / s3_scale[5], -1.0, 1.0)
+
             # Merge action by phase
             is_s2 = (phase == 0)
             is_s3 = (phase == 1)
             action = torch.where(is_s2.unsqueeze(-1), s2_action, s3_action)
+
+            # Recompute log_prob with corrected s3_ra (override 반영)
+            with torch.no_grad():
+                _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
 
             # Store S3 transitions
             obs_b[step] = s3_ro
@@ -1183,6 +1202,8 @@ def main_combined():
                 # Initialize prev distance for delta reward
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
+                # S2 마지막 gripper action 저장 (override용)
+                s2_last_grip_action[t_ids] = s2_action[t_ids, 5]
                 s2_success_total += t_ids.shape[0]
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
