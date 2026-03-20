@@ -1071,7 +1071,7 @@ def main_combined():
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
 
             # S3 gripper override: 첫 N step은 S2 마지막 gripper 값 유지
-            grip_override_mask = is_s3 & (s3_step_counter < S3_GRIP_OVERRIDE_STEPS)
+            grip_override_mask = (phase == 1) & (s3_step_counter < S3_GRIP_OVERRIDE_STEPS)
             if grip_override_mask.any():
                 ov_ids = grip_override_mask.nonzero(as_tuple=False).squeeze(-1)
                 # final action의 gripper를 S2 마지막 값으로 덮어쓰기
