@@ -1188,8 +1188,8 @@ def main_combined():
                 # Contact lost → increment counter; contact present → reset
                 s3_no_contact_counter[s3m & has_contact] = 0
                 s3_no_contact_counter[s3m & ~has_contact] += 1
-                # Drop = contact lost for S3_NO_CONTACT_STEPS AND source far from dest
-                s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (src_dst_xy > S3_DROP_DIST) & (~ms_place)
+                # Drop = contact lost for S3_NO_CONTACT_STEPS + not placed (거리 무관, 재파지 불가)
+                s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
                 # S3 timeout
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
                 s3_fail = s3_drop | s3_timeout
