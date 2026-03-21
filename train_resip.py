@@ -1309,13 +1309,9 @@ def main_combined():
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
 
-                # ── R0/timeout penalty ──
-                # 진짜 drop (objZ ≤ 0.04) vs 끼임 (objZ > 0.04) 구분
-                real_drop = s3_drop & (src_h <= 0.04)
-                wedged_drop = s3_drop & (src_h > 0.04)
-                rew[real_drop] = -10.0   # 진짜 drop만 패널티
-                # wedged_drop: 패널티 없이 리셋 (agent 잘못 아님)
-                rew[s3_timeout] = -5.0
+                # ── R0/timeout: 패널티 없이 리셋만 (drop penalty가 접근 회피 유발) ──
+                # drop/wedged/timeout 모두 패널티 없음 — hold/approach 보상만으로 유도
+                rew[s3_timeout] = -1.0  # timeout만 약한 패널티 (너무 오래 대기 방지)
 
             rew_b[step] = rew
 
