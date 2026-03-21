@@ -1334,8 +1334,8 @@ def main_combined():
             if s3_drop.any():
                 _drop_steps = s3_step_counter[s3_drop]
                 s3_drop_total += s3_drop.sum().item()
-                s3_drop_early = (_drop_steps < 50).sum().item()
-                s3_drop_late = (_drop_steps >= 50).sum().item()
+                s3_drop_early = (_drop_steps < S3_ARM_BLEND_STEPS).sum().item()
+                s3_drop_late = (_drop_steps >= S3_ARM_BLEND_STEPS).sum().item()
                 _jaw_d = jaw_cf[s3_drop]
                 _wrist_d = wrist_cf[s3_drop]
                 _grip_d = grip_pos[s3_drop]
