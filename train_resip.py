@@ -1071,11 +1071,16 @@ def main_combined():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
 
-            # Arm blending: S3 첫 N step에 걸쳐 S2 arm → S3 BC arm 점진 전환
-            blend_mask = (phase == 1) & (s3_step_counter < S3_ARM_BLEND_STEPS)
+            # Arm blending: 거리 기반 — base > 0.45m: S2 arm 고정, < 0.35m: BC arm 전환
+            # base_dst_xy는 아직 계산 안 됨, 여기서 계산
+            _base_xy = env.env.robot.data.root_pos_w[:, :2]
+            _dest_xy = env.env.dest_object_pos_w[:, :2]
+            _blend_dist = torch.norm(_base_xy - _dest_xy, dim=-1)
+            blend_mask = (phase == 1)
             if blend_mask.any():
                 b_ids = blend_mask.nonzero(as_tuple=False).squeeze(-1)
-                alpha = (s3_step_counter[b_ids].float() / S3_ARM_BLEND_STEPS).clamp(0, 1)
+                # alpha: 0.45m→0 (S2 arm), 0.35m→1 (BC arm), 선형 보간
+                alpha = ((0.45 - _blend_dist[b_ids]) / 0.10).clamp(0, 1)
                 # arm+grip [0:6] blending, base [6:9] 그대로
                 s3_action[b_ids, :6] = (1 - alpha).unsqueeze(-1) * s2_last_arm_action[b_ids] + alpha.unsqueeze(-1) * s3_action[b_ids, :6]
 
