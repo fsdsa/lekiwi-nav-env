@@ -981,8 +981,6 @@ def main_combined():
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.45   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
-    S3_ARM_BLEND_STEPS = 200  # S3 전환 후 arm blending 기간 (residual이 base 이동 학습할 시간)
-    s2_last_arm_action = torch.zeros(N, 6, device=dev)  # S2 마지막 arm+grip action 저장
     S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
@@ -1070,19 +1068,6 @@ def main_combined():
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
-
-            # Arm blending: 거리 기반 — base > 0.45m: S2 arm 고정, < 0.35m: BC arm 전환
-            # base_dst_xy는 아직 계산 안 됨, 여기서 계산
-            _base_xy = env.env.robot.data.root_pos_w[:, :2]
-            _dest_xy = env.env.dest_object_pos_w[:, :2]
-            _blend_dist = torch.norm(_base_xy - _dest_xy, dim=-1)
-            blend_mask = (phase == 1)
-            if blend_mask.any():
-                b_ids = blend_mask.nonzero(as_tuple=False).squeeze(-1)
-                # alpha: 0.45m→0 (S2 arm), 0.35m→1 (BC arm), 선형 보간
-                alpha = ((0.45 - _blend_dist[b_ids]) / 0.10).clamp(0, 1)
-                # arm+grip [0:6] blending, base [6:9] 그대로
-                s3_action[b_ids, :6] = (1 - alpha).unsqueeze(-1) * s2_last_arm_action[b_ids] + alpha.unsqueeze(-1) * s3_action[b_ids, :6]
 
             # Merge action by phase
             is_s2 = (phase == 0)
@@ -1206,8 +1191,6 @@ def main_combined():
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 prev_src_dst_xy[t_ids] = torch.norm(
                     env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
-                # S2 마지막 arm+grip action 저장 (blending용)
-                s2_last_arm_action[t_ids] = s2_action[t_ids, :6]
                 s2_success_total += t_ids.shape[0]
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
@@ -1341,8 +1324,8 @@ def main_combined():
             if s3_drop.any():
                 _drop_steps = s3_step_counter[s3_drop]
                 s3_drop_total += s3_drop.sum().item()
-                s3_drop_early = (_drop_steps < S3_ARM_BLEND_STEPS).sum().item()
-                s3_drop_late = (_drop_steps >= S3_ARM_BLEND_STEPS).sum().item()
+                s3_drop_early = (_drop_steps < 50).sum().item()
+                s3_drop_late = (_drop_steps >= 50).sum().item()
                 _jaw_d = jaw_cf[s3_drop]
                 _wrist_d = wrist_cf[s3_drop]
                 _grip_d = grip_pos[s3_drop]
