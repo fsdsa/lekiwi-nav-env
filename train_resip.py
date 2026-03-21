@@ -1253,7 +1253,7 @@ def main_combined():
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
                 # Place 시도 중 (gripper 열림 + base 가까움)이면 drop 판정 제외
-                attempting_place = (grip_pos > 0.65) & (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
+                attempting_place = (grip_pos > 0.45) & (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
                 s3_no_contact_counter[s3m & is_holding] = 0
                 s3_no_contact_counter[s3m & ~is_holding & ~attempting_place] += 1
                 s3_no_contact_counter[s3m & attempting_place] = 0  # place 시도 중 counter 리셋
@@ -1297,24 +1297,26 @@ def main_combined():
                 rew[dest_touching] += S3_DEST_CONTACT_PENALTY  # -1.0
 
                 # ── R3: Place success (one-time milestone +200) ──
+                # gripper 조건 제거 — 0.7 스케일 물체는 grip 0.5 정도에서 이미 빠질 수 있음
                 place_cond = (
                     s3m & ~ms_place
                     & (src_h > 0.025)
                     & (src_dst_xy < S3_PLACE_RADIUS)
-                    & (grip_pos > 0.9)
                     & ~s3_fail
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
                     rew[place_cond] += 200.0
                     s3_place_total += place_cond.sum().item()
-                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
+                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} grip={grip_pos[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
 
-                # ── R4: Phase C — rest pose return ──
+                # ── R4: Phase C — rest pose + gripper open 유도 ──
                 if phase_c.any():
                     pose_err = torch.norm(arm_joints[phase_c, :5] - S3_REST_POSE, dim=-1)
                     r4 = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.5
-                    rew[phase_c] += r4
+                    # gripper open 유도: 0.9 목표
+                    grip_open_rew = torch.clamp(grip_pos[phase_c] / 0.9, 0.0, 1.0) * 0.3
+                    rew[phase_c] += r4 + grip_open_rew
 
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
