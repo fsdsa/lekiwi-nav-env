@@ -981,7 +981,7 @@ def main_combined():
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.45   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
-    S3_ARM_BLEND_STEPS = 100  # S3 전환 후 arm blending 기간
+    S3_ARM_BLEND_STEPS = 200  # S3 전환 후 arm blending 기간 (residual이 base 이동 학습할 시간)
     s2_last_arm_action = torch.zeros(N, 6, device=dev)  # S2 마지막 arm+grip action 저장
     S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
 
