@@ -1060,11 +1060,14 @@ def main_combined():
                 s3_ba = torch.nan_to_num(s3_ba, nan=0.0)
                 s3_ro = torch.cat([s3_no, s3_ba], dim=-1)
 
-            # S3 residual (trainable)
+            # S3 residual (trainable) — BC warmup 60iter: residual 0
+            S3_BC_WARMUP_ITERS = 60
             with torch.no_grad():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
+            if gi <= S3_BC_WARMUP_ITERS:
+                s3_ra = torch.zeros_like(s3_ra)  # warmup: BC only
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
@@ -1309,12 +1312,7 @@ def main_combined():
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
 
-                # ── R0/timeout penalty ──
-                # 진짜 drop (objZ ≤ 0.04) vs 끼임 (objZ > 0.04) 구분
-                real_drop = s3_drop & (src_h <= 0.04)
-                wedged_drop = s3_drop & (src_h > 0.04)
-                rew[real_drop] = -10.0   # 진짜 drop만 패널티
-                # wedged_drop: 패널티 없이 리셋 (agent 잘못 아님)
+                # ── R0/timeout: drop 패널티 없음, reset만 ──
                 rew[s3_timeout] = -5.0
 
             rew_b[step] = rew
