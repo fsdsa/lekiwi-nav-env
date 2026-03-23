@@ -51,7 +51,7 @@ parser.add_argument("--s2_lift_hold_steps", type=int, default=400,
                     help="combined: Skill-2 lift success 판정 step 수")
 parser.add_argument("--s3_dest_spawn_dist_min", type=float, default=0.6)
 parser.add_argument("--s3_dest_spawn_dist_max", type=float, default=0.9)
-parser.add_argument("--s3_dest_heading_max_rad", type=float, default=0.76)
+parser.add_argument("--s3_dest_heading_max_rad", type=float, default=0.5)
 
 # PPO
 parser.add_argument("--total_timesteps", type=int, default=10_000_000)
@@ -905,10 +905,6 @@ def main_combined():
     print(f"  [S3] BC loaded: {args.s3_bc_checkpoint} (obs={S3_OD}D, act={S3_AD}D)")
 
     # ── S3 Residual Policy (trainable) ──
-    s3_scale = torch.zeros(S3_AD, device=dev)
-    s3_scale[0:5] = args.action_scale_arm
-    s3_scale[5] = args.action_scale_gripper
-    s3_scale[6:9] = args.action_scale_base
 
     rpol = ResidualPolicy(
         obs_dim=S3_OD, action_dim=S3_AD,
@@ -973,6 +969,7 @@ def main_combined():
     # ── S3 milestone / reward state ──
     ms_place = torch.zeros(N, dtype=torch.bool, device=dev)       # place 성공 milestone
     s3_no_contact_counter = torch.zeros(N, dtype=torch.long, device=dev)  # consecutive no-contact steps
+    s3_wedged_counter = torch.zeros(N, dtype=torch.long, device=dev)  # wedge detection counter
     prev_base_dst_xy = torch.zeros(N, device=dev)                 # R1 delta 계산용
     prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
@@ -1068,11 +1065,14 @@ def main_combined():
                 s3_ba = torch.nan_to_num(s3_ba, nan=0.0)
                 s3_ro = torch.cat([s3_no, s3_ba], dim=-1)
 
-            # S3 residual (trainable) — 60iter에 걸쳐 BC→residual 점진 전환
+            # S3 residual (trainable)
             with torch.no_grad():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
+            S3_BC_WARMUP_ITERS = 10
+            residual_alpha = min(1.0, gi / S3_BC_WARMUP_ITERS)
+            s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             combined = s3_ba + s3_ra * s3_scale
@@ -1196,6 +1196,7 @@ def main_combined():
                 ms_place[t_ids] = False
                 s3_no_contact_counter[t_ids] = 0
                 s3_step_counter[t_ids] = 0
+                s3_wedged_counter[t_ids] = 0
                 # Initialize prev distance for delta reward
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
@@ -1219,6 +1220,7 @@ def main_combined():
             rew = torch.zeros(N, device=dev)
             s3_drop = torch.zeros(N, dtype=torch.bool, device=dev)
             s3_timeout = torch.zeros(N, dtype=torch.bool, device=dev)
+            s3_wedge_fail = torch.zeros(N, dtype=torch.bool, device=dev)
             if is_s3.any():
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
@@ -1246,12 +1248,12 @@ def main_combined():
                 gripper_closed = grip_pos < float(env.env.cfg.grasp_gripper_threshold)
 
                 # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
-                is_holding = has_contact & gripper_closed & (grip_pos > 0.25)
+                is_holding = has_contact & gripper_closed & (grip_pos >= 0.20)
 
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
                 # Place 시도 중 (gripper 열림 + base 가까움)이면 drop 판정 제외
-                attempting_place = (grip_pos > 0.45) & (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
+                attempting_place = (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
                 s3_no_contact_counter[s3m & is_holding] = 0
                 s3_no_contact_counter[s3m & ~is_holding & ~attempting_place] += 1
                 s3_no_contact_counter[s3m & attempting_place] = 0  # place 시도 중 counter 리셋
@@ -1259,7 +1261,12 @@ def main_combined():
                 s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
                 # S3 timeout
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
-                s3_fail = s3_drop | s3_timeout
+                # Wedge detection: objZ > 0.10인데 is_holding 아니고 gripper 닫힌 상태 지속
+                wedged = s3m & (~is_holding) & (src_h > 0.10) & gripper_closed & (~attempting_place)
+                s3_wedged_counter[wedged] += 1
+                s3_wedged_counter[~wedged] = 0
+                s3_wedge_fail = s3m & (s3_wedged_counter >= 30)
+                s3_fail = s3_drop | s3_timeout | s3_wedge_fail
 
                 # ── Phase 판정 ──
                 phase_a = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy > S3_PHASE_B_DIST)
@@ -1324,8 +1331,8 @@ def main_combined():
 
             rew_b[step] = rew
 
-            # ── S3 fail (drop / timeout) → force reset to S2 ──
-            s3_fail = s3_drop | s3_timeout
+            # ── S3 fail (drop / timeout / wedge) → force reset to S2 ──
+            s3_fail = s3_drop | s3_timeout | s3_wedge_fail
             if s3_drop.any():
                 _drop_steps = s3_step_counter[s3_drop]
                 s3_drop_total += s3_drop.sum().item()
@@ -1355,6 +1362,7 @@ def main_combined():
                 ms_place[fail_ids] = False
                 s3_no_contact_counter[fail_ids] = 0
                 s3_step_counter[fail_ids] = 0
+                s3_wedged_counter[fail_ids] = 0
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
 
@@ -1371,6 +1379,7 @@ def main_combined():
                 ms_place[reset_mask] = False
                 s3_no_contact_counter[reset_mask] = 0
                 s3_step_counter[reset_mask] = 0
+                s3_wedged_counter[reset_mask] = 0
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
                 total_episodes += reset_mask.sum().item()
