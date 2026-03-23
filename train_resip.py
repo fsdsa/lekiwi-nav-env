@@ -1006,6 +1006,14 @@ def main_combined():
         gi += 1; it0 = time.time()
         ev = (gi - int(args.eval_first)) % args.eval_interval == 0
 
+        # Scale scheduling: base는 처음부터, arm/grip은 점진적
+        arm_alpha = min(1.0, gi / 40)
+        grip_alpha = min(1.0, gi / 60)
+        s3_scale = torch.zeros(S3_AD, device=dev)
+        s3_scale[0:5] = args.action_scale_arm * arm_alpha
+        s3_scale[5] = args.action_scale_gripper * grip_alpha
+        s3_scale[6:9] = args.action_scale_base
+
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
         # 첫 iter이거나 모든 env가 S2일 때만 reset
         if gi == 1:
