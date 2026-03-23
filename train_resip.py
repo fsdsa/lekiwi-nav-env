@@ -1071,7 +1071,7 @@ def main_combined():
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             combined = s3_ba + s3_ra * s3_scale
-            combined[:, 5] = torch.clamp(combined[:, 5], -0.40, 1.0)  # gripper action clamp (grip_pos > 0.20 유지)
+            combined[:, 5] = torch.clamp(combined[:, 5], -0.40, 1.0)  # gripper action clamp
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
 
             # Merge action by phase
@@ -1290,11 +1290,12 @@ def main_combined():
                 rew[dest_touching] += S3_DEST_CONTACT_PENALTY  # -1.0
 
                 # ── R3: Place success (one-time milestone +200) ──
-                # gripper 조건 제거 — 0.7 스케일 물체는 grip 0.5 정도에서 이미 빠질 수 있음
                 place_cond = (
                     s3m & ~ms_place
-                    & (src_h > 0.025)
+                    & (src_h > 0.025)           # 쓰러지지 않음
+                    & (src_h < 0.04)            # 바닥에 놓여있음 (carry 중 제외)
                     & (src_dst_xy < S3_PLACE_RADIUS)
+                    & (grip_pos > 0.5)          # gripper 열림
                     & ~s3_fail
                 )
                 if place_cond.any():
