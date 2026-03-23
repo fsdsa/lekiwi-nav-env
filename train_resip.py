@@ -1261,9 +1261,9 @@ def main_combined():
                 phase_b = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy <= S3_PHASE_B_DIST)
                 phase_c = s3m & ms_place
 
-                # ── R_hold: Phase A에서 hold 보상 (anneal 없음, base 먼 동안 유지) ──
+                # ── R_hold: Phase A에서 hold 보상 (hold-forever 방지: 0.05/step) ──
                 hold = phase_a & is_holding & (src_h > 0.033)
-                rew[hold] += 0.2
+                rew[hold] += 0.05
 
                 # ── R1: Phase A — base → dest 접근 (delta × 30, 잡고 있을 때만) ──
                 R1_TARGET = 0.35
@@ -1304,12 +1304,11 @@ def main_combined():
                     s3_place_total += place_cond.sum().item()
                     print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} grip={grip_pos[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
 
-                # ── R4: Phase C — rest pose + gripper open 유도 ──
+                # ── R4: Phase C — rest pose + gripper open 유도 (축소) ──
                 if phase_c.any():
                     pose_err = torch.norm(arm_joints[phase_c, :5] - S3_REST_POSE, dim=-1)
-                    r4 = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.5
-                    # gripper open 유도: 0.9 목표
-                    grip_open_rew = torch.clamp(grip_pos[phase_c] / 0.9, 0.0, 1.0) * 0.3
+                    r4 = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.1
+                    grip_open_rew = torch.clamp(grip_pos[phase_c] / 0.9, 0.0, 1.0) * 0.05
                     rew[phase_c] += r4 + grip_open_rew
 
                 # ── R5: Time penalty ──
