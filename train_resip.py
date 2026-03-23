@@ -1069,13 +1069,10 @@ def main_combined():
                 s3_ro = torch.cat([s3_no, s3_ba], dim=-1)
 
             # S3 residual (trainable) — 60iter에 걸쳐 BC→residual 점진 전환
-            S3_BC_WARMUP_ITERS = 30
             with torch.no_grad():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
-            residual_alpha = min(1.0, gi / S3_BC_WARMUP_ITERS)
-            s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             combined = s3_ba + s3_ra * s3_scale
