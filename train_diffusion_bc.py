@@ -90,16 +90,22 @@ class DiffusionPolicyDataset(Dataset):
         return len(self.samples)
 
     def __init_augmentation__(self, vel_dropout_prob=0.0, grip_noise_std=0.0,
-                               armvel_dropout_prob=0.0):
+                               armvel_dropout_prob=0.0, arm_noise_std=0.0):
         """Set augmentation parameters after construction."""
         self.vel_dropout_prob = vel_dropout_prob
         self.grip_noise_std = grip_noise_std
         self.armvel_dropout_prob = armvel_dropout_prob
+        self.arm_noise_std = arm_noise_std
 
     def __getitem__(self, idx):
         obs, action_seq = self.samples[idx]
         obs_t = torch.from_numpy(obs)
         need_clone = False
+        # arm3 (wrist_flex) noise: obs[3] only
+        if self.arm_noise_std > 0:
+            if not need_clone:
+                obs_t = obs_t.clone(); need_clone = True
+            obs_t[3] = obs_t[3] + torch.randn(1).item() * self.arm_noise_std
         # base_vel random dropout: obs[6:15] (bvx,bvy,bwz,lvx,lvy,lvz,avx,avy,avz)
         if self.vel_dropout_prob > 0 and torch.rand(1).item() < self.vel_dropout_prob:
             if not need_clone:
@@ -217,6 +223,8 @@ def main():
                         help="Std of Gaussian noise added to gripper obs[5] (0.0=off)")
     parser.add_argument("--armvel_dropout", type=float, default=0.0,
                         help="Probability of zeroing arm_vel obs[15:21] per sample (0.0=off)")
+    parser.add_argument("--arm_noise", type=float, default=0.0,
+                        help="Std of Gaussian noise added to arm+grip obs[0:6] (0.0=off)")
     parser.add_argument("--eval", action="store_true",
                         help="Run evaluation after training")
 
@@ -256,11 +264,14 @@ def main():
         vel_dropout_prob=args.vel_dropout,
         grip_noise_std=args.grip_noise,
         armvel_dropout_prob=args.armvel_dropout,
+        arm_noise_std=args.arm_noise,
     )
     if args.vel_dropout > 0:
         print(f"Velocity dropout enabled: p={args.vel_dropout} (obs[6:15] zeroed)")
     if args.grip_noise > 0:
         print(f"Gripper noise enabled: std={args.grip_noise} (obs[5])")
+    if args.arm_noise > 0:
+        print(f"Arm noise enabled: std={args.arm_noise} (obs[0:6])")
     if args.armvel_dropout > 0:
         print(f"Arm velocity dropout enabled: p={args.armvel_dropout} (obs[15:21] zeroed)")
     print(f"Dataset: {len(dataset)} samples (all data used for training)")
