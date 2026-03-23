@@ -239,7 +239,7 @@ def make_env(skill, num_envs, args):
         cfg.dest_heading_noise_std = 0.3
         cfg.dest_heading_max_rad = args.s3_dest_heading_max_rad
         cfg.dest_object_fixed = False
-        cfg.dest_object_scale = 1.0
+        cfg.dest_object_scale = 0.56
         cfg.dest_object_mass = 50.0  # 절대 안 밀리게
     else:
         cfg.grasp_success_height = 1.00
@@ -972,13 +972,14 @@ def main_combined():
     s3_wedged_counter = torch.zeros(N, dtype=torch.long, device=dev)  # wedge detection counter
     prev_base_dst_xy = torch.zeros(N, device=dev)                 # R1 delta 계산용
     prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
+    prev_src_h = torch.zeros(N, device=dev)                       # R_lower delta 계산용
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check
-    S3_PLACE_RADIUS = 0.172   # source↔dest XY distance for place success
+    S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
-    S3_PHASE_B_DIST = 0.45   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
+    S3_PHASE_B_DIST = 0.40   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
-    S3_REST_POSE = torch.tensor([0.025, 0.000, 0.001, 0.003, 0.040], device=dev)
+    S3_REST_POSE = torch.tensor([-0.027, -0.207, 0.203, 0.123, 0.034], device=dev)
 
     save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
     bsr, bsl, bgr = 0.0, 0, 0
@@ -1202,6 +1203,7 @@ def main_combined():
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 prev_src_dst_xy[t_ids] = torch.norm(
                     env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
+                prev_src_h[t_ids] = (env.env.object_pos_w[t_ids, 2] - env.env.scene.env_origins[t_ids, 2])
                 s2_success_total += t_ids.shape[0]
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
@@ -1285,28 +1287,43 @@ def main_combined():
                 r1_mask = phase_a & is_holding
                 rew[r1_mask] += r1[r1_mask]
 
-                # ── R_arm: Phase B — src↔dst delta shaping (팔 뻗기 유도, 잡고 있을 때만) ──
+                # ── R_arm: Phase B — src↔dst XY delta (팔 뻗기, is_holding) ──
                 src_dst_delta = torch.clamp(prev_src_dst_xy - src_dst_xy, -0.05, 0.05)
-                r_arm = src_dst_delta * 30.0
+                r_arm = src_dst_delta * 30.0  # 0.10m 접근 → +3.0 total
                 r_arm_mask = phase_b & is_holding
                 rew[r_arm_mask] += r_arm[r_arm_mask]
+
+                # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.20 + is_holding) ──
+                # 데모: src_dst<0.20 진입 시 objZ≈0.19 → 0.003까지 하강
+                near_dest = phase_b & (src_dst_xy < 0.20) & is_holding
+                if near_dest.any():
+                    objz_delta = torch.clamp(prev_src_h - src_h, -0.01, 0.01)
+                    rew[near_dest] += (objz_delta * 100.0)[near_dest]  # 0.19m 하강 → +19 total
+
+                # ── R_open: Phase B — gripper 열기 (objZ < 0.01 + src_dst < 0.14) ──
+                # 데모: objZ≈0.003일 때 grip 0.3→0.9 열기
+                ready_to_release = phase_b & (src_h < 0.01) & (src_dst_xy < S3_PLACE_RADIUS)
+                if ready_to_release.any():
+                    grip_progress = torch.clamp(grip_pos[ready_to_release] / 0.9, 0.0, 1.0)
+                    rew[ready_to_release] += grip_progress * 0.5  # grip 0→0.9 × ~50step → +25 total
 
                 # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
                 prev_src_dst_xy[s3m] = src_dst_xy[s3m]
+                prev_src_h[s3m] = src_h[s3m]
 
-                # ── R2: Phase B — dest contact penalty ──
+                # ── R2: dest contact penalty ──
                 dest_cf = env.env._dest_contact_force_per_env()
                 dest_touching = (dest_cf > 0.3) & s3m
                 rew[dest_touching] += S3_DEST_CONTACT_PENALTY  # -1.0
 
-                # ── R3: Place success (one-time milestone +200) ──
+                # ── R3: Place success (+200) ──
                 place_cond = (
                     s3m & ~ms_place
-                    & (src_h > 0.025)           # 쓰러지지 않음
-                    & (src_h < 0.04)            # 바닥에 놓여있음 (carry 중 제외)
+                    & (src_h > 0.025)
+                    & (src_h < 0.04)
                     & (src_dst_xy < S3_PLACE_RADIUS)
-                    & (grip_pos > 0.5)          # gripper 열림
+                    & (grip_pos > 0.5)
                     & ~s3_fail
                 )
                 if place_cond.any():
@@ -1315,12 +1332,15 @@ def main_combined():
                     s3_place_total += place_cond.sum().item()
                     print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} grip={grip_pos[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
 
-                # ── R4: Phase C — rest pose + gripper open 유도 (축소) ──
+                # ── R4: Phase C — rest pose + gripper close ──
+                # 데모: place 후 grip→-0.20(닫힘) + arm→rest pose
                 if phase_c.any():
                     pose_err = torch.norm(arm_joints[phase_c, :5] - S3_REST_POSE, dim=-1)
-                    r4 = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.1
-                    grip_open_rew = torch.clamp(grip_pos[phase_c] / 0.9, 0.0, 1.0) * 0.05
-                    rew[phase_c] += r4 + grip_open_rew
+                    r4_pose = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.1
+                    # grip close: 0.5→-0.20 (데모 최종 grip=-0.20)
+                    grip_close_progress = torch.clamp((0.5 - grip_pos[phase_c]) / 0.7, 0.0, 1.0)
+                    r4_grip = grip_close_progress * 0.05
+                    rew[phase_c] += r4_pose + r4_grip
 
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
@@ -1364,6 +1384,7 @@ def main_combined():
                 s3_wedged_counter[fail_ids] = 0
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
+                prev_src_h[fail_ids] = 0.0
 
             # Handle env auto-resets (terminated/truncated by env)
             next_done = (ter | tru).view(-1).float()
@@ -1381,6 +1402,7 @@ def main_combined():
                 s3_wedged_counter[reset_mask] = 0
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
+                prev_src_h[reset_mask] = 0.0
                 total_episodes += reset_mask.sum().item()
 
             s3_step_count[is_s3] += 1
