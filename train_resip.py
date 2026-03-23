@@ -1004,12 +1004,10 @@ def main_combined():
         gi += 1; it0 = time.time()
         ev = (gi - int(args.eval_first)) % args.eval_interval == 0
 
-        # Scale scheduling: base는 처음부터, arm/grip은 점진적
-        arm_alpha = min(1.0, gi / 40)
-        grip_alpha = min(1.0, gi / 60)
+        # Residual scale (전부 처음부터 full)
         s3_scale = torch.zeros(S3_AD, device=dev)
-        s3_scale[0:5] = args.action_scale_arm * arm_alpha
-        s3_scale[5] = args.action_scale_gripper * grip_alpha
+        s3_scale[0:5] = args.action_scale_arm
+        s3_scale[5] = args.action_scale_gripper
         s3_scale[6:9] = args.action_scale_base
 
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
@@ -1071,7 +1069,7 @@ def main_combined():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
-            S3_BC_WARMUP_ITERS = 10
+            S3_BC_WARMUP_ITERS = 30
             residual_alpha = min(1.0, gi / S3_BC_WARMUP_ITERS)
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
