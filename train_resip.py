@@ -239,7 +239,7 @@ def make_env(skill, num_envs, args):
         cfg.dest_heading_noise_std = 0.3
         cfg.dest_heading_max_rad = args.s3_dest_heading_max_rad
         cfg.dest_object_fixed = False
-        cfg.dest_object_scale = 0.56
+        cfg.dest_object_scale = 1.0
         cfg.dest_object_mass = 50.0  # 절대 안 밀리게
     else:
         cfg.grasp_success_height = 1.00
@@ -1252,12 +1252,11 @@ def main_combined():
 
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
-                # Place 시도 중 (gripper 열림 + base 가까움)이면 drop 판정 제외
+                # Place 시도 판정
                 attempting_place = (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
                 s3_no_contact_counter[s3m & is_holding] = 0
                 s3_no_contact_counter[s3m & ~is_holding & ~attempting_place] += 1
-                s3_no_contact_counter[s3m & attempting_place] = 0  # place 시도 중 counter 리셋
-                # Drop = contact lost for S3_NO_CONTACT_STEPS + not placed (거리 무관, 재파지 불가)
+                s3_no_contact_counter[s3m & attempting_place] = 0
                 s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
                 # S3 timeout
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
