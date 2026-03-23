@@ -51,7 +51,7 @@ parser.add_argument("--s2_lift_hold_steps", type=int, default=400,
                     help="combined: Skill-2 lift success 판정 step 수")
 parser.add_argument("--s3_dest_spawn_dist_min", type=float, default=0.6)
 parser.add_argument("--s3_dest_spawn_dist_max", type=float, default=0.9)
-parser.add_argument("--s3_dest_heading_max_rad", type=float, default=0.5)
+parser.add_argument("--s3_dest_heading_max_rad", type=float, default=0.76)
 
 # PPO
 parser.add_argument("--total_timesteps", type=int, default=10_000_000)
