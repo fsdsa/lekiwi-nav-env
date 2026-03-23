@@ -1076,7 +1076,7 @@ def main_combined():
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
             combined = s3_ba + s3_ra * s3_scale
-            combined[:, 5] = torch.clamp(combined[:, 5], -0.40, 1.0)  # gripper action clamp
+            combined[:, 5] = torch.clamp(combined[:, 5], -0.45, 1.0)  # gripper action clamp (pos≈0.26)
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
 
             # Merge action by phase
