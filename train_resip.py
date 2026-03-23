@@ -47,7 +47,7 @@ parser.add_argument("--s2_resip_checkpoint", type=str, default="",
                     help="combined: Skill-2 ResiP checkpoint (frozen expert)")
 parser.add_argument("--s3_bc_checkpoint", type=str, default="",
                     help="combined: Skill-3 BC checkpoint for warmup")
-parser.add_argument("--s2_lift_hold_steps", type=int, default=500,
+parser.add_argument("--s2_lift_hold_steps", type=int, default=400,
                     help="combined: Skill-2 lift success 판정 step 수")
 parser.add_argument("--s3_dest_spawn_dist_min", type=float, default=0.6)
 parser.add_argument("--s3_dest_spawn_dist_max", type=float, default=0.9)
@@ -1061,7 +1061,7 @@ def main_combined():
                 s3_ro = torch.cat([s3_no, s3_ba], dim=-1)
 
             # S3 residual (trainable) — 60iter에 걸쳐 BC→residual 점진 전환
-            S3_BC_WARMUP_ITERS = 60
+            S3_BC_WARMUP_ITERS = 30
             with torch.no_grad():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
@@ -1070,7 +1070,9 @@ def main_combined():
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
-            s3_action = s3_dp.normalizer(s3_ba + s3_ra * s3_scale, "action", forward=False)
+            combined = s3_ba + s3_ra * s3_scale
+            combined[:, 5] = torch.clamp(combined[:, 5], -0.40, 1.0)  # gripper action clamp (grip_pos > 0.20 유지)
+            s3_action = s3_dp.normalizer(combined, "action", forward=False)
 
             # Merge action by phase
             is_s2 = (phase == 0)
@@ -1239,7 +1241,7 @@ def main_combined():
                 gripper_closed = grip_pos < float(env.env.cfg.grasp_gripper_threshold)
 
                 # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
-                is_holding = has_contact & gripper_closed
+                is_holding = has_contact & gripper_closed & (grip_pos > 0.25)
 
                 # ── R0: Drop detection ──
                 # Contact lost → increment counter; contact present → reset
