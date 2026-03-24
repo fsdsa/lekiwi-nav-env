@@ -30,7 +30,7 @@ parser = argparse.ArgumentParser(description="ResiP v6.4")
 
 parser.add_argument("--bc_checkpoint", type=str, required=True)
 parser.add_argument("--skill", type=str, required=True,
-                    choices=["approach_and_grasp", "carry_and_place", "combined_s2_s3"])
+                    choices=["approach_and_grasp", "carry_and_place", "combined_s2_s3", "carry"])
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--num_env_steps", type=int, default=700)
 parser.add_argument("--object_usd", type=str, default="")
@@ -121,6 +121,8 @@ parser.add_argument("--resume_resip", type=str, default=None)
 parser.add_argument("--resume_actor_only", type=lambda x: x.lower() == "true", default=False,
                     help="Actor weights만 로드, critic/optimizer는 새로 초기화")
 parser.add_argument("--enable_domain_randomization", type=lambda x: x.lower() == "true", default=False)
+parser.add_argument("--_test_phase_a_arm_override", type=lambda x: x.lower() == "true", default=False,
+                    help="TEST: Phase A에서 arm을 보간으로 강제. drop 원인 파악용.")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -204,7 +206,7 @@ class LeKiwiEnvWrapper:
 
 
 def make_env(skill, num_envs, args):
-    if skill in ("approach_and_grasp", "combined_s2_s3"):
+    if skill in ("approach_and_grasp", "combined_s2_s3", "carry"):
         from lekiwi_skill2_eval import Skill2Env, Skill2EnvCfg
         cfg = Skill2EnvCfg()
         cfg.scene.num_envs = num_envs
@@ -241,6 +243,10 @@ def make_env(skill, num_envs, args):
         cfg.dest_object_fixed = False
         cfg.dest_object_scale = 0.56
         cfg.dest_object_mass = 50.0  # 절대 안 밀리게
+    elif skill == "carry":
+        cfg.grasp_success_height = 100.0
+        cfg.lift_hold_steps = 0
+        cfg.max_dist_from_origin = 50.0  # carry: 이동 중 oob 방지
     else:
         cfg.grasp_success_height = 1.00
 
@@ -254,7 +260,7 @@ def make_env(skill, num_envs, args):
     if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
         cfg.arm_limit_json = args.arm_limit_json
 
-    if skill in ("approach_and_grasp", "combined_s2_s3"):
+    if skill in ("approach_and_grasp", "combined_s2_s3", "carry"):
         env = Skill2Env(cfg=cfg)
     else:
         env = Skill3Env(cfg=cfg)
@@ -289,6 +295,8 @@ def load_frozen_dp(path, device):
 def main():
     if args.skill == "combined_s2_s3":
         return main_combined()
+    if args.skill == "carry":
+        return main_carry()
 
     seed = args.seed or random.randint(0, 2**32 - 1)
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
@@ -974,6 +982,8 @@ def main_combined():
     prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
     prev_src_h = torch.zeros(N, device=dev)                       # R_lower delta 계산용
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
+    carry_arm_start_buf = torch.zeros(N, 5, device=dev)  # Phase A arm override test용
+    carry_grip_start_buf = torch.zeros(N, device=dev)
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check
     S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
@@ -1082,6 +1092,32 @@ def main_combined():
             is_s2 = (phase == 0)
             is_s3 = (phase == 1)
             action = torch.where(is_s2.unsqueeze(-1), s2_action, s3_action)
+
+            # ★ TEST: Phase A arm override — carry 이동 중 arm을 보간으로 강제
+            # 이 블록을 제거하면 BC arm으로 복귀. drop 비교용.
+            if getattr(args, '_test_phase_a_arm_override', False) and is_s3.any():
+                _dst_pos = env.env.dest_object_pos_w
+                _base_pos = env.env.robot.data.root_pos_w
+                _bdist = torch.norm(_base_pos[:, :2] - _dst_pos[:, :2], dim=-1)
+                _in_phase_a = is_s3 & (_bdist > S3_PHASE_B_DIST)
+                if _in_phase_a.any():
+                    # S3 시작 arm pose → S3_ARM_END 보간
+                    _t = (s3_step_counter.float() / 600.0).clamp(0, 1).unsqueeze(-1)
+                    _S3_END = torch.tensor([+0.002, -0.193, +0.295, -1.306, +0.006], device=dev)
+                    _arm_t = carry_arm_start_buf * (1 - _t) + _S3_END.unsqueeze(0) * _t
+                    _grip_t = carry_grip_start_buf * (1 - _t.squeeze(-1)) + 0.15 * _t.squeeze(-1)
+                    _arm6 = torch.cat([_arm_t, _grip_t.unsqueeze(-1)], dim=-1)
+                    # Normalize
+                    _lim = getattr(env.env, "_arm_action_limits_override", None)
+                    if _lim is None:
+                        _lim = env.env.robot.data.soft_joint_pos_limits[:, env.env.arm_idx]
+                    _lo, _hi = _lim[..., 0], _lim[..., 1]
+                    _ctr = 0.5 * (_lo + _hi); _hlf = 0.5 * (_hi - _lo)
+                    _fin = torch.isfinite(_ctr) & torch.isfinite(_hlf) & (_hlf.abs() > 1e-6)
+                    _hlf = torch.where(_fin, _hlf, torch.ones_like(_hlf))
+                    _ctr = torch.where(_fin, _ctr, torch.zeros_like(_ctr))
+                    _arm_norm = ((_arm6 - _ctr) / _hlf).clamp(-1, 1)
+                    action[_in_phase_a, :6] = _arm_norm[_in_phase_a]
 
             # Store S3 transitions
             obs_b[step] = s3_ro
@@ -1196,6 +1232,9 @@ def main_combined():
                 s3_no_contact_counter[t_ids] = 0
                 s3_step_counter[t_ids] = 0
                 s3_wedged_counter[t_ids] = 0
+                # Phase A arm override test: S2→S3 전환 시 arm pose 캡처
+                carry_arm_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx[:5]]
+                carry_grip_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
                 # Initialize prev distance for delta reward
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
@@ -1502,6 +1541,531 @@ def main_combined():
         "s3_bc_checkpoint": args.s3_bc_checkpoint,
         "iteration": gi, "global_step": gs, "args": vars(args),
     }, save_dir / "resip_final.pt")
+    env.env.close(); simulation_app.close()
+
+
+def main_carry():
+    """Carry-phase ResiP: S2 expert (frozen) lifts → direction-conditioned BC+Residual for base carry."""
+    seed = args.seed or random.randint(0, 2**32 - 1)
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    print(f"Seed: {seed}")
+
+    env = make_env("carry", args.num_envs, args)
+    dev = env.device
+    N = env.num_envs
+
+    from lekiwi_skill2_eval import EE_LOCAL_OFFSET
+    from isaaclab.utils.math import quat_apply, quat_apply_inverse
+    jaw_idx, _ = env.env.robot.find_bodies(["Wrist_Roll_08c_v1"])
+    jaw_idx = jaw_idx[0]
+    ee_off = torch.tensor(EE_LOCAL_OFFSET, device=dev).unsqueeze(0)
+
+    # ── Load S2 expert (frozen DP + ResiP) ──
+    s2_dp, s2_dpc = load_frozen_dp(args.bc_checkpoint, dev)
+    S2_OD, S2_AD = s2_dpc["obs_dim"], s2_dpc["act_dim"]
+    s2_rpol = None
+    if args.s2_resip_checkpoint and os.path.isfile(args.s2_resip_checkpoint):
+        s2_ck = torch.load(args.s2_resip_checkpoint, map_location=dev, weights_only=False)
+        s2_rpol = ResidualPolicy(
+            obs_dim=S2_OD, action_dim=S2_AD,
+            actor_hidden_size=args.actor_hidden_size,
+            actor_num_layers=args.actor_num_layers,
+            init_logstd=args.init_logstd, action_head_std=args.action_head_std,
+            action_scale=0.1, learn_std=True,
+        ).to(dev)
+        s2_rpol.load_state_dict(s2_ck["residual_policy_state_dict"])
+        s2_rpol.eval()
+        for p in s2_rpol.parameters():
+            p.requires_grad = False
+        print(f"  [S2] ResiP loaded: {args.s2_resip_checkpoint}")
+    s2_scale = torch.zeros(S2_AD, device=dev)
+    s2_scale[0:5] = 0.20; s2_scale[5] = 0.25; s2_scale[6:9] = 0.35
+
+    # ── Load carry BC (frozen, 33D obs) ──
+    s3_dp, s3_dpc = load_frozen_dp(args.s3_bc_checkpoint, dev)
+    S3_OD = s3_dpc["obs_dim"]  # expected 33
+    S3_AD = s3_dpc["act_dim"]  # 9
+    print(f"  [Carry] BC loaded: {args.s3_bc_checkpoint} (obs={S3_OD}D, act={S3_AD}D)")
+
+    # ── Carry residual policy (trainable): obs=33D → internal 33+9=42D input ──
+    rpol = ResidualPolicy(
+        obs_dim=S3_OD, action_dim=S3_AD,
+        actor_hidden_size=args.actor_hidden_size,
+        actor_num_layers=args.actor_num_layers,
+        critic_hidden_size=args.critic_hidden_size,
+        critic_num_layers=args.critic_num_layers,
+        init_logstd=args.init_logstd, action_head_std=args.action_head_std,
+        action_scale=0.1, learn_std=True,
+        critic_last_layer_bias_const=0.25, critic_last_layer_std=0.25,
+    ).to(dev)
+    print(f"  [Carry] Residual params: {sum(p.numel() for p in rpol.parameters()):,}")
+
+    # Scale: arm=0, grip=0, base=action_scale_base (residual only controls base)
+    carry_scale = torch.zeros(S3_AD, device=dev)
+    carry_scale[0:5] = 0.0
+    carry_scale[5] = 0.0
+    carry_scale[6:9] = args.action_scale_base
+
+    opt_a = optim.AdamW([p for n, p in rpol.named_parameters() if "critic" not in n],
+                        lr=args.lr_actor, betas=(0.9, 0.999), eps=1e-5, weight_decay=1e-6)
+    opt_c = optim.AdamW([p for n, p in rpol.named_parameters() if "critic" in n],
+                        lr=args.lr_critic, eps=1e-5, weight_decay=1e-6)
+
+    # Resume
+    gs, gi = 0, 0
+    if args.resume_resip:
+        ck = torch.load(args.resume_resip, map_location=dev, weights_only=False)
+        if args.resume_actor_only:
+            actor_sd = {k: v for k, v in ck["residual_policy_state_dict"].items() if "critic" not in k}
+            rpol.load_state_dict(actor_sd, strict=False)
+            gs = ck.get("global_step", 0); gi = ck.get("iteration", 0)
+            print(f"  [Carry] Resumed ACTOR ONLY (iter={gi}, step={gs})")
+        else:
+            rpol.load_state_dict(ck["residual_policy_state_dict"])
+            if "optimizer_actor_state_dict" in ck: opt_a.load_state_dict(ck["optimizer_actor_state_dict"])
+            if "optimizer_critic_state_dict" in ck: opt_c.load_state_dict(ck["optimizer_critic_state_dict"])
+            gs = ck.get("global_step", 0); gi = ck.get("iteration", 0)
+            print(f"  [Carry] Resumed: iter={gi}, step={gs}")
+
+    S = args.num_env_steps
+    B = S * N
+    MB = B // args.num_minibatches
+    NI = args.total_timesteps // B
+    rew_norm = RunningMeanStdClip(shape=(1,), clip_value=args.clip_reward, device=dev) \
+               if args.normalize_reward else None
+
+    sch_a = optim.lr_scheduler.CosineAnnealingLR(opt_a, T_max=NI, eta_min=args.lr_actor * 0.01)
+    sch_c = optim.lr_scheduler.CosineAnnealingLR(opt_c, T_max=NI, eta_min=args.lr_critic * 0.01)
+
+    # Rollout buffers (carry phase only)
+    RD = S3_OD + S3_AD  # 33 + 9 = 42 (normalized obs + base action)
+    obs_b  = torch.zeros((S, N, RD), device=dev)
+    act_b  = torch.zeros((S, N, S3_AD), device=dev)
+    lp_b   = torch.zeros((S, N), device=dev)
+    rew_b  = torch.zeros((S, N), device=dev)
+    done_b = torch.zeros((S, N), device=dev)
+    val_b  = torch.zeros((S, N), device=dev)
+
+    # Per-env phase: 0=S2 (expert), 1=carry (trainable)
+    phase = torch.zeros(N, dtype=torch.long, device=dev)
+    s2_lift_counter = torch.zeros(N, dtype=torch.long, device=dev)
+    ep_step_counter = torch.zeros(N, dtype=torch.long, device=dev)
+    S2_LIFT_HOLD = args.s2_lift_hold_steps
+    S2_MAX_STEPS = 2000
+    S2_NOLIFT_STEP = 700
+
+    # 6 direction commands (body frame): fwd/bwd/left/right/turn_L/turn_R
+    DIR_CMDS = torch.tensor([
+        [0, 1, 0], [0, -1, 0], [-1, 0, 0], [1, 0, 0], [0, 0, 1], [0, 0, -1],
+    ], dtype=torch.float32, device=dev)
+    direction_cmd = DIR_CMDS[torch.randint(6, (N,), device=dev)]
+
+    # Arm interpolation: captured arm pose → S3_ARM_END over CARRY_INTERP_STEPS
+    S3_ARM_END = torch.tensor([+0.002, -0.193, +0.295, -1.306, +0.006], device=dev)
+    S3_GRIP_END = 0.15
+    CARRY_INTERP_STEPS = 600
+    carry_arm_start = torch.zeros(N, 5, device=dev)  # captured at S2→carry transition
+    carry_grip_start = torch.zeros(N, device=dev)
+    carry_step_counter = torch.zeros(N, dtype=torch.long, device=dev)
+
+    prev_action = torch.zeros(N, S3_AD, device=dev)  # for smoothness reward
+
+    save_dir = Path(args.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
+    bsr, bsl, bgr = 0.0, 0, 0
+    tt = 0; t0 = time.time()
+    s2_success_total = 0; carry_drop_total = 0; total_episodes = 0
+    # Per-iter reward accumulators
+    iter_rew_lin = 0.0; iter_rew_ang = 0.0; iter_rew_hold = 0.0
+    iter_rew_total = 0.0; iter_carry_steps = 0
+    iter_lin_err = 0.0; iter_ang_err = 0.0
+    # PPO loss accumulators
+    iter_pg_loss = 0.0; iter_vf_loss = 0.0; iter_entropy = 0.0; iter_kl = 0.0
+    iter_ppo_updates = 0
+    # Per-direction tracking (6 directions)
+    DIR_LABELS = ["FWD", "BWD", "LEFT", "RIGHT", "TL", "TR"]
+    dir_ang_err = torch.zeros(6, device=dev)
+    dir_lin_err = torch.zeros(6, device=dev)
+    dir_steps = torch.zeros(6, device=dev)
+
+    next_obs = env.reset(); s2_dp.reset(); s3_dp.reset()
+    next_done = torch.zeros(N, device=dev)
+    phase.zero_(); s2_lift_counter.zero_()
+    env_origins = env.env.scene.env_origins
+
+    print(f"\n{'='*60}")
+    print(f"  ResiP Carry (direction-conditioned)")
+    print(f"  N={N} S={S} B={B} iters={NI}")
+    print(f"  S2 expert: {args.s2_resip_checkpoint or 'BC only'}")
+    print(f"  Carry BC: {args.s3_bc_checkpoint} ({S3_OD}D obs)")
+    print(f"  S2 lift hold: {S2_LIFT_HOLD} steps")
+    print(f"  Carry residual scale: {carry_scale.tolist()}")
+    print(f"{'='*60}\n")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    while gs < args.total_timesteps:
+        gi += 1; it0 = time.time()
+        ev = (gi - int(args.eval_first)) % args.eval_interval == 0
+
+        if gi == 1:
+            next_obs = env.reset(); s2_dp.reset(); s3_dp.reset()
+            next_done = torch.zeros(N, device=dev)
+            phase.zero_(); s2_lift_counter.zero_(); ep_step_counter.zero_()
+            direction_cmd = DIR_CMDS[torch.randint(6, (N,), device=dev)]
+
+        print(f"\nIter {gi}/{NI} | {'EVAL' if ev else 'TRAIN'} | step={gs} | "
+              f"S2:{(phase==0).sum().item()} Carry:{(phase==1).sum().item()}")
+
+        carry_step_count = torch.zeros(N, dtype=torch.long, device=dev)
+        for step in range(S):
+            if not ev: gs += N
+
+            actor_obs = next_obs  # (N, 30D) from Skill2Env
+
+            with torch.no_grad():
+                # ── S2 expert action ──
+                s2_ba = s2_dp.base_action_normalized(actor_obs)
+                if s2_rpol is not None:
+                    s2_no = torch.nan_to_num(torch.clamp(
+                        s2_dp.normalizer(actor_obs, "obs", forward=True), -3, 3), nan=0.0)
+                    s2_ro = torch.cat([s2_no, s2_ba], dim=-1)
+                    s2_ra, _, _, _, s2_ram = s2_rpol.get_action_and_value(s2_ro)
+                    s2_ra = s2_ram  # deterministic
+                    s2_action = s2_dp.normalizer(s2_ba + torch.clamp(s2_ra, -1, 1) * s2_scale, "action", forward=False)
+                else:
+                    s2_action = s2_dp.normalizer(s2_ba, "action", forward=False)
+
+                # ── Carry obs: env 30D + direction_cmd 3D → 33D ──
+                carry_obs = torch.cat([actor_obs, direction_cmd], dim=-1)  # (N, 33)
+                carry_ba = s3_dp.base_action_normalized(carry_obs)
+                carry_no = torch.nan_to_num(torch.clamp(
+                    s3_dp.normalizer(carry_obs, "obs", forward=True), -3, 3), nan=0.0)
+                carry_ba = torch.nan_to_num(carry_ba, nan=0.0)
+                carry_ro = torch.cat([carry_no, carry_ba], dim=-1)  # (N, 42)
+
+            # Carry residual (trainable)
+            with torch.no_grad():
+                carry_ra_s, _, _, carry_val, carry_ra_m = rpol.get_action_and_value(carry_ro)
+            carry_ra = carry_ra_m if ev else carry_ra_s
+            carry_ra = torch.clamp(carry_ra, -1.0, 1.0)
+            CARRY_BC_WARMUP_ITERS = 5
+            residual_alpha = min(1.0, gi / CARRY_BC_WARMUP_ITERS)
+            carry_ra = carry_ra * residual_alpha
+            with torch.no_grad():
+                _, carry_lp, _, _, _ = rpol.get_action_and_value(carry_ro, carry_ra)
+            combined = carry_ba + carry_ra * carry_scale
+            carry_action_raw = s3_dp.normalizer(combined, "action", forward=False)
+
+            # ── Arm interpolation: override action[0:6] for carry envs ──
+            is_carry = (phase == 1)
+            if is_carry.any():
+                t_interp = (carry_step_counter[is_carry].float() / CARRY_INTERP_STEPS).clamp(max=1.0)
+                arm_target = carry_arm_start[is_carry] * (1 - t_interp.unsqueeze(-1)) + S3_ARM_END * t_interp.unsqueeze(-1)
+                grip_target = carry_grip_start[is_carry] * (1 - t_interp) + S3_GRIP_END * t_interp
+                # Convert joint targets to action space: action = (target - center) / half_range
+                override = getattr(env.env, "_arm_action_limits_override", None)
+                if override is not None:
+                    lim = override
+                else:
+                    lim = env.env.robot.data.soft_joint_pos_limits[:, env.env.arm_idx]
+                lo, hi = lim[..., 0], lim[..., 1]
+                center = 0.5 * (lo + hi)
+                half = 0.5 * (hi - lo)
+                finite = torch.isfinite(center) & torch.isfinite(half) & (half.abs() > 1e-6)
+                half = torch.where(finite, half, torch.ones_like(half))
+                center = torch.where(finite, center, torch.zeros_like(center))
+                # arm_idx covers 6 joints (arm[0:5] + gripper[5])
+                arm6_target = torch.cat([arm_target, grip_target.unsqueeze(-1)], dim=-1)  # (M, 6)
+                # Use first env's limits (shared across envs)
+                arm_action_norm = ((arm6_target - center[0]) / half[0]).clamp(-1, 1)
+                carry_action_raw[is_carry, 0:5] = arm_action_norm[:, :5]
+                carry_action_raw[is_carry, 5] = arm_action_norm[:, 5]
+
+            # Merge action by phase
+            is_s2 = (phase == 0)
+            action = torch.where(is_s2.unsqueeze(-1), s2_action, carry_action_raw)
+
+            # Store carry transitions
+            obs_b[step] = carry_ro
+            act_b[step] = carry_ra
+            lp_b[step] = carry_lp.view(-1)
+            val_b[step] = carry_val.view(-1)
+            done_b[step] = next_done
+            done_b[step][is_s2] = 1.0  # S2 steps don't contribute to GAE
+
+            # Step env
+            next_obs, _, ter, tru, info = env.step(action)
+            next_obs = torch.nan_to_num(next_obs, nan=0.0)
+            done = ter | tru
+            ep_step_counter += 1
+            carry_step_counter[is_carry] += 1
+
+            # ── S2 phase: lift detection + early termination ──
+            oh = info.get("object_height_mask",
+                (env.env.object_pos_w[:, 2] - env_origins[:, 2])).view(-1)
+            eg = info.get("object_grasped_mask", env.env.object_grasped).view(-1)
+
+            s2_topple = is_s2 & (oh < 0.026)
+            s2_nolift = is_s2 & (ep_step_counter == S2_NOLIFT_STEP) & (oh < 0.04)
+            s2_timeout = is_s2 & (ep_step_counter >= S2_MAX_STEPS)
+            s2_fail = s2_topple | s2_nolift | s2_timeout
+            if s2_fail.any():
+                fail_ids = s2_fail.nonzero(as_tuple=False).squeeze(-1)
+                env.env._reset_idx(fail_ids)
+                next_obs_new = env.env._get_observations()
+                policy_obs = next_obs_new["policy"]
+                next_obs[fail_ids] = policy_obs[fail_ids]
+                phase[fail_ids] = 0
+                s2_lift_counter[fail_ids] = 0
+                ep_step_counter[fail_ids] = 0
+                direction_cmd[fail_ids] = DIR_CMDS[torch.randint(6, (len(fail_ids),), device=dev)]
+                done[fail_ids.unsqueeze(-1) if fail_ids.dim() == 1 else fail_ids] = True
+
+            # S2 lift detection
+            lifted = is_s2 & eg & (oh > 0.05) & (~s2_fail)
+            s2_lift_counter[lifted] += 1
+            s2_lift_counter[is_s2 & ~lifted & ~s2_fail] = 0
+
+            # Transition S2→Carry
+            transition = is_s2 & (s2_lift_counter >= S2_LIFT_HOLD) & (~s2_fail)
+            if transition.any():
+                t_ids = transition.nonzero(as_tuple=False).squeeze(-1)
+                # Capture arm pose at transition
+                carry_arm_start[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx][:, :5]
+                carry_grip_start[t_ids] = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
+                phase[t_ids] = 1
+                ep_step_counter[t_ids] = 0
+                carry_step_counter[t_ids] = 0
+                # Sample fresh direction cmd for carry phase
+                direction_cmd[t_ids] = DIR_CMDS[torch.randint(6, (len(t_ids),), device=dev)]
+                s2_success_total += t_ids.shape[0]
+                s3_dp.reset()
+                print(f"    [S2→Carry] {t_ids.shape[0]} envs at step {step}")
+
+            # ── Carry reward (direction tracking — navigate와 동일 구조) ──
+            rew = torch.zeros(N, device=dev)
+            carry_drop = torch.zeros(N, dtype=torch.bool, device=dev)
+            if is_carry.any():
+                cm = is_carry
+                body_vel = env.env.robot.data.root_lin_vel_b   # (N, 3)
+                body_wz = env.env.robot.data.root_ang_vel_b[:, 2]  # (N,)
+
+                # 회전 목표: navigate와 동일 (0.33 × max_ang_vel)
+                target_vx = direction_cmd[:, 0] * 0.15
+                target_vy = direction_cmd[:, 1] * 0.15
+                target_wz = direction_cmd[:, 2] * 0.33 * env.env.cfg.max_ang_vel  # 0.33 × 3.0 = 1.0 rad/s
+
+                lin_err = (body_vel[:, 0] - target_vx)**2 + (body_vel[:, 1] - target_vy)**2
+                ang_err = (body_wz - target_wz)**2
+
+                # 커널 분모 σ² (navigate와 동일, 2σ² 아님)
+                CARRY_LIN_STD = 0.075
+                CARRY_ANG_STD = 0.10
+                rew_lin = 1.5 * torch.exp(-lin_err / (CARRY_LIN_STD ** 2))
+                rew_ang = 1.5 * torch.exp(-ang_err / (CARRY_ANG_STD ** 2))
+
+                # Smoothness (navigate와 동일)
+                delta_base = combined[:, 6:9] - prev_action[:, 6:9]
+                rew_smooth = -0.005 * (delta_base ** 2).sum(dim=-1)
+
+                # Hold bonus (carry 전용)
+                objZ = env.env.object_pos_w[:, 2] - env_origins[:, 2]
+                rew_hold = 0.05 * (objZ > 0.05).float()
+
+                # Time penalty
+                rew_time = -0.01
+
+                # Drop detection
+                dropped = objZ < 0.03
+                rew_drop = -5.0 * dropped.float()
+
+                rew[cm] = (rew_lin + rew_ang + rew_smooth + rew_hold + rew_time + rew_drop)[cm]
+
+                # Accumulate for logging
+                n_carry = cm.sum().item()
+                if n_carry > 0:
+                    iter_rew_lin += rew_lin[cm].sum().item()
+                    iter_rew_ang += rew_ang[cm].sum().item()
+                    iter_rew_hold += rew_hold[cm].sum().item()
+                    iter_rew_total += rew[cm].sum().item()
+                    iter_carry_steps += n_carry
+                    iter_lin_err += lin_err[cm].sum().item()
+                    iter_ang_err += ang_err[cm].sum().item()
+                    # Per-direction tracking
+                    for di in range(6):
+                        d_mask = cm & (direction_cmd == DIR_CMDS[di]).all(dim=-1)
+                        if d_mask.any():
+                            dir_ang_err[di] += ang_err[d_mask].sum().item()
+                            dir_lin_err[di] += lin_err[d_mask].sum().item()
+                            dir_steps[di] += d_mask.sum().item()
+
+                carry_drop = cm & dropped
+                if carry_drop.any():
+                    carry_drop_total += carry_drop.sum().item()
+
+            rew_b[step] = rew
+            prev_action = combined.detach().clone()
+
+            # ── Carry fail (drop) → force reset to S2 ──
+            carry_timeout = is_carry & (ep_step_counter >= 3000)
+            carry_fail = carry_drop | carry_timeout
+            if carry_fail.any():
+                fail_ids = carry_fail.nonzero(as_tuple=False).squeeze(-1)
+                env.env._reset_idx(fail_ids)
+                next_obs_new = env.env._get_observations()
+                policy_obs = next_obs_new["policy"]
+                next_obs[fail_ids] = policy_obs[fail_ids]
+                phase[fail_ids] = 0
+                s2_lift_counter[fail_ids] = 0
+                ep_step_counter[fail_ids] = 0
+                carry_step_counter[fail_ids] = 0
+                direction_cmd[fail_ids] = DIR_CMDS[torch.randint(6, (len(fail_ids),), device=dev)]
+
+            # Handle env auto-resets
+            next_done = (ter | tru).view(-1).float()
+            next_done[s2_fail] = 1.0
+            next_done[carry_fail] = 1.0
+            reset_mask = (done.view(-1) | s2_fail | carry_fail)
+            if reset_mask.any():
+                phase[reset_mask] = 0
+                s2_lift_counter[reset_mask] = 0
+                ep_step_counter[reset_mask] = 0
+                carry_step_counter[reset_mask] = 0
+                direction_cmd[reset_mask] = DIR_CMDS[torch.randint(6, (reset_mask.sum().item(),), device=dev)]
+                total_episodes += reset_mask.sum().item()
+
+            carry_step_count[is_carry] += 1
+
+        # ── PPO Update (carry transitions only) ──
+        if not ev:
+            with torch.no_grad():
+                carry_obs_f = torch.cat([next_obs, direction_cmd], dim=-1)
+                carry_no_f = torch.nan_to_num(torch.clamp(
+                    s3_dp.normalizer(carry_obs_f, "obs", forward=True), -3, 3), nan=0.0)
+                carry_ba_f = torch.nan_to_num(s3_dp.base_action_normalized(carry_obs_f), nan=0.0)
+                carry_ro_f = torch.cat([carry_no_f, carry_ba_f], dim=-1)
+                nv = rpol.get_value(carry_ro_f).view(-1)
+
+            bret, badv = compute_gae(val_b, nv, rew_b, done_b,
+                                     next_done, S, args.discount, args.gae_lambda)
+            badv = (badv - badv.mean()) / (badv.std() + 1e-8)
+            bobs = obs_b.view(-1, RD)
+            bact = act_b.view(-1, S3_AD)
+            blp  = lp_b.view(-1)
+            bret = bret.view(-1)
+            badv = badv.view(-1)
+            bv   = val_b.view(-1)
+
+            idx = torch.randperm(B, device=dev)
+            for ep in range(args.update_epochs):
+                stop = False
+                for st in range(0, B, MB):
+                    mb = idx[st:st+MB]
+                    _, nlp, ent, nv2, _ = rpol.get_action_and_value(bobs[mb], bact[mb])
+                    ratio = (nlp.view(-1) - blp[mb]).exp()
+                    pg1 = -badv[mb] * ratio
+                    pg2 = -badv[mb] * ratio.clamp(1-0.2, 1+0.2)
+                    pg = torch.max(pg1, pg2).mean()
+                    vl = 0.5 * ((nv2.view(-1) - bret[mb])**2).mean()
+                    loss = pg + vl * 0.5 - ent.mean() * args.ent_coef
+                    opt_a.zero_grad(); opt_c.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(rpol.parameters(), 0.5)
+                    opt_a.step(); opt_c.step()
+                    with torch.no_grad():
+                        log_ratio = nlp.view(-1) - blp[mb]
+                        kl = ((log_ratio.exp() - 1) - log_ratio).mean()
+                    iter_pg_loss += pg.item()
+                    iter_vf_loss += vl.item()
+                    iter_entropy += ent.mean().item()
+                    iter_kl += kl.item()
+                    iter_ppo_updates += 1
+                    if args.target_kl and kl > args.target_kl:
+                        stop = True; break
+                if stop: break
+            sch_a.step(); sch_c.step()
+
+        # ── Comprehensive Logging ──
+        carry_envs = (phase == 1).sum().item()
+        carry_steps_now = carry_step_count.sum().item()
+        carry_mask = (phase == 1)
+
+        # Velocity tracking (현재 snapshot)
+        body_vel_snap = env.env.robot.data.root_lin_vel_b  # (N, 3)
+        body_wz_snap = env.env.robot.data.root_ang_vel_b[:, 2]
+        if carry_mask.any():
+            c_vx = body_vel_snap[carry_mask, 0].mean().item()
+            c_vy = body_vel_snap[carry_mask, 1].mean().item()
+            c_wz = body_wz_snap[carry_mask].mean().item()
+            c_oh = (env.env.object_pos_w[carry_mask, 2] - env_origins[carry_mask, 2])
+            c_held = (c_oh > 0.04).sum().item()
+            c_grip = env.env.robot.data.joint_pos[carry_mask, env.env.gripper_idx].mean().item()
+        else:
+            c_vx = c_vy = c_wz = c_grip = 0.0
+            c_held = 0
+
+        # Per-iter averages
+        n_cs = max(iter_carry_steps, 1)
+        avg_rl = iter_rew_lin / n_cs
+        avg_ra = iter_rew_ang / n_cs
+        avg_rh = iter_rew_hold / n_cs
+        avg_rt = iter_rew_total / n_cs
+        avg_le = (iter_lin_err / n_cs) ** 0.5  # RMSE
+        avg_ae = (iter_ang_err / n_cs) ** 0.5
+
+        # PPO averages
+        n_ppo = max(iter_ppo_updates, 1)
+        avg_pg = iter_pg_loss / n_ppo
+        avg_vf = iter_vf_loss / n_ppo
+        avg_ent = iter_entropy / n_ppo
+        avg_kl_val = iter_kl / n_ppo
+
+        alpha = min(1.0, gi / 5.0)
+
+        print(f"\n{'='*80}")
+        print(f"  [CARRY ITER {gi}] alpha={alpha:.2f} lr={sch_a.get_last_lr()[0]:.2e}")
+        print(f"  Reward: total={avg_rt:.3f} | lin={avg_rl:.3f} ang={avg_ra:.3f} hold={avg_rh:.3f}")
+        print(f"  Tracking: lin_rmse={avg_le:.3f} ang_rmse={avg_ae:.3f}")
+        print(f"  Velocity: vx={c_vx:+.3f} vy={c_vy:+.3f} wz={c_wz:+.3f} grip={c_grip:.3f}")
+        print(f"  PPO: pg_loss={avg_pg:.4f} vf_loss={avg_vf:.4f} entropy={avg_ent:.4f} kl={avg_kl_val:.4f}")
+        print(f"  S2→Carry: {s2_success_total} total | Carry envs: {carry_envs} (held={c_held}) | drop={carry_drop_total}")
+        print(f"  Carry steps: {iter_carry_steps} | Episodes: {total_episodes}")
+        # Per-direction breakdown
+        dir_parts = []
+        for di in range(6):
+            ds = max(dir_steps[di].item(), 1)
+            da = (dir_ang_err[di].item() / ds) ** 0.5
+            dl = (dir_lin_err[di].item() / ds) ** 0.5
+            dir_parts.append(f"{DIR_LABELS[di]}:a={da:.3f},l={dl:.3f}")
+        print(f"  PerDir: {' | '.join(dir_parts)}")
+        print(f"  Time: {time.time()-it0:.1f}s iter, {time.time()-t0:.0f}s total")
+        print(f"{'='*80}")
+
+        # Reset per-iter accumulators
+        iter_rew_lin = 0.0; iter_rew_ang = 0.0; iter_rew_hold = 0.0
+        iter_rew_total = 0.0; iter_carry_steps = 0
+        iter_lin_err = 0.0; iter_ang_err = 0.0
+        iter_pg_loss = 0.0; iter_vf_loss = 0.0; iter_entropy = 0.0
+        iter_kl = 0.0; iter_ppo_updates = 0
+        dir_ang_err.zero_(); dir_lin_err.zero_(); dir_steps.zero_()
+
+        # Save
+        if gi % 10 == 0:
+            torch.save({
+                "residual_policy_state_dict": rpol.state_dict(),
+                "optimizer_actor_state_dict": opt_a.state_dict(),
+                "optimizer_critic_state_dict": opt_c.state_dict(),
+                "s2_resip_checkpoint": args.s2_resip_checkpoint,
+                "s3_bc_checkpoint": args.s3_bc_checkpoint,
+                "iteration": gi, "global_step": gs, "args": vars(args),
+            }, save_dir / f"resip_carry_iter{gi}.pt")
+
+    print(f"\nDone in {time.time()-t0:.0f}s")
+    torch.save({
+        "residual_policy_state_dict": rpol.state_dict(),
+        "s2_resip_checkpoint": args.s2_resip_checkpoint,
+        "s3_bc_checkpoint": args.s3_bc_checkpoint,
+        "iteration": gi, "global_step": gs, "args": vars(args),
+    }, save_dir / "resip_carry_final.pt")
     env.env.close(); simulation_app.close()
 
 
