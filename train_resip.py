@@ -1203,6 +1203,7 @@ def main_combined():
                     env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 prev_src_h[t_ids] = (env.env.object_pos_w[t_ids, 2] - env.env.scene.env_origins[t_ids, 2])
                 s2_success_total += t_ids.shape[0]
+                s3_dp.reset()  # S3 BC deque 클리어 (S2 obs 기반 stale action 제거)
                 # DEBUG: S2→S3 전환 시점 gripper 상태
                 _grip = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
                 _arm = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx]
