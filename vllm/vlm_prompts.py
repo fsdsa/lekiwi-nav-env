@@ -124,8 +124,8 @@ Look at the camera image and output ONE of the following commands:
 
 - "navigate forward" — path ahead is clear, go straight
 - "navigate backward" — need to back up (only if stuck or dead end)
-- "navigate left" — strafe left
-- "navigate right" — strafe right
+- "navigate strafe left" — strafe left
+- "navigate strafe right" — strafe right
 - "navigate turn left" — rotate left to explore or avoid obstacle
 - "navigate turn right" — rotate right to explore or avoid obstacle
 - "TARGET_FOUND" — the {target_object} is visible AND close enough to reach (the object occupies a large portion of the frame, roughly within 1 meter). Do NOT output this if the target is far away or small in the image.
@@ -161,8 +161,8 @@ Look at the camera image and output ONE of the following commands:
 
 - "carry forward" — path ahead is clear, go straight
 - "carry backward" — need to back up (only if stuck or dead end)
-- "carry left" — strafe left
-- "carry right" — strafe right
+- "carry strafe left" — strafe left
+- "carry strafe right" — strafe right
 - "carry turn left" — rotate left to explore or avoid obstacle
 - "carry turn right" — rotate right to explore or avoid obstacle
 - "TARGET_FOUND" — the {dest_object} is visible AND close enough to reach (the object occupies a large portion of the frame, roughly within 1 meter). Do NOT output this if the target is far away or small in the image.

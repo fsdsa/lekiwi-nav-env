@@ -251,14 +251,14 @@ LIFTED_POSE_RANGE = {
 
 NAVIGATE_COMMANDS = {
     "navigate forward", "navigate backward",
-    "navigate left", "navigate right",
+    "navigate strafe left", "navigate strafe right",
     "navigate turn left", "navigate turn right",
     "TARGET_FOUND",
 }
 
 CARRY_COMMANDS = {
     "carry forward", "carry backward",
-    "carry left", "carry right",
+    "carry strafe left", "carry strafe right",
     "carry turn left", "carry turn right",
     "TARGET_FOUND",
 }
