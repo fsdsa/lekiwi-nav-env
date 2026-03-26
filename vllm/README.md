@@ -40,18 +40,23 @@ S4: approach & place  — 정밀 접근 + 배치 + rest pose 복귀 (arm + gripp
    ├─ 매 step: robot_status 텍스트 생성 (joint position, gripper, contact, depth)
    │
    ├─ VLM (비동기 ~191ms):
-   │    base_cam RGB + robot_status → 스킬별 프롬프트 → instruction
-   │    S1: "move forward" / "turn left" / "TARGET_FOUND"
-   │    S2: "move toward the medicine bottle" / "LIFTED_COMPLETE" / "OBSTACLE"
-   │    S3: "carry medicine bottle and move forward" / "TARGET_FOUND"
-   │    S4: "place the medicine bottle next to the red cup" / "PLACE_COMPLETE"
+   │    S1/S3: 50스텝마다 호출, 고정 커맨드 7개 중 택 1
+   │      "navigate forward" / "navigate turn left" / ... / "TARGET_FOUND"
+   │      "carry forward" / "carry turn right" / ... / "TARGET_FOUND"
+   │    S2/S4: depth warning 시에만 호출 → "CONTINUE" / "OBSTACLE"
+   │
+   ├─ 코드 기반 전환 (S2/S4):
+   │    S2→S3: check_lifted_pose() (joint + contact)
+   │    S4→DONE: gripper open + no contact
    │
    ├─ VLA (동기):
    │    base_cam RGB + wrist_cam RGB + 9D state + instruction → 9D action
+   │    S2: 고정 "approach and lift the medicine bottle"
+   │    S4: 고정 "place the medicine bottle next to the red cup"
    │
    ├─ Safety layer (스킬별):
    │    S1/S3: depth < 0.3m → base vx,vy 정지 (wz 유지)
-   │    S2/S4: 비활성화 (depth_warning을 VLM 텍스트로 전달)
+   │    S2/S4: 비활성화 (depth warning → VLM 장애물 판별)
    │
    ├─ 스킬 전환 감지 → VLA action buffer 리셋
    │
@@ -62,16 +67,24 @@ S4: approach & place  — 정밀 접근 + 배치 + rest pose 복귀 (arm + gripp
 
 | 전환 | 조건 | 판단 주체 |
 |------|------|-----------|
-| S1 → S2 | VLM이 source object 발견 → "TARGET_FOUND" | VLM |
-| S2 → S3 | lifted pose + contact → VLM에 "LIFTED" → "LIFTED_COMPLETE" | VLM |
-| S3 → S4 | VLM이 dest object 발견 → "TARGET_FOUND" | VLM |
-| S4 → DONE | VLM이 배치 완료 → "PLACE_COMPLETE" | VLM |
+| S1 → S2 | VLM이 "TARGET_FOUND" (target 충분히 가까움, ~0.6-0.9m) | VLM |
+| S2 → S3 | lifted pose + contact | **코드** (check_lifted_pose) |
+| S3 → S4 | VLM��� "TARGET_FOUND" (target 충분히 가까움) | VLM |
+| S4 → DONE | gripper open + no contact | **코드** (check_place_complete) |
 
 ### 장애물 회피
 
-S2/S4에서 depth_warning이 VLM에 전달되고, VLM이 "OBSTACLE" 출력 시:
-- S2 → S1(navigate)로 전환 → TARGET_FOUND → S2 복귀
-- S4 → S3(carry)로 전환 → TARGET_FOUND → S4 복귀
+S2/S4에서 depth < 0.3m 감지 → VLM 호출 → "OBSTACLE" / "CONTINUE":
+- S2 + OBSTACLE + contact 없음 → S1(navigate)로 복귀
+- S2 + OBSTACLE + contact 있음 → S3(carry)로 ��귀 (물체 들고 회피)
+- S4 + OBSTACLE → S3(carry)로 복귀 (항상 물체 들고 있음)
+
+### VLM 호출 빈도
+
+| 스킬 | 호출 빈도 | 역할 |
+|------|-----------|------|
+| S1/S3 | 50스텝마다 (~7.8초) | 방향 선택 (6개 고정 커맨드 + TARGET_FOUND) |
+| S2/S4 | depth warning 시에만 | 장애물 판별 (CONTINUE / OBSTACLE) |
 
 ## 파일 구조
 

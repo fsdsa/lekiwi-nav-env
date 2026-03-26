@@ -3,14 +3,21 @@
 # Windows: SO100 Leader -> TCP(JSON lines) to Home
 #  - arm: name/position (same as before)
 #  - base: {"vx","vy","wz"}  (key-state based, sent EVERY tick)
+#
+# --mode navigate/carry: 리더암 없이 키보드 base만 전송 (arm은 고정값)
 
+import argparse
 import json
 import math
 import socket
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from lerobot.teleoperators.so100_leader import SO100Leader, SO100LeaderConfig
+try:
+    from lerobot.teleoperators.so100_leader import SO100Leader, SO100LeaderConfig
+    LEADER_OK = True
+except ImportError:
+    LEADER_OK = False
 from lerobot.utils.robot_utils import precise_sleep
 
 # ---------- keyboard (pynput) ----------
@@ -174,10 +181,26 @@ def compute_base_cmd() -> Dict[str, float]:
     return {"vx": float(vx), "vy": float(vy), "wz": float(wz)}
 
 def main():
-    leader = SO100Leader(SO100LeaderConfig(port="COM8", id="my_awesome_leader_arm"))
-    leader.connect()
-    if not leader.is_connected:
-        raise RuntimeError("Leader arm not connected")
+    parser = argparse.ArgumentParser(description="LeKiwi Teleop: Leader arm + Keyboard base → TCP")
+    parser.add_argument("--mode", type=str, default="full",
+                        choices=["full", "navigate", "carry"],
+                        help="full: 리더암+키보드, navigate/carry: 키보드만 (리더암 불필요)")
+    parser.add_argument("--port", type=str, default="COM8", help="Leader arm serial port")
+    parser.add_argument("--ip", type=str, default=HOME_TAILSCALE_IP, help="Home PC IP")
+    parser.add_argument("--tcp_port", type=int, default=HOME_TCP_PORT, help="Home PC TCP port")
+    args = parser.parse_args()
+
+    base_only = args.mode in ("navigate", "carry")
+
+    # Leader arm (full mode only)
+    leader = None
+    if not base_only:
+        if not LEADER_OK:
+            raise RuntimeError("lerobot SO100Leader not available. Use --mode navigate or --mode carry")
+        leader = SO100Leader(SO100LeaderConfig(port=args.port, id="my_awesome_leader_arm"))
+        leader.connect()
+        if not leader.is_connected:
+            raise RuntimeError("Leader arm not connected")
 
     if PYNPUT_OK:
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -186,20 +209,44 @@ def main():
     else:
         print("[KEY] pynput NOT available. base cmd will stay zero.")
 
-    print(f"Target TCP = {HOME_TAILSCALE_IP}:{HOME_TCP_PORT}")
-    print("SIM_REST_RAD6    =", [round(x, 6) for x in SIM_REST_RAD6])
-    print("LEADER_REST_RAD6 =", [round(x, 6) for x in LEADER_REST_RAD6])
-    print("SIGNS            =", SIGNS)
+    # arm 고정값 (navigate/carry)
+    if args.mode == "navigate":
+        fixed_arm = list(SIM_REST_RAD6)  # all-zero에 가까운 스폰 자세
+        print(f"[MODE] navigate — arm fixed at SIM_REST (base keyboard only)")
+    elif args.mode == "carry":
+        # S2 lift 후 carry 자세
+        fixed_arm = [-0.040, -0.193, 0.275, -1.280, -0.035, 0.276]
+        LINEAR_SPEED = 0.15  # carry: 물체 들고 있으므로 느리게
+        ANGULAR_SPEED = 1.5
+        print(f"[MODE] carry — arm fixed at carry pose (base keyboard only, speed={LINEAR_SPEED}m/s)")
+    else:
+        fixed_arm = None
+        print(f"[MODE] full — leader arm + keyboard base")
+
+    print(f"Target TCP = {args.ip}:{args.tcp_port}")
+    if not base_only:
+        print("SIM_REST_RAD6    =", [round(x, 6) for x in SIM_REST_RAD6])
+        print("LEADER_REST_RAD6 =", [round(x, 6) for x in LEADER_REST_RAD6])
+        print("SIGNS            =", SIGNS)
 
     sock: Optional[socket.socket] = None
     last_out: Optional[List[float]] = None
     last_t = time.time()
     t_stream_start: Optional[float] = None
 
+    # TCP 연결 함수 (IP/port 오버라이드)
+    def connect_tcp() -> socket.socket:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect((args.ip, args.tcp_port))
+        s.settimeout(None)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return s
+
     while True:
         if sock is None:
             try:
-                sock = _connect_tcp()
+                sock = connect_tcp()
                 t_stream_start = time.time()
                 print("CONNECTED")
             except Exception as e:
@@ -210,27 +257,30 @@ def main():
         tick_start = time.perf_counter()
 
         # ----- arm -----
-        deg6 = extract_leader_deg(leader.get_action())
-        leader_rad6 = leader_deg_to_rad6(deg6)
-
-        delta = [leader_rad6[i] - LEADER_REST_RAD6[i] for i in range(6)]
-        target = [SIM_REST_RAD6[i] + SIGNS[i] * delta[i] for i in range(6)]
-
-        if t_stream_start is not None and RAMP_SECONDS > 0:
-            a = min(max((time.time() - t_stream_start) / RAMP_SECONDS, 0.0), 1.0)
-            target = [SIM_REST_RAD6[i] + a * (target[i] - SIM_REST_RAD6[i]) for i in range(6)]
-
-        now = time.time()
-        dt = now - last_t
-        last_t = now
-
-        if last_out is None:
-            out = list(target)
+        if base_only:
+            out = list(fixed_arm)
         else:
-            tmp = [rate_limit(target[i], last_out[i], MAX_SPEED_RAD_S, dt) for i in range(6)]
-            a = SMOOTH_ALPHA
-            out = [(1 - a) * last_out[i] + a * tmp[i] for i in range(6)]
-        last_out = list(out)
+            deg6 = extract_leader_deg(leader.get_action())
+            leader_rad6 = leader_deg_to_rad6(deg6)
+
+            delta = [leader_rad6[i] - LEADER_REST_RAD6[i] for i in range(6)]
+            target = [SIM_REST_RAD6[i] + SIGNS[i] * delta[i] for i in range(6)]
+
+            if t_stream_start is not None and RAMP_SECONDS > 0:
+                a = min(max((time.time() - t_stream_start) / RAMP_SECONDS, 0.0), 1.0)
+                target = [SIM_REST_RAD6[i] + a * (target[i] - SIM_REST_RAD6[i]) for i in range(6)]
+
+            now = time.time()
+            dt = now - last_t
+            last_t = now
+
+            if last_out is None:
+                out = list(target)
+            else:
+                tmp = [rate_limit(target[i], last_out[i], MAX_SPEED_RAD_S, dt) for i in range(6)]
+                a = SMOOTH_ALPHA
+                out = [(1 - a) * last_out[i] + a * tmp[i] for i in range(6)]
+            last_out = list(out)
 
         # ----- base -----
         base_cmd = compute_base_cmd() if PYNPUT_OK else {"vx": 0.0, "vy": 0.0, "wz": 0.0}
@@ -240,12 +290,8 @@ def main():
             "name": JOINT_NAMES,
             "position": out,
             "base": base_cmd,
-            "src": "so100_leader+keyboard",
+            "src": "keyboard_only" if base_only else "so100_leader+keyboard",
         }
-
-        # wrist_roll 디버그 (캘리브레이션 측정용, 필요없으면 삭제)
-        if int(time.time() * 2) % 2 == 0:  # 0.5초마다 1회
-            print(f"  wrist_roll: leader_raw={leader_rad6[4]:+.4f}  target={out[4]:+.4f}")
 
         try:
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
@@ -258,7 +304,7 @@ def main():
             sock = None
             continue
 
-        precise_sleep(max(1.0 / FPS - (time.perf_counter() - tick_start), 0.0))
+        time.sleep(max(1.0 / FPS - (time.perf_counter() - tick_start), 0.0))
 
 if __name__ == "__main__":
     main()

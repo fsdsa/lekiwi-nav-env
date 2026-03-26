@@ -120,23 +120,24 @@ The robot has NOT found the {target_object} yet. Guide the robot to search for i
 
 {robot_status}
 
-Look at the camera image and output ONE navigation command.
+Look at the camera image and output ONE of the following commands:
 
-Available commands:
-- "move forward" — path ahead is clear, go straight
-- "move backward" — need to back up (only if stuck or dead end)
-- "move left" — strafe left
-- "move right" — strafe right
-- "turn left" — rotate left to explore or avoid obstacle
-- "turn right" — rotate right to explore or avoid obstacle
+- "navigate forward" — path ahead is clear, go straight
+- "navigate backward" — need to back up (only if stuck or dead end)
+- "navigate left" — strafe left
+- "navigate right" — strafe right
+- "navigate turn left" — rotate left to explore or avoid obstacle
+- "navigate turn right" — rotate right to explore or avoid obstacle
+- "TARGET_FOUND" — the {target_object} is visible AND close enough to reach (the object occupies a large portion of the frame, roughly within 1 meter). Do NOT output this if the target is far away or small in the image.
 
 Decision rules:
-1. If you see the {target_object} in the image → output exactly "TARGET_FOUND"
-2. If path ahead is clear and open → "move forward"
-3. If wall or furniture blocks the path → turn toward the side with more open space
-4. If you see a doorway or corridor → turn toward it
-5. If the robot seems stuck (seeing the same wall up close) → "move backward" then turn
-6. Prefer exploring new areas over revisiting the same space
+1. If you see the {target_object} close and large in the frame → "TARGET_FOUND"
+2. If you see the {target_object} but it is far away or small → navigate toward it (e.g. "navigate forward")
+3. If path ahead is clear and no target visible → "navigate forward"
+4. If wall or furniture blocks the path → turn toward the side with more open space
+5. If you see a doorway or corridor → turn toward it
+6. If the robot seems stuck (seeing the same wall up close) → "navigate backward"
+7. Prefer exploring new areas over revisiting the same space
 
 Previous command: "{prev_command}"
 
@@ -156,21 +157,23 @@ Current task: carry the {source_object} and navigate to find the {dest_object}.
 
 {robot_status}
 
-Look at the camera image and output ONE navigation command.
+Look at the camera image and output ONE of the following commands:
 
-Available commands:
-- "carry {source_object} and move forward"
-- "carry {source_object} and move backward"
-- "carry {source_object} and move left"
-- "carry {source_object} and move right"
-- "carry {source_object} and turn left"
-- "carry {source_object} and turn right"
+- "carry forward" — path ahead is clear, go straight
+- "carry backward" — need to back up (only if stuck or dead end)
+- "carry left" — strafe left
+- "carry right" — strafe right
+- "carry turn left" — rotate left to explore or avoid obstacle
+- "carry turn right" — rotate right to explore or avoid obstacle
+- "TARGET_FOUND" — the {dest_object} is visible AND close enough to reach (the object occupies a large portion of the frame, roughly within 1 meter). Do NOT output this if the target is far away or small in the image.
 
 Decision rules:
-1. If you see the {dest_object} in the image → output exactly "TARGET_FOUND"
-2. If path ahead is clear → "carry {source_object} and move forward"
-3. If obstacle blocks the path → turn toward open space
-4. If you see a doorway or corridor → turn toward it
+1. If you see the {dest_object} close and large in the frame → "TARGET_FOUND"
+2. If you see the {dest_object} but it is far away or small → navigate toward it (e.g. "carry forward")
+3. If path ahead is clear → "carry forward"
+4. If obstacle blocks the path → turn toward open space
+5. If you see a doorway or corridor → turn toward it
+6. If the robot seems stuck → "carry backward"
 
 Previous command: "{prev_command}"
 
@@ -182,25 +185,21 @@ VIVA_CARRY_USER_TEMPLATE = """What direction should the robot move while carryin
 # VIVA S2: Approach & Lift
 # ═══════════════════════════════════════════════════════════════════════
 
-VIVA_APPROACH_LIFT_SYSTEM_PROMPT = """You are the manipulation commander of a mobile manipulator robot.
+VIVA_APPROACH_LIFT_SYSTEM_PROMPT = """You are the obstacle monitor of a mobile manipulator robot.
 You see through a front-facing camera (RealSense D455, 87° FOV).
 
-Current task: approach the {source_object}, grasp it, and lift it to a held position.
+The robot is currently executing the "approach and lift" skill for the {source_object}.
+The depth sensor has detected a close object.
 
 {robot_status}
 
-Look at the camera image and output ONE instruction.
+Your job: determine if the close object is the target ({source_object}) or an unexpected obstacle.
 
-Situation assessment:
-- If {source_object} is visible but far → "move toward the {source_object}"
-- If {source_object} is close and reachable → "grasp the {source_object}"
-- If gripper has contact and object is grasped → "lift the {source_object}"
-- If arm pose is LIFTED → output exactly "LIFTED_COMPLETE"
-- If depth warning is CLOSE_OBJECT_DETECTED and the close object is NOT the {source_object} → output exactly "OBSTACLE"
+Look at the camera image and output ONE of the following:
+- "CONTINUE" — the close object is the {source_object} (expected, VLA should keep going)
+- "OBSTACLE" — the close object is NOT the {source_object} (unexpected obstacle, need to retreat and reroute)
 
-Previous instruction: "{prev_instruction}"
-
-Output ONLY the instruction, nothing else."""
+Output ONLY one word, nothing else."""
 
 VIVA_APPROACH_LIFT_USER_TEMPLATE = """What should the robot do next?"""
 
@@ -208,24 +207,21 @@ VIVA_APPROACH_LIFT_USER_TEMPLATE = """What should the robot do next?"""
 # VIVA S4: Approach & Place
 # ═══════════════════════════════════════════════════════════════════════
 
-VIVA_APPROACH_PLACE_SYSTEM_PROMPT = """You are the manipulation commander of a mobile manipulator robot.
+VIVA_APPROACH_PLACE_SYSTEM_PROMPT = """You are the obstacle monitor of a mobile manipulator robot.
 You see through a front-facing camera (RealSense D455, 87° FOV).
 
-Current task: approach the {dest_object} and place the {source_object} next to it.
-The robot is currently holding the {source_object}.
+The robot is currently executing the "approach and place" skill.
+It is holding the {source_object} and placing it next to the {dest_object}.
+The depth sensor has detected a close object.
 
 {robot_status}
 
-Look at the camera image and output ONE instruction.
+Your job: determine if the close object is the target ({dest_object}) or an unexpected obstacle.
 
-Situation assessment:
-- If {dest_object} is visible but far → "move toward the {dest_object}"
-- If {dest_object} is close and reachable → "place the {source_object} next to the {dest_object}"
-- If task is complete (object placed) → output exactly "PLACE_COMPLETE"
-- If depth warning is CLOSE_OBJECT_DETECTED and the close object is NOT the {dest_object} → output exactly "OBSTACLE"
+Look at the camera image and output ONE of the following:
+- "CONTINUE" — the close object is the {dest_object} (expected, VLA should keep going)
+- "OBSTACLE" — the close object is NOT the {dest_object} (unexpected obstacle, need to retreat and reroute)
 
-Previous instruction: "{prev_instruction}"
-
-Output ONLY the instruction, nothing else."""
+Output ONLY one word, nothing else."""
 
 VIVA_APPROACH_PLACE_USER_TEMPLATE = """What should the robot do next?"""

@@ -103,10 +103,17 @@ parser.add_argument("--object_usd", type=str, default="",
                     help="physics grasp object USD path (empty = legacy proximity grasp)")
 parser.add_argument("--dest_object_usd", type=str, default="",
                     help="destination object USD path (배경 스폰, combined 모드에서 place 기준점)")
+parser.add_argument("--dest_object_scale", type=float, default=0.56,
+                    help="destination object scale")
 parser.add_argument("--multi_object_json", type=str, default="",
                     help="multi-object catalog JSON path (37D obs)")
 parser.add_argument("--object_mass", type=float, default=0.3,
                     help="physics grasp object mass (kg)")
+# S2 expert 자동 실행 (combined 모드 Phase 1)
+parser.add_argument("--s2_bc_checkpoint", type=str, default="",
+                    help="combined: S2 BC checkpoint → Phase 1 자동 실행")
+parser.add_argument("--s2_resip_checkpoint", type=str, default="",
+                    help="combined: S2 ResiP checkpoint (optional)")
 parser.add_argument("--object_scale_phys", type=float, default=1.0,
                     help="physics grasp object uniform scale")
 parser.add_argument("--gripper_contact_prim_path", type=str, default="",
@@ -130,8 +137,8 @@ parser.add_argument(
     "--skill",
     type=str,
     default="legacy",
-    choices=["navigate", "approach_and_grasp", "carry_and_place", "combined", "legacy"],
-    help="환경 모드: navigate(Skill-1), approach_and_grasp(Skill-2), carry_and_place(Skill-3), combined(Skill-2→3 연속), legacy(v8 FSM)",
+    choices=["navigate", "approach_and_grasp", "carry", "carry_and_place", "combined", "legacy"],
+    help="환경 모드: navigate(Skill-1), approach_and_grasp(Skill-2), carry(Skill-3 carry only), carry_and_place(Skill-3), combined(Skill-2→3 연속), legacy(v8 FSM)",
 )
 parser.add_argument(
     "--grasp_hold_steps",
@@ -139,6 +146,8 @@ parser.add_argument(
     default=450,
     help="combined mode: 파지 유지 스텝 수 (450 60Hz)",
 )
+parser.add_argument("--carry_interp_steps", type=int, default=600,
+                    help="carry: arm 보간 완료까지 예상 스텝 수")
 parser.add_argument(
     "--home_dist_thresh",
     type=float,
@@ -154,7 +163,8 @@ parser.add_argument(
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
-args.headless = False  # 텔레옵은 GUI 필수
+if args.skill != "carry":
+    args.headless = False  # 텔레옵은 GUI 필수 (carry는 완전 자동이므로 headless 허용)
 args.num_envs = 1
 
 launcher = AppLauncher(args)
@@ -180,6 +190,12 @@ sys.stderr = _PhysxFilter(sys.stderr)
 import h5py
 import numpy as np
 import torch
+
+# S3 carry: arm 보간 시작/끝 자세 (실험 데이터에서 측정)
+S3_ARM_START = np.array([-0.040, -0.193, +0.275, -1.280, -0.035], dtype=np.float64)  # S2 lift 후
+S3_GRIP_START = 0.276
+S3_ARM_END = np.array([+0.002, -0.193, +0.295, -1.306, +0.006], dtype=np.float64)    # S4 시작
+S3_GRIP_END = 0.15  # 목표를 낮게 → 물체 저항으로 실제 grip ≈ 0.27~0.30 (S4 시작과 일치)
 
 ROS2_AVAILABLE = False
 ROS2_IMPORT_ERROR: Exception | None = None
@@ -595,6 +611,7 @@ def main():
     # —— Isaac Lab 환경 ——
     use_v6 = args.skill not in ("legacy",)
     is_navigate = (args.skill == "navigate")
+    is_carry = (args.skill == "carry")
 
     if args.skill == "navigate":
         from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
@@ -602,6 +619,9 @@ def main():
     elif args.skill == "approach_and_grasp":
         from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
         env_cfg = Skill2EnvCfg()
+    elif args.skill == "carry":
+        from lekiwi_skill2_eval import Skill2Env as CarryEnvBase, Skill2EnvCfg as CarryEnvCfgBase
+        env_cfg = CarryEnvCfgBase()
     elif args.skill in ("carry_and_place", "combined"):
         from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
         env_cfg = Skill3EnvCfg()
@@ -612,6 +632,8 @@ def main():
     env_cfg.scene.num_envs = 1
     # 텔레옵은 에피소드 길이 충분히 확보 (수동 종료 사용, 1시간)
     env_cfg.episode_length_s = 3600.0
+    # 텔레옵: oob 제한 크게 (carry 중 자유 이동)
+    env_cfg.max_dist_from_origin = 50.0
     # 텔레옵 시 DR 비활성화 (action delay, obs noise가 제어를 방해)
     env_cfg.enable_domain_randomization = False
     # 텔레옵 시 PhysX에 baked limits 미기록 → USD 기본 리밋 사용 (test.py와 동일)
@@ -630,6 +652,7 @@ def main():
         env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
     if str(args.dest_object_usd).strip():
         env_cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
+        env_cfg.dest_object_scale = float(args.dest_object_scale)
     if physics_grasp_mode:
         env_cfg.object_usd = os.path.expanduser(args.object_usd)
         env_cfg.object_mass = float(args.object_mass)
@@ -639,7 +662,7 @@ def main():
         env_cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
         env_cfg.grasp_max_object_dist = float(args.grasp_max_object_dist)
         env_cfg.grasp_attach_height = float(args.grasp_attach_height)
-    # 텔레옵: break_force를 v8과 동일하게 (30N은 너무 낮아 grasp 시 에너지 방출로 폭발)
+    # 텔레옵: break_force (legacy env에서만 사용, Skill2/3Env는 순수 마찰)
     env_cfg.grasp_joint_break_force = 1e8
     env_cfg.grasp_joint_break_torque = 1e8
     if multi_object_mode and not str(args.gripper_contact_prim_path).strip():
@@ -648,12 +671,37 @@ def main():
         )
     is_combined = (args.skill == "combined")
     if is_combined:
-        env_cfg.grasp_gripper_threshold = 0.65  # combined: 확실한 파지만 인정
+        env_cfg.grasp_gripper_threshold = 0.65
+        env_cfg.dest_object_fixed = False
+        env_cfg.dest_object_mass = 50.0
+    if is_carry:
+        # train_resip combined_s2_s3와 동일한 config
+        env_cfg.grasp_contact_threshold = 0.55
+        env_cfg.grasp_gripper_threshold = 0.65
+        env_cfg.grasp_max_object_dist = 0.50
+        env_cfg.grasp_success_height = 100.0  # S2 자동종료 비활성
+        env_cfg.lift_hold_steps = 0
+        env_cfg.dest_object_fixed = False
+        env_cfg.dest_object_scale = 0.56
+        env_cfg.dest_object_mass = 50.0
+        env_cfg.spawn_heading_noise_std = 0.3
+        env_cfg.spawn_heading_max_rad = 0.5
+    if is_carry and not args.s2_bc_checkpoint:
+        print("  ERROR: --skill carry 에는 --s2_bc_checkpoint 가 필수입니다.")
+        sys.exit(1)
     if args.skill == "navigate":
-        env_cfg.force_tucked_pose = True  # 텔레옵: arm을 TUCKED_POSE로 고정
+        env_cfg.force_tucked_pose = True  # env가 매 step arm 강제
         env = Skill1Env(cfg=env_cfg)
+        # VIVA S1: TUCKED_POSE 대신 all-zero(스폰 자세) 강제
+        env._tucked_pose = torch.zeros(5, dtype=torch.float32, device=env.device)
+        # gripper도 0 (open) — 모듈 상수 패치
+        import lekiwi_skill1_env as _s1mod
+        _s1mod._TUCKED_GRIPPER_RAD = 0.0
     elif args.skill == "approach_and_grasp":
         env = Skill2Env(cfg=env_cfg)
+    elif args.skill == "carry":
+        env = CarryEnvBase(cfg=env_cfg)
+        env._combined_mode = True
     elif args.skill in ("carry_and_place", "combined"):
         env = Skill3Env(cfg=env_cfg)
         if is_combined:
@@ -667,12 +715,20 @@ def main():
         env.cfg.grasp_contact_threshold = float(args.grasp_contact_threshold)
 
     # Teleop: 환경 자동 종료 비활성화 (물체 충돌/out_of_bounds로 리셋 방지)
-    # grasp state 업데이트는 유지하되, terminated/truncated는 항상 False
+    # carry Phase 1(S2 expert)에서는 env terminated 활용 (topple detection: objZ < 0.03)
     _original_get_dones = env._get_dones
+    _teleop_allow_terminate = [False]  # carry Phase 1에서만 True로 변경
 
     def _teleop_get_dones():
         terminated, truncated = _original_get_dones()
-        terminated[:] = False
+        if _teleop_allow_terminate[0]:
+            # Skill3Env._get_dones에 object_toppled 없으므로 직접 추가
+            env_z = env.scene.env_origins[:, 2] if hasattr(env.scene, "env_origins") else 0.0
+            objZ = env.object_pos_w[:, 2] - env_z
+            toppled = (objZ < 0.03) & (env.episode_length_buf > 20)
+            terminated = terminated | toppled
+        else:
+            terminated[:] = False
         truncated[:] = False
         return terminated, truncated
 
@@ -813,9 +869,31 @@ def main():
     else:
         print(f"  [DEBUG] object_rigid: None (physics_grasp={getattr(env, '_physics_grasp', '?')})")
 
-    # Navigate: 방향별 순서 스케줄 (6방향 × N회씩, 순서대로)
+    # Navigate/Carry: 방향별 순서 스케줄 (6방향 × N회씩, 순서대로)
     _nav_dir_schedule = None
     _nav_dir_idx = 0
+    _CARRY_RECORD_STEPS = 600
+    _CARRY_REST_STEPS = 0  # carry는 S2 expert가 매번 재실행되므로 rest 불필요
+    # Carry: 방향→body frame base 명령 매핑 (LeKiwi: +Y=forward, +X=right, +wz=CCW)
+    _CARRY_BASE_SPEED = 0.25   # m/s (navigate와 동일)
+    _CARRY_ANG_SPEED = 1.7     # rad/s (turn은 현재 속도 유지)
+    _CARRY_DIR_TO_CMD = {
+        "FORWARD":      (0.0, _CARRY_BASE_SPEED, 0.0),
+        "BACKWARD":     (0.0, -_CARRY_BASE_SPEED, 0.0),
+        "STRAFE LEFT":  (-_CARRY_BASE_SPEED, 0.0, 0.0),
+        "STRAFE RIGHT": (_CARRY_BASE_SPEED, 0.0, 0.0),
+        "TURN LEFT":    (0.0, 0.0, _CARRY_ANG_SPEED),
+        "TURN RIGHT":   (0.0, 0.0, -_CARRY_ANG_SPEED),
+    }
+    if is_carry:
+        _nav_all_dirs = list(_CARRY_DIR_TO_CMD.keys())
+        reps = max(1, args.num_demos // 6)
+        _nav_dir_schedule = []
+        for label in _nav_all_dirs:
+            _nav_dir_schedule.extend([label] * reps)
+        print(f"  [Carry] 방향 스케줄: {len(_nav_dir_schedule)}개 (6방향 × {reps}회)")
+        print(f"  [Carry] 각 방향 {_CARRY_RECORD_STEPS} steps 자동 저장 (headless 자동)")
+        print(f"  [Carry] 첫 번째 방향: {_nav_dir_schedule[0]}")
     if is_navigate:
         _nav_all_dirs = [
             ([0, 1, 0],  "FORWARD"),
@@ -871,10 +949,10 @@ def main():
         if args.gripper_contact_prim_path:
             hf.attrs["gripper_contact_prim_path"] = str(args.gripper_contact_prim_path)
 
-    if is_combined:
+    if is_combined or is_carry:
         os.makedirs("demos", exist_ok=True)
 
-        if args.resume:
+        if is_combined and args.resume:
             # demos/에서 가장 최근 combined_skill2_*.hdf5 찾기
             import glob as _glob
             s2_files = sorted(_glob.glob("demos/combined_skill2_*.hdf5"))
@@ -892,34 +970,109 @@ def main():
             skill3_saved = sum(1 for k in hdf5_skill3.keys() if k.startswith("episode_"))
             print(f"  Resume: {skill2_path}")
             print(f"          Skill-2 {skill2_saved}개, Skill-3 {skill3_saved}개 에피소드에서 이어서 녹화")
-        else:
+        elif is_combined:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             skill2_path = f"demos/combined_skill2_{timestamp}.hdf5"
             skill3_path = f"demos/combined_skill3_{timestamp}.hdf5"
             hdf5_skill2 = h5py.File(skill2_path, "w")
             hdf5_skill3 = h5py.File(skill3_path, "w")
-            _write_hdf5_attrs(hdf5_skill2, 30, "approach_and_grasp")
+            # ⚠️ Skill3Env combined mode에서 obs는 항상 29D (Skill3Env._get_observations).
+            # Phase 1(S2 구간)도 29D로 기록됨. train_resip.py main_combined()에서는
+            # Skill2Env(30D)를 사용하므로, S2 학습에 이 데모를 쓰려면 obs 변환 필요:
+            #   - S2 30D: [0:21] arm+vel, [21:24] object_rel, [24:26] contact_LR, [26:29] bbox, [29:30] cat
+            #   - S3 29D: [0:21] arm+vel, [21:24] dest_rel, [24:25] contact(연속), [25:28] bbox, [28:29] cat
+            # S3 데모(combined_skill3_*.hdf5)는 그대로 BC 학습에 사용 가능.
+            # S2 데모는 별도 env(Skill2Env)에서 수집하거나, 기존 S2 데모 사용 권장.
+            _write_hdf5_attrs(hdf5_skill2, 29, "approach_and_grasp")  # 실제 29D 기록
             _write_hdf5_attrs(hdf5_skill3, 29, "carry_and_place")
             skill2_saved = 0
             skill3_saved = 0
-        hdf5_file = None  # 단일 파일 미사용
 
-        # Phase tracking: 1=Skill-2(기록), 2=Transit(미기록), 3=Skill-3(기록)
+        if is_carry:
+            # Carry mode: 단일 HDF5 파일 (carry 에피소드만 기록)
+            if args.resume and os.path.isfile(output_path):
+                hdf5_file = h5py.File(output_path, "a")
+                existing = sum(1 for k in hdf5_file.keys() if k.startswith("episode_"))
+                saved_count = existing
+                print(f"  Resume: 기존 {existing}개 에피소드 발견, episode_{existing}부터 이어서 녹화")
+            else:
+                hdf5_file = h5py.File(output_path, "w")
+                _write_hdf5_attrs(hdf5_file, int(obs["policy"].shape[-1]), "carry")
+        else:
+            hdf5_file = None  # combined: 단일 파일 미사용
+
+        # S2 expert 로드 (Phase 1 자동 실행)
+        s2_expert_mode = bool(str(args.s2_bc_checkpoint).strip())
+        s2_dp, s2_rpol, s2_scale = None, None, None
+        if s2_expert_mode:
+            from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
+            _dev = env.device
+            # S2 BC
+            _ck = torch.load(args.s2_bc_checkpoint, map_location=_dev, weights_only=False)
+            _c = _ck["config"]
+            s2_dp = DiffusionPolicyAgent(
+                obs_dim=_c["obs_dim"], act_dim=_c["act_dim"],
+                pred_horizon=_c["pred_horizon"], action_horizon=_c["action_horizon"],
+                num_diffusion_iters=_c["num_diffusion_iters"],
+                inference_steps=_c.get("inference_steps", 16),
+                down_dims=_c.get("down_dims", [256, 512, 1024]),
+            ).to(_dev)
+            _sd = _ck["model_state_dict"]
+            s2_dp.model.load_state_dict({k[6:]: v for k, v in _sd.items() if k.startswith("model.")})
+            s2_dp.normalizer.load_state_dict({k[11:]: v for k, v in _sd.items() if k.startswith("normalizer.")})
+            s2_dp.eval(); s2_dp.inference_steps = 4
+            for p in s2_dp.parameters(): p.requires_grad = False
+            print(f"  [S2 Expert] BC loaded: {args.s2_bc_checkpoint}")
+            # S2 ResiP (optional)
+            if str(args.s2_resip_checkpoint).strip() and os.path.isfile(args.s2_resip_checkpoint):
+                _rck = torch.load(args.s2_resip_checkpoint, map_location=_dev, weights_only=False)
+                s2_rpol = ResidualPolicy(
+                    obs_dim=_c["obs_dim"], action_dim=_c["act_dim"],
+                    actor_hidden_size=256, actor_num_layers=2,
+                    init_logstd=-1.0, action_head_std=0.0,
+                    action_scale=0.1, learn_std=True,
+                ).to(_dev)
+                s2_rpol.load_state_dict(_rck["residual_policy_state_dict"])
+                s2_rpol.eval()
+                for p in s2_rpol.parameters(): p.requires_grad = False
+                print(f"  [S2 Expert] ResiP loaded: {args.s2_resip_checkpoint}")
+            s2_scale = torch.zeros(_c["act_dim"], device=_dev)
+            s2_scale[0:5] = 0.20; s2_scale[5] = 0.25; s2_scale[6:9] = 0.35
+            # S2 lift 감지용
+            s2_lift_counter = 0
+            S2_LIFT_HOLD = 400
+            print(f"  [S2 Expert] Phase 1 자동 실행 (lift hold {S2_LIFT_HOLD} steps)")
+
+        # Phase tracking: 1=Skill-2(기록/carry:미기록), 2=Transit(미기록)/carry:carry텔레옵, 3=Skill-3(기록)
+        import random as _rnd
         current_phase = 1
-        grasp_hold_counter = 0
+        grasp_hold_counter = 0; s2_lift_counter = 0
+        carry_total_steps = 0
+        carry_arm_start = S3_ARM_START.copy()
+        carry_grip_start = S3_GRIP_START
+        env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
         phase1_obs, phase1_actions, phase1_active, phase1_robot_state = [], [], [], []
         phase1_object_pos_w, phase1_object_quat_w, phase1_robot_pos_w, phase1_robot_quat_w = [], [], [], []
         phase3_obs, phase3_actions, phase3_active, phase3_robot_state = [], [], [], []
         phase3_object_pos_w, phase3_object_quat_w, phase3_robot_pos_w, phase3_robot_quat_w = [], [], [], []
-        print(f"  Combined mode: Skill-2 -> Transit -> Skill-3 연속 레코딩")
-        print(f"    grasp_hold_steps: {args.grasp_hold_steps} ({args.grasp_hold_steps/60:.1f}s)")
-        print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
-        print(f"    home_fov_thresh: {args.home_fov_thresh:.2f}rad (Phase 2->3 전환)")
-        print(f"    grasp_gripper_threshold: {env.cfg.grasp_gripper_threshold}")
-        print(f"    Skill-2 output: {skill2_path}")
-        print(f"    Skill-3 output: {skill3_path}")
-        print(f"    → (오른쪽 화살표): 현재 Phase 저장/진행")
-        print(f"    ← (왼쪽 화살표): 현재 Phase 폐기, 리셋")
+        phase3_dest_pos_w = []
+        if is_combined:
+            print(f"  Combined mode: Skill-2 -> Transit -> Skill-3 연속 레코딩")
+            print(f"    grasp_hold_steps: {args.grasp_hold_steps} ({args.grasp_hold_steps/60:.1f}s)")
+            print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
+            print(f"    home_fov_thresh: {args.home_fov_thresh:.2f}rad (Phase 2->3 전환)")
+            print(f"    grasp_gripper_threshold: {env.cfg.grasp_gripper_threshold}")
+            print(f"    Skill-2 output: {skill2_path}")
+            print(f"    Skill-3 output: {skill3_path}")
+            print(f"    → (오른쪽 화살표): 현재 Phase 저장/진행")
+            print(f"    ← (왼쪽 화살표): 현재 Phase 폐기, 리셋")
+        elif is_carry:
+            print(f"  Carry mode: S2 expert → lift → carry 텔레옵 (base만)")
+            print(f"    carry_interp_steps: {args.carry_interp_steps}")
+            print(f"    grasp_gripper_threshold: {env.cfg.grasp_gripper_threshold}")
+            print(f"    output: {output_path}")
+            print(f"    → (오른쪽 화살표): carry 에피소드 저장")
+            print(f"    ← (왼쪽 화살표): carry 에피소드 폐기, 리셋")
     else:
         if args.resume and os.path.isfile(output_path):
             hdf5_file = h5py.File(output_path, "a")
@@ -953,6 +1106,7 @@ def main():
     def _save_episode(hf, ep_idx, ep_obs, ep_actions, ep_active, ep_rs,
                       ep_object_pos_w=None, ep_object_quat_w=None,
                       ep_robot_pos_w=None, ep_robot_quat_w=None,
+                      ep_dest_pos_w=None,
                       direction_cmd=None):
         grp = hf.create_group(f"episode_{ep_idx}")
         grp.create_dataset("obs", data=np.array(ep_obs))
@@ -968,6 +1122,8 @@ def main():
             grp.create_dataset("robot_pos_w", data=np.array(ep_robot_pos_w, dtype=np.float32))
         if ep_robot_quat_w and len(ep_robot_quat_w) > 0:
             grp.create_dataset("robot_quat_w", data=np.array(ep_robot_quat_w, dtype=np.float32))
+        if ep_dest_pos_w and len(ep_dest_pos_w) > 0:
+            grp.create_dataset("dest_pos_w", data=np.array(ep_dest_pos_w, dtype=np.float32))
         # 초기 환경 상태 (리스트 첫 원소 = 에피소드 시작 시점)
         if ep_robot_pos_w and len(ep_robot_pos_w) > 0:
             grp.attrs["robot_init_pos"] = ep_robot_pos_w[0]
@@ -1010,31 +1166,236 @@ def main():
             else:
                 action_np = np.zeros(9)
 
-            # Navigate: arm/gripper를 TUCKED_POSE로 고정 (base만 텔레옵)
+            # Navigate: arm/gripper를 all-zero(스폰 자세)로 고정 (base만 텔레옵)
             if is_navigate:
-                tucked_arm = env._tucked_pose.cpu().numpy()  # (5,)
-                tucked_grip = -0.2016  # _TUCKED_GRIPPER_RAD
-                tucked_6 = np.concatenate([tucked_arm, [tucked_grip]])
+                # VIVA S1: arm all-zero (스폰 자세) 유지. gripper도 0 (open).
+                zero_arm_6 = np.zeros(6, dtype=np.float64)  # [arm0..arm4, grip] = 0
                 if arm_action_to_limits and arm_center is not None:
-                    action_np[0:6] = (tucked_6 - arm_center) / arm_half_range
+                    action_np[0:6] = (zero_arm_6 - arm_center) / arm_half_range
                 else:
-                    action_np[0:6] = tucked_6 / arm_action_scale
+                    action_np[0:6] = zero_arm_6 / arm_action_scale
+
+            # Carry: arm 보간 + base 자동 명령 (완전 자동, 텔레옵 불필요)
+            if is_carry and current_phase == 2:
+                # arm 보간
+                t = min(carry_total_steps / args.carry_interp_steps, 1.0)
+                arm_target_5 = carry_arm_start  # arm 고정 (보간 없음, navigate처럼)
+                grip_target = carry_grip_start  # grip 고정 (보간 없음)
+                arm_target_6 = np.concatenate([arm_target_5, [grip_target]])
+                if arm_action_to_limits and arm_center is not None:
+                    action_np[0:6] = (arm_target_6 - arm_center) / arm_half_range
+                else:
+                    action_np[0:6] = arm_target_6 / arm_action_scale
+                # base 자동 명령 (방향 스케줄)
+                _cur_dir = _nav_dir_schedule[saved_count] if saved_count < len(_nav_dir_schedule) else "FORWARD"
+                _bvx, _bvy, _bwz = _CARRY_DIR_TO_CMD[_cur_dir]
+                # 미세 노이즈 (PID 없음, navigate와 동일하게 고정 명령)
+                _noise_lin = np.random.normal(0, 0.005, 2)
+                _noise_wz = np.random.normal(0, 0.005)
+                action_np[6] = (_bvx + _noise_lin[0]) / max_lin_vel
+                action_np[7] = (_bvy + _noise_lin[1]) / max_lin_vel
+                action_np[8] = ((_bwz * wz_sign) + _noise_wz) / max_ang_vel
 
             action = torch.tensor(action_np, dtype=torch.float32, device=env.device).unsqueeze(0)
 
-            # Combined Phase 1: PRE-step Skill-2 obs 캡처 (off-by-one 방지)
-            s2_obs_pre = None
+            # Carry: env terminated 사용 안 함 (Skill2EvalEnv에 topple 없음, 직접 체크)
+            # Combined: Phase 1에서만 env terminated 활용
             if is_combined and current_phase == 1:
-                s2_obs_pre = env._compute_skill2_actor_obs()
+                _teleop_allow_terminate[0] = True
+            else:
+                _teleop_allow_terminate[0] = False
+
+            # Combined/Carry Phase 1: S2 expert 자동 실행
+            s2_obs_pre = None
+            if (is_combined or is_carry) and current_phase == 1:
+                if is_carry:
+                    # Skill2EvalEnv: obs["policy"]가 곧 30D actor obs
+                    s2_obs_pre = obs["policy"]
+                else:
+                    # Skill3Env: skill2 actor obs를 별도 계산
+                    s2_obs_pre = env._compute_skill2_actor_obs()
+                if s2_expert_mode and s2_dp is not None:
+                    with torch.no_grad():
+                        _s2_obs = s2_obs_pre
+                        _s2_ba = s2_dp.base_action_normalized(_s2_obs)
+                        if s2_rpol is not None:
+                            _s2_no = torch.nan_to_num(torch.clamp(
+                                s2_dp.normalizer(_s2_obs, "obs", forward=True), -3, 3), nan=0.0)
+                            _s2_ro = torch.cat([_s2_no, _s2_ba], dim=-1)
+                            _, _, _, _, _s2_ram = s2_rpol.get_action_and_value(_s2_ro)
+                            action = s2_dp.normalizer(
+                                _s2_ba + torch.clamp(_s2_ram, -1, 1) * s2_scale,
+                                "action", forward=False)
+                        else:
+                            action = s2_dp.normalizer(_s2_ba, "action", forward=False)
+                    action_np = action[0].cpu().numpy()
 
             # 환경 step
             next_obs, reward, terminated, truncated, info = env.step(action)
             step_count += 1
 
             # ══════════════════════════════════════════════════
+            #  Carry mode — Phase 1(S2 expert) + Phase 2(carry teleop)
+            # ══════════════════════════════════════════════════
+            if is_carry:
+                action_s = _save_action(action_np)
+                rs = _read_robot_state_9d()
+
+                if current_phase == 1:
+                    # Phase 1: S2 expert 자동 실행 (기록 안 함)
+                    _grip_pos = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                    _grip_closed = _grip_pos < float(env.cfg.grasp_gripper_threshold)
+                    _has_contact = False
+                    if env.contact_sensor is not None:
+                        _cf = env._contact_force_per_env()[0].item()
+                        _has_contact = _cf > float(env.cfg.grasp_contact_threshold)
+                    _objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+
+                    _eg = bool(env.object_grasped[0].item()) if hasattr(env, 'object_grasped') else (_grip_closed and _has_contact)
+                    if _eg and _objZ > 0.05:
+                        s2_lift_counter += 1
+                    else:
+                        s2_lift_counter = 0
+
+                    # S2 Phase 1 실패 감지 (train_resip 동일): topple/nolift 직접 체크
+                    _s2_failed = False
+                    if _objZ < 0.026 and step_count > 20:
+                        print(f"\n  [TOPPLE] S2 phase objZ={_objZ:.3f} step={step_count}")
+                        _s2_failed = True
+                    elif step_count > 700 and _objZ < 0.04:
+                        print(f"\n  [NOLIFT] S2 phase objZ={_objZ:.3f} step={step_count}")
+                        _s2_failed = True
+                    if _s2_failed:
+                        print(f"\n  [S2 FAIL] objZ={_objZ:.3f} step={step_count} — env terminated, 자동 리셋")
+                        s2_lift_counter = 0; current_phase = 1; carry_total_steps = 0
+                        if s2_expert_mode and s2_dp is not None:
+                            s2_dp.reset()
+                        obs, info = env.reset()
+                        step_count = 0
+                        continue
+
+                    if step_count % 25 == 0:
+                        print(f"\r  [S2 Expert] step={step_count} grip={_grip_pos:.3f} objZ={_objZ:.3f} lift={s2_lift_counter}/{S2_LIFT_HOLD}", end="", flush=True)
+
+                    if s2_lift_counter >= S2_LIFT_HOLD:
+                        # 전환 시점의 실제 arm pose 캡처
+                        carry_arm_start = env.robot.data.joint_pos[0, env.arm_idx][:5].cpu().numpy().astype(np.float64)
+                        carry_grip_start = env.robot.data.joint_pos[0, env.gripper_idx].item()
+
+                        # grip 범위 필터: 서버 분포 mean=0.276 std=0.038 → 95% [0.20, 0.35]
+                        # OOD grip으로 BC 학습하면 전환 시 고장
+                        if carry_grip_start < 0.20 or carry_grip_start > 0.35:
+                            print(f"\n  [GRIP OOD] grip={carry_grip_start:.3f} not in [0.20, 0.35] — 리셋")
+                            s2_lift_counter = 0
+                            if s2_expert_mode and s2_dp is not None:
+                                s2_dp.reset()
+                            obs, info = env.reset()
+                            step_count = 0
+                            continue
+
+                        _dir_label = _nav_dir_schedule[saved_count] if _nav_dir_schedule and saved_count < len(_nav_dir_schedule) else "?"
+                        print(f"\n  >>> Carry: S2 lift 완료, carry 텔레옵 시작 — 방향: {_dir_label}")
+                        print(f"      arm_start={[f'{v:+.3f}' for v in carry_arm_start]} grip={carry_grip_start:.3f}")
+                        current_phase = 2
+                        carry_total_steps = 0
+                        s2_lift_counter = 0
+                        if s2_expert_mode and s2_dp is not None:
+                            s2_dp.reset()
+                        env.episode_length_buf[0] = 0
+
+                elif current_phase == 2:
+                    # Phase 2: Carry 텔레옵 (기록)
+                    carry_total_steps += 1
+                    episode_obs.append(obs["policy"][0].cpu().numpy())
+                    episode_actions.append(action_s)
+                    episode_active.append(bool(is_active))
+                    episode_robot_state.append(rs)
+                    episode_object_pos_w.append(env.object_rigid.data.root_pos_w[0].cpu().numpy())
+                    episode_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
+                    episode_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
+                    episode_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
+
+                    # Drop detection: objZ < 0.05 → 물체 떨어트림 → 자동 폐기+리셋
+                    _gp = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                    _objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+                    if _objZ < 0.05 and carry_total_steps > 10:
+                        print(f"\n  [DROP] objZ={_objZ:.3f} — 물체 낙하, 자동 리셋")
+                        episode_obs.clear(); episode_actions.clear()
+                        episode_active.clear(); episode_robot_state.clear()
+                        episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                        episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
+                        s2_lift_counter = 0; current_phase = 1; carry_total_steps = 0
+                        obs, info = env.reset()
+                        step_count = 0
+                        continue
+
+                    if step_count % 25 == 0:
+                        t_interp = min(carry_total_steps / args.carry_interp_steps, 1.0)
+                        conn_str = "ON" if is_active else "OFF"
+                        _ap = env.robot.data.joint_pos[0, env.arm_idx][:5].cpu().tolist()
+                        _dir_label = _nav_dir_schedule[saved_count] if _nav_dir_schedule and saved_count < len(_nav_dir_schedule) else "?"
+                        print(f"  [{conn_str}] Carry [{_dir_label}] | steps={carry_total_steps}/{_CARRY_RECORD_STEPS} interp={t_interp:.2f} | "
+                              f"arm3={_ap[3]:+.3f} grip={_gp:.3f} objZ={_objZ:.3f} | saved={saved_count}/{max_demos}")
+
+                    # 600 step 자동 저장
+                    if carry_total_steps >= _CARRY_RECORD_STEPS:
+                        _save_episode(hdf5_file, saved_count,
+                                      episode_obs, episode_actions, episode_active, episode_robot_state,
+                                      episode_object_pos_w, episode_object_quat_w,
+                                      episode_robot_pos_w, episode_robot_quat_w)
+                        saved_count += 1
+                        _dir_done = _nav_dir_schedule[saved_count - 1] if _nav_dir_schedule and saved_count - 1 < len(_nav_dir_schedule) else "?"
+                        _dir_next = _nav_dir_schedule[saved_count] if _nav_dir_schedule and saved_count < len(_nav_dir_schedule) else "DONE"
+                        print(f"\n  [AUTO] Carry 저장 ({carry_total_steps} steps, {_dir_done}) — {saved_count}/{max_demos}")
+                        episode_obs.clear(); episode_actions.clear()
+                        episode_active.clear(); episode_robot_state.clear()
+                        episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                        episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
+                        s2_lift_counter = 0; current_phase = 1; carry_total_steps = 0
+                        if saved_count >= max_demos:
+                            break
+                        print(f"  [Carry] 다음 방향: {_dir_next}")
+                        obs, info = env.reset()
+                        step_count = 0
+                        continue
+
+                # 수동 종료 (화살표 키)
+                key = _check_arrow_key()
+                if key == 'left':
+                    print(f"\n  [←] Carry 폐기, 리셋")
+                    episode_obs.clear(); episode_actions.clear()
+                    episode_active.clear(); episode_robot_state.clear()
+                    episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                    episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
+                    s2_lift_counter = 0; current_phase = 1; carry_total_steps = 0
+                    obs, info = env.reset()
+                    step_count = 0
+                elif key == 'right':
+                    if current_phase == 2 and len(episode_obs) > 10:
+                        _save_episode(hdf5_file, saved_count,
+                                      episode_obs, episode_actions, episode_active, episode_robot_state,
+                                      episode_object_pos_w, episode_object_quat_w,
+                                      episode_robot_pos_w, episode_robot_quat_w)
+                        saved_count += 1
+                        print(f"\n  [→] Carry 저장 ({len(episode_obs)} steps)")
+                        episode_obs.clear(); episode_actions.clear()
+                        episode_active.clear(); episode_robot_state.clear()
+                        episode_object_pos_w.clear(); episode_object_quat_w.clear()
+                        episode_robot_pos_w.clear(); episode_robot_quat_w.clear()
+                        s2_lift_counter = 0; current_phase = 1; carry_total_steps = 0
+                        obs, info = env.reset()
+                        step_count = 0
+                        if saved_count >= max_demos:
+                            break
+                    else:
+                        print(f"\n  [→] Carry: Phase {current_phase}, steps={len(episode_obs)} — 아직 기록 부족")
+                else:
+                    obs = next_obs
+
+            # ══════════════════════════════════════════════════
             #  Combined mode — phase-aware recording
             # ══════════════════════════════════════════════════
-            if is_combined:
+            elif is_combined:
                 action_s = _save_action(action_np)
                 rs = _read_robot_state_9d()
 
@@ -1057,21 +1418,35 @@ def main():
                     phase1_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
                     phase1_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
 
-                    # 파지 유지 카운터: contact sensor + gripper 닫힘 직접 확인
-                    # (friction grasp라 object_grasped가 한번 True 되면 안 풀림)
+                    # 파지 유지 카운터
                     _grip_pos = env.robot.data.joint_pos[0, env.gripper_idx].item()
                     _grip_closed = _grip_pos < float(env.cfg.grasp_gripper_threshold)
                     _has_contact = False
                     if env.contact_sensor is not None:
                         _cf = env._contact_force_per_env()[0].item()
                         _has_contact = _cf > float(env.cfg.grasp_contact_threshold)
-                    if _grip_closed and _has_contact:
-                        grasp_hold_counter += 1
-                    else:
-                        grasp_hold_counter = 0
+                    _objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
 
-                    # Phase 1→2 전환: grasp 유지 충분
-                    if grasp_hold_counter >= args.grasp_hold_steps:
+                    if s2_expert_mode:
+                        # Expert 모드: lift 감지 (grasped + objZ > 0.05)
+                        _eg = bool(env.object_grasped[0].item()) if hasattr(env, 'object_grasped') else (_grip_closed and _has_contact)
+                        if _eg and _objZ > 0.05:
+                            s2_lift_counter += 1
+                        else:
+                            s2_lift_counter = 0
+                        if step_count % 25 == 0:
+                            print(f"\r  [S2 Expert] step={step_count} grip={_grip_pos:.3f} objZ={_objZ:.3f} lift={s2_lift_counter}/{S2_LIFT_HOLD}", end="", flush=True)
+                        _phase1_done = s2_lift_counter >= S2_LIFT_HOLD
+                    else:
+                        # 텔레옵 모드: contact + gripper 유지
+                        if _grip_closed and _has_contact:
+                            grasp_hold_counter += 1
+                        else:
+                            grasp_hold_counter = 0; s2_lift_counter = 0
+                        _phase1_done = grasp_hold_counter >= args.grasp_hold_steps
+
+                    # Phase 1→2 전환
+                    if _phase1_done:
                         _save_episode(hdf5_skill2, skill2_saved,
                                       phase1_obs, phase1_actions, phase1_active, phase1_robot_state,
                                       phase1_object_pos_w, phase1_object_quat_w,
@@ -1083,19 +1458,46 @@ def main():
                         phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
                         phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                         current_phase = 2
-                        grasp_hold_counter = 0
+                        grasp_hold_counter = 0; s2_lift_counter = 0
+                        if s2_expert_mode and s2_dp is not None:
+                            s2_dp.reset()
+                            # S2 마지막 arm action 저장 (Phase 2에서 arm 고정용)
+                            env._s2_last_arm_action = action[0, :6].clone()
                         env.episode_length_buf[0] = 0  # Transit용 타이머 리셋
 
                 elif current_phase == 2:
                     # Phase 2: Transit (미기록) — home 근처로 이동
                     env.episode_length_buf[0] = 0  # timeout 방지
+                    # Expert 모드: arm을 S2 마지막 action으로 고정, base만 텔레옵
+                    if s2_expert_mode and hasattr(env, '_s2_last_arm_action'):
+                        action[0, :6] = env._s2_last_arm_action
+                    # 실시간 arm delta 표시 (10 step마다)
+                    if step_count % 10 == 0:
+                        _S2M = [-0.040, -0.193, 0.275, -1.280, -0.035]
+                        _ap = env.robot.data.joint_pos[0, env.arm_idx][:5].cpu().tolist()
+                        _gp = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                        _d = [a - m for a, m in zip(_ap, _S2M)]
+                        print(f"\r  [Transit] dist={home_dist:.2f}m arm3={_ap[3]:+.3f}(Δ{_d[3]:+.3f}) grip={_gp:.3f}", end="", flush=True)
 
-                    # Phase 2→3 전환: home 근접 + FOV 내
-                    close_enough = home_dist < args.home_dist_thresh
+                    # Phase 2→3 전환: home 근접 + FOV 내 (에피소드별 랜덤 거리)
+                    if not hasattr(env, '_s3_transition_dist'):
+                        import random as _rnd
+                        env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
+                    close_enough = home_dist < env._s3_transition_dist
                     in_fov = abs(heading_to_home) < args.home_fov_thresh
                     if close_enough and in_fov:
+                        # S3 전환 시 arm 상태 출력 (S2 전환 mean과 비교)
+                        _S2_MEAN = [-0.040, -0.193, 0.275, -1.280, -0.035]  # 서버 89K 샘플 평균
+                        _S2_GRIP_MEAN = 0.276
+                        _arm_pos = env.robot.data.joint_pos[0, env.arm_idx][:5].cpu().tolist()
+                        _grip_pos = env.robot.data.joint_pos[0, env.gripper_idx].item()
+                        _delta = [a - m for a, m in zip(_arm_pos, _S2_MEAN)]
                         print(f"\n  >>> Phase 2->3: Transit 완료 "
-                              f"(home={home_dist:.2f}m, heading={heading_to_home:+.2f}rad), Skill-3 기록 시작")
+                              f"(home={home_dist:.2f}m, heading={heading_to_home:+.2f}rad, "
+                              f"transition_dist={env._s3_transition_dist:.2f}m)")
+                        print(f"      arm_pos={[f'{v:+.3f}' for v in _arm_pos]} grip={_grip_pos:.3f}")
+                        print(f"      delta  ={[f'{v:+.3f}' for v in _delta]} grip_delta={_grip_pos - _S2_GRIP_MEAN:+.3f}")
+                        print(f"      Skill-3 기록 시작")
                         current_phase = 3
                         env.episode_length_buf[0] = 0  # Skill-3용 타이머 리셋
 
@@ -1105,10 +1507,13 @@ def main():
                     phase3_actions.append(action_s)
                     phase3_active.append(bool(is_active))
                     phase3_robot_state.append(rs)
-                    phase3_object_pos_w.append(env.object_pos_w[0].cpu().numpy())
+                    # 약병: 실제 물리 위치 (object_pos_w는 gripper 추종 텔레포트 값)
+                    phase3_object_pos_w.append(env.object_rigid.data.root_pos_w[0].cpu().numpy())
                     phase3_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
                     phase3_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
                     phase3_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
+                    # 컵: dest object 위치 (물리 body, 50kg)
+                    phase3_dest_pos_w.append(env.dest_object_pos_w[0].cpu().numpy())
 
                 # 상태 출력 (+ grasp 디버그 정보)
                 if step_count % 25 == 0:
@@ -1163,10 +1568,11 @@ def main():
                     phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                     phase3_obs.clear(); phase3_actions.clear()
                     phase3_active.clear(); phase3_robot_state.clear()
-                    phase3_object_pos_w.clear(); phase3_object_quat_w.clear()
+                    phase3_object_pos_w.clear(); phase3_object_quat_w.clear(); phase3_dest_pos_w.clear()
                     phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
-                    grasp_hold_counter = 0
+                    grasp_hold_counter = 0; s2_lift_counter = 0
                     current_phase = 1
+                    env._s3_transition_dist = _rnd.uniform(0.6, 0.9)  # 새 에피소드 랜덤 거리
                     obs, info = env.reset()
                     if _dest_marker is not None:
                         _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
@@ -1187,7 +1593,7 @@ def main():
                             phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
                             phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
                             current_phase = 2
-                            grasp_hold_counter = 0
+                            grasp_hold_counter = 0; s2_lift_counter = 0
                             env.episode_length_buf[0] = 0
                         else:
                             print(f"\n  [→] Phase 1: 파지 미완료 (grasped={grasped_now}, steps={len(phase1_obs)}) — 폐기, 리셋")
@@ -1195,8 +1601,9 @@ def main():
                             phase1_active.clear(); phase1_robot_state.clear()
                             phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
                             phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
-                            grasp_hold_counter = 0
+                            grasp_hold_counter = 0; s2_lift_counter = 0
                             current_phase = 1
+                            env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
                             obs, info = env.reset()
                             if _dest_marker is not None:
                                 _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
@@ -1212,17 +1619,19 @@ def main():
                             _save_episode(hdf5_skill3, skill3_saved,
                                           phase3_obs, phase3_actions, phase3_active, phase3_robot_state,
                                           phase3_object_pos_w, phase3_object_quat_w,
-                                          phase3_robot_pos_w, phase3_robot_quat_w)
+                                          phase3_robot_pos_w, phase3_robot_quat_w,
+                                          ep_dest_pos_w=phase3_dest_pos_w)
                             skill3_saved += 1
                             print(f"\n  [→] Phase 3 수동 완료: Skill-3 저장 ({len(phase3_obs)} steps)")
                         else:
                             print(f"\n  [→] Phase 3: steps 부족 ({len(phase3_obs)}, active={active_s}) — 폐기")
                         phase3_obs.clear(); phase3_actions.clear()
                         phase3_active.clear(); phase3_robot_state.clear()
-                        phase3_object_pos_w.clear(); phase3_object_quat_w.clear()
+                        phase3_object_pos_w.clear(); phase3_object_quat_w.clear(); phase3_dest_pos_w.clear()
                         phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
                         current_phase = 1
-                        grasp_hold_counter = 0
+                        grasp_hold_counter = 0; s2_lift_counter = 0
+                        env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
                         obs, info = env.reset()
                         if _dest_marker is not None:
                             _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
@@ -1392,6 +1801,13 @@ def main():
         print(f"  Combined 녹화 완료")
         print(f"  Skill-2 에피소드: {skill2_saved} -> {skill2_path}")
         print(f"  Skill-3 에피소드: {skill3_saved} -> {skill3_path}")
+        print("=" * 60)
+    elif is_carry:
+        hdf5_file.close()
+        print(f"\n" + "=" * 60)
+        print(f"  Carry 녹화 완료")
+        print(f"  저장된 에피소드: {saved_count}")
+        print(f"  파일: {output_path}")
         print("=" * 60)
     else:
         hdf5_file.close()

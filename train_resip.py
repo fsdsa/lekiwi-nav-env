@@ -1662,6 +1662,15 @@ def main_carry():
 
     # Arm interpolation: captured arm pose → S3_ARM_END over CARRY_INTERP_STEPS
     S3_ARM_END = torch.tensor([+0.002, -0.193, +0.295, -1.306, +0.006], device=dev)
+    # Kiwi IK for wheel-level reward
+    import math as _math
+    _angles = [a * _math.pi / 180.0 for a in [-30.0, -150.0, 90.0]]  # FL, FR, Back
+    KIWI_M_T = torch.tensor([
+        [_math.cos(_angles[0]), _math.sin(_angles[0]), 0.1085],
+        [_math.cos(_angles[1]), _math.sin(_angles[1]), 0.1085],
+        [_math.cos(_angles[2]), _math.sin(_angles[2]), 0.1085],
+    ], dtype=torch.float32, device=dev)
+    WHEEL_R = 0.049
     S3_GRIP_END = 0.15
     CARRY_INTERP_STEPS = 600
     carry_arm_start = torch.zeros(N, 5, device=dev)  # captured at S2→carry transition
@@ -1716,6 +1725,7 @@ def main_carry():
               f"S2:{(phase==0).sum().item()} Carry:{(phase==1).sum().item()}")
 
         carry_step_count = torch.zeros(N, dtype=torch.long, device=dev)
+        carry_valid = torch.zeros((S, N), dtype=torch.bool, device=dev)
         for step in range(S):
             if not ev: gs += N
 
@@ -1736,10 +1746,14 @@ def main_carry():
 
                 # ── Carry obs: env 30D + direction_cmd 3D → 33D ──
                 carry_obs = torch.cat([actor_obs, direction_cmd], dim=-1)  # (N, 33)
-                carry_ba = s3_dp.base_action_normalized(carry_obs)
+                # Lookup table base action + velocity ramp (50step 가속)
+                vel_ramp = (carry_step_counter.float() / 50.0).clamp(max=1.0)
+                carry_ba = torch.zeros(N, S3_AD, device=dev)
+                carry_ba[:, 6] = direction_cmd[:, 0] * (0.15 / env.env.cfg.max_lin_vel) * vel_ramp
+                carry_ba[:, 7] = direction_cmd[:, 1] * (0.15 / env.env.cfg.max_lin_vel) * vel_ramp
+                carry_ba[:, 8] = direction_cmd[:, 2] * (1.0 / env.env.cfg.max_ang_vel) * vel_ramp
                 carry_no = torch.nan_to_num(torch.clamp(
                     s3_dp.normalizer(carry_obs, "obs", forward=True), -3, 3), nan=0.0)
-                carry_ba = torch.nan_to_num(carry_ba, nan=0.0)
                 carry_ro = torch.cat([carry_no, carry_ba], dim=-1)  # (N, 42)
 
             # Carry residual (trainable)
@@ -1753,7 +1767,11 @@ def main_carry():
             with torch.no_grad():
                 _, carry_lp, _, _, _ = rpol.get_action_and_value(carry_ro, carry_ra)
             combined = carry_ba + carry_ra * carry_scale
-            carry_action_raw = s3_dp.normalizer(combined, "action", forward=False)
+            # 회전 명령(TL/TR)일 때 residual 비활성화 — BC만 사용
+            is_turn = (direction_cmd[:, 2].abs() > 0.5)  # TL=[0,0,1], TR=[0,0,-1]
+            if is_turn.any():
+                combined[is_turn] = carry_ba[is_turn]  # residual 제거, BC만
+            carry_action_raw = combined.clone()  # 이미 env action space [-1, 1]
 
             # ── Arm interpolation: override action[0:6] for carry envs ──
             is_carry = (phase == 1)
@@ -1791,6 +1809,8 @@ def main_carry():
             val_b[step] = carry_val.view(-1)
             done_b[step] = next_done
             done_b[step][is_s2] = 1.0  # S2 steps don't contribute to GAE
+            _is_turn = (direction_cmd[:, 2].abs() > 0.5)
+            carry_valid[step] = is_carry & (~_is_turn)  # Turn env 제외, linear만 PPO
 
             # Step env
             next_obs, _, ter, tru, info = env.step(action)
@@ -1841,7 +1861,7 @@ def main_carry():
                 s3_dp.reset()
                 print(f"    [S2→Carry] {t_ids.shape[0]} envs at step {step}")
 
-            # ── Carry reward (direction tracking — navigate와 동일 구조) ──
+            # ── Carry reward (body-velocity tracking — navigate 동일 구조) ──
             rew = torch.zeros(N, device=dev)
             carry_drop = torch.zeros(N, dtype=torch.bool, device=dev)
             if is_carry.any():
@@ -1849,25 +1869,28 @@ def main_carry():
                 body_vel = env.env.robot.data.root_lin_vel_b   # (N, 3)
                 body_wz = env.env.robot.data.root_ang_vel_b[:, 2]  # (N,)
 
-                # 회전 목표: navigate와 동일 (0.33 × max_ang_vel)
-                target_vx = direction_cmd[:, 0] * 0.15
-                target_vy = direction_cmd[:, 1] * 0.15
-                target_wz = direction_cmd[:, 2] * 0.33 * env.env.cfg.max_ang_vel  # 0.33 × 3.0 = 1.0 rad/s
+                # Velocity ramp (action ramp와 동일)
+                _vel_ramp = (carry_step_counter.float() / 50.0).clamp(max=1.0)
+
+                # Body velocity targets (ramp 적용)
+                target_vx = direction_cmd[:, 0] * 0.15 * _vel_ramp
+                target_vy = direction_cmd[:, 1] * 0.15 * _vel_ramp
+                target_wz = direction_cmd[:, 2] * 1.0 * _vel_ramp  # 0.33 × max_ang_vel = 1.0
 
                 lin_err = (body_vel[:, 0] - target_vx)**2 + (body_vel[:, 1] - target_vy)**2
                 ang_err = (body_wz - target_wz)**2
 
-                # 커널 분모 σ² (navigate와 동일, 2σ² 아님)
+                # Gaussian kernel (navigate와 동일, σ² 분모)
                 CARRY_LIN_STD = 0.075
                 CARRY_ANG_STD = 0.10
                 rew_lin = 1.5 * torch.exp(-lin_err / (CARRY_LIN_STD ** 2))
                 rew_ang = 1.5 * torch.exp(-ang_err / (CARRY_ANG_STD ** 2))
 
-                # Smoothness (navigate와 동일)
+                # Smoothness
                 delta_base = combined[:, 6:9] - prev_action[:, 6:9]
                 rew_smooth = -0.005 * (delta_base ** 2).sum(dim=-1)
 
-                # Hold bonus (carry 전용)
+                # Hold bonus
                 objZ = env.env.object_pos_w[:, 2] - env_origins[:, 2]
                 rew_hold = 0.05 * (objZ > 0.05).float()
 
@@ -1935,53 +1958,88 @@ def main_carry():
 
             carry_step_count[is_carry] += 1
 
-        # ── PPO Update (carry transitions only) ──
+        # ── PPO Update (carry transitions only, navigate-identical structure) ──
         if not ev:
             with torch.no_grad():
                 carry_obs_f = torch.cat([next_obs, direction_cmd], dim=-1)
                 carry_no_f = torch.nan_to_num(torch.clamp(
                     s3_dp.normalizer(carry_obs_f, "obs", forward=True), -3, 3), nan=0.0)
-                carry_ba_f = torch.nan_to_num(s3_dp.base_action_normalized(carry_obs_f), nan=0.0)
+                vel_ramp_f = (carry_step_counter.float() / 50.0).clamp(max=1.0)
+                carry_ba_f = torch.zeros(N, S3_AD, device=dev)
+                carry_ba_f[:, 6] = direction_cmd[:, 0] * (0.15 / env.env.cfg.max_lin_vel) * vel_ramp_f
+                carry_ba_f[:, 7] = direction_cmd[:, 1] * (0.15 / env.env.cfg.max_lin_vel) * vel_ramp_f
+                carry_ba_f[:, 8] = direction_cmd[:, 2] * (1.0 / env.env.cfg.max_ang_vel) * vel_ramp_f
                 carry_ro_f = torch.cat([carry_no_f, carry_ba_f], dim=-1)
                 nv = rpol.get_value(carry_ro_f).view(-1)
 
-            bret, badv = compute_gae(val_b, nv, rew_b, done_b,
-                                     next_done, S, args.discount, args.gae_lambda)
-            badv = (badv - badv.mean()) / (badv.std() + 1e-8)
-            bobs = obs_b.view(-1, RD)
-            bact = act_b.view(-1, S3_AD)
-            blp  = lp_b.view(-1)
-            bret = bret.view(-1)
-            badv = badv.view(-1)
-            bv   = val_b.view(-1)
+            adv, ret = compute_gae(val_b, nv, rew_b, done_b, next_done,
+                                   S, args.discount, args.gae_lambda)
 
-            idx = torch.randperm(B, device=dev)
-            for ep in range(args.update_epochs):
-                stop = False
-                for st in range(0, B, MB):
-                    mb = idx[st:st+MB]
-                    _, nlp, ent, nv2, _ = rpol.get_action_and_value(bobs[mb], bact[mb])
-                    ratio = (nlp.view(-1) - blp[mb]).exp()
-                    pg1 = -badv[mb] * ratio
-                    pg2 = -badv[mb] * ratio.clamp(1-0.2, 1+0.2)
-                    pg = torch.max(pg1, pg2).mean()
-                    vl = 0.5 * ((nv2.view(-1) - bret[mb])**2).mean()
-                    loss = pg + vl * 0.5 - ent.mean() * args.ent_coef
-                    opt_a.zero_grad(); opt_c.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(rpol.parameters(), 0.5)
-                    opt_a.step(); opt_c.step()
-                    with torch.no_grad():
-                        log_ratio = nlp.view(-1) - blp[mb]
-                        kl = ((log_ratio.exp() - 1) - log_ratio).mean()
-                    iter_pg_loss += pg.item()
-                    iter_vf_loss += vl.item()
-                    iter_entropy += ent.mean().item()
-                    iter_kl += kl.item()
-                    iter_ppo_updates += 1
-                    if args.target_kl and kl > args.target_kl:
-                        stop = True; break
-                if stop: break
+            # Flatten all buffers
+            f = lambda t, *s: t.reshape(-1, *s) if s else t.reshape(-1)
+            bo_all, ba_all, blp_all = f(obs_b, RD), f(act_b, S3_AD), f(lp_b)
+            bv_all, badv_all, bret_all = f(val_b), f(adv), f(ret)
+            valid_mask = carry_valid.reshape(-1)  # (S*N,) bool
+
+            # Filter to carry-only transitions
+            valid_idx = valid_mask.nonzero(as_tuple=False).squeeze(-1)
+            BV = len(valid_idx)
+
+            if BV > 0:
+                bo   = bo_all[valid_idx]
+                ba_  = ba_all[valid_idx]
+                blp  = blp_all[valid_idx]
+                bv   = bv_all[valid_idx]
+                badv = badv_all[valid_idx]
+                bret = bret_all[valid_idx]
+
+                MBV = max(BV // max(args.num_minibatches, 1), 1)
+                idx = np.arange(BV); cfs = []
+
+                for ep in range(args.update_epochs):
+                    stop = False; np.random.shuffle(idx)
+                    for i0 in range(0, BV, MBV):
+                        mi = idx[i0:i0 + MBV]
+                        _, nlp, ent, nv2, am = rpol.get_action_and_value(bo[mi], ba_[mi])
+                        lr = nlp - blp[mi]; ratio = lr.exp()
+
+                        with torch.no_grad():
+                            kl = ((ratio - 1) - lr).mean()
+                            cfs.append(((ratio - 1).abs() > args.clip_coef).float().mean().item())
+
+                        ma = badv[mi]
+                        if args.norm_adv:
+                            ma = (ma - ma.mean()) / (ma.std() + 1e-8)
+
+                        pg = torch.max(-ma * ratio,
+                                       -ma * ratio.clamp(1 - args.clip_coef,
+                                                          1 + args.clip_coef)).mean()
+                        vl = 0.5 * ((nv2.view(-1) - bret[mi]) ** 2).mean()
+                        el = ent.mean() * args.ent_coef
+
+                        loss = (pg - el
+                                + args.residual_l1 * am.abs().mean()
+                                + args.residual_l2 * (am ** 2).mean()
+                                + vl * args.vf_coef)
+
+                        opt_a.zero_grad(); opt_c.zero_grad()
+                        loss.backward()
+                        nn.utils.clip_grad_norm_(rpol.parameters(), args.max_grad_norm)
+                        opt_a.step(); opt_c.step()
+
+                        iter_pg_loss += pg.item()
+                        iter_vf_loss += vl.item()
+                        iter_entropy += ent.mean().item()
+                        iter_kl += kl.item()
+                        iter_ppo_updates += 1
+
+                        if args.target_kl and kl > args.target_kl:
+                            print(f"    KL stop ep{ep}: {kl:.4f}>{args.target_kl}")
+                            stop = True; break
+                    if stop: break
+
+                print(f"  PPO: {BV}/{B} valid carry steps ({100*BV/B:.0f}%), clip={np.mean(cfs):.3f}")
+
             sch_a.step(); sch_c.step()
 
         # ── Comprehensive Logging ──

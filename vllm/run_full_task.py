@@ -69,7 +69,7 @@ parser.add_argument("--safety_dist", type=float, default=0.3)
 parser.add_argument("--enable_safety", action="store_true", default=True)
 
 # Timing
-parser.add_argument("--vlm_interval", type=int, default=1,
+parser.add_argument("--vlm_interval", type=int, default=50,
                     help="VLM 호출 시도 간격 (steps, 비동기 _pending으로 자동 throttle)")
 parser.add_argument("--max_total_steps", type=int, default=6000,
                     help="최대 스텝 (6000 = 10분 at 10Hz)")
@@ -108,7 +108,7 @@ from PIL import Image
 
 import omni.replicator.core as rep
 
-from vlm_orchestrator import classify_user_request, RelativePlacementOrchestrator, VIVAOrchestrator, SkillState
+from vlm_orchestrator import classify_user_request, RelativePlacementOrchestrator, VIVAOrchestrator, SkillState, LIFTED_POSE_RANGE
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -212,19 +212,9 @@ def depth_safety_check(depth_image: np.ndarray, action: np.ndarray,
 #  Robot Status (VIVA mode)
 # ═══════════════════════════════════════════════════════════════════════
 
-LIFTED_POSE_RANGE = {
-    "arm0": (-0.09, +0.16),
-    "arm1": (-0.20, -0.19),
-    "arm2": (+0.23, +0.31),
-    "arm3": (-1.52, -0.98),
-    "arm4": (-0.06, +0.01),
-    "grip": (0.13, 0.55),
-}
-
-
 def check_lifted_pose(arm_joints: list, grip_pos: float, contact: bool) -> bool:
     """joint가 lifted pose range 내 + contact 감지 시 True.
-    S2→S3 전환 판정에 사용. 400 step 연속 유지 조건 없음 (도달 자체가 트리거)."""
+    S2→S3 전환 판정에 사용. LIFTED_POSE_RANGE는 vlm_orchestrator에서 import."""
     if not contact:
         return False
     joints_with_grip = arm_joints + [grip_pos]
@@ -489,11 +479,32 @@ def main():
                     contact = get_contact_detected(env)
                     robot_status = build_robot_status(env, contact, depth_min)
                     orch.update_robot_status(robot_status)
+                    orch.update_contact(contact)
                     orch.tick()  # timeout 체크
 
-                # (d) VLM 비동기 호출
-                if total_steps % args.vlm_interval == 0:
-                    orch.query_async(base_rgb)
+                    # ── 코드 기반 전환 판별 (S2/S4) ──
+                    jp = env.robot.data.joint_pos[0]
+                    arm_joints = jp[env.arm_idx[:5]].tolist()
+                    grip_pos = jp[env.gripper_idx].item()
+
+                    orch.check_lifted_complete(arm_joints, grip_pos, contact)
+                    orch.check_place_complete(grip_pos, contact)
+
+                # (d) VLM 호출 — 스킬별 분기
+                if args.mode == "viva":
+                    if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
+                        # S1/S3: 매 vlm_interval 스텝마다 VLM 호출 (방향 지시)
+                        if total_steps % args.vlm_interval == 0:
+                            orch.query_async(base_rgb)
+                    elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
+                        # S2/S4: depth warning 시에만 VLM 호출 (장애물 판별)
+                        # obstacle_cleared=True이면 재호출 억제 (CONTINUE 이미 받음)
+                        if depth_min is not None and depth_min < args.safety_dist and not orch.obstacle_cleared:
+                            orch.query_obstacle_check_async(base_rgb)
+                        # 그 외에는 VLM 호출 안 함 → VLA가 고정 instruction으로 자율 수행
+                else:
+                    if total_steps % args.vlm_interval == 0:
+                        orch.query_async(base_rgb)
 
                 # (e) 종료 체크
                 if orch.is_done:
