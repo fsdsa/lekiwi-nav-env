@@ -1374,7 +1374,7 @@ def main_combined():
                 rew[r_arm_mask] += r_arm[r_arm_mask]
 
                 # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.20) ──
-                near_dest = phase_b & (src_dst_xy < 0.20)
+                near_dest = phase_b & (src_dst_xy < 0.25)
                 if near_dest.any():
                     objz_delta = torch.clamp(prev_src_h - src_h, -0.01, 0.01)
                     rew[near_dest] += (objz_delta * 150.0)[near_dest]
