@@ -1334,7 +1334,7 @@ def main_combined():
                 # S3 timeout
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
                 # Wedge detection: objZ > 0.10인데 is_holding 아니고 gripper 닫힌 상태 지속
-                wedged = s3m & (~is_holding) & (src_h > 0.10) & gripper_closed & (~attempting_place)
+                wedged = s3m & (~is_holding) & (src_h > 0.10) & gripper_closed & s3_phase_a_latch  # Phase A에서만
                 s3_wedged_counter[wedged] += 1
                 s3_wedged_counter[~wedged] = 0
                 s3_wedge_fail = s3m & (s3_wedged_counter >= 30)
