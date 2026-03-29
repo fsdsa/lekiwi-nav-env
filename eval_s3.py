@@ -214,8 +214,9 @@ for ep in range(args.num_episodes):
             else:
                 lift_counter = 0
 
-            if objZ < 0.026 and s2_step > 20:
-                print(f"    [S2 FAIL] objZ={objZ:.3f} step={s2_step} — retry ({attempt+1}/{max_retries})")
+            if (objZ < 0.026 and s2_step > 20) or (s2_step >= args.s2_max_steps - 1):
+                reason = f"objZ={objZ:.3f}" if objZ < 0.026 else "timeout"
+                print(f"    [S2 FAIL] {reason} step={s2_step} — retry ({attempt+1}/{max_retries})")
                 obs, _ = env.reset()
                 s2_dp.reset()
                 lift_counter = 0
@@ -350,8 +351,9 @@ for ep in range(args.num_episodes):
                   f"base_dst={base_dst:.3f} src_dst={src_dst:.3f} {contact_str} "
                   f"arm=[{arm_str}] act_arm=[{act_arm_str}] act_base=[{act_base_str}]{action_delta_str}")
 
-        # Drop detection
-        if objZ < 0.029 and s3_step > 10:
+        # Drop detection — Phase A: 0.04 (carrying height), Phase B: 0.029 (topple)
+        drop_thresh = 0.04 if phase_a_active else 0.029
+        if objZ < drop_thresh and s3_step > 10:
             print(f"    [DROP] step={s3_step} objZ={objZ:.3f} grip={grip_pos:.3f} {contact_str} "
                   f"arm=[{arm_str}] act=[{act_arm_str}] phase={'A' if phase_a_active else 'B'}")
             dropped = True

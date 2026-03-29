@@ -1319,9 +1319,10 @@ def main_combined():
                 is_holding = has_contact & gripper_closed & (grip_pos >= 0.20)
 
                 # ── R0: Drop detection (topple + contact 기반) ──
-                # Topple: objZ < 0.029 연속 8 step (Phase A, B 공통)
-                s3_topple_counter[s3m & (src_h < 0.029)] += 1
-                s3_topple_counter[s3m & (src_h >= 0.029)] = 0
+                # Phase A: 0.04 (carrying height), Phase B: 0.029 (topple)
+                s3_drop_thresh = torch.where(s3_phase_a_latch, torch.tensor(0.04, device=dev), torch.tensor(0.029, device=dev))
+                s3_topple_counter[s3m & (src_h < s3_drop_thresh)] += 1
+                s3_topple_counter[s3m & (src_h >= s3_drop_thresh)] = 0
                 s3_topple_drop = s3m & (s3_topple_counter >= 8) & (~ms_place)
 
                 # Contact loss: Phase A 전용 (Phase B에서는 place 시 contact 사라지므로 무시)
