@@ -1018,11 +1018,16 @@ def main_combined():
         gi += 1; it0 = time.time()
         ev = (gi - int(args.eval_first)) % args.eval_interval == 0
 
-        # Residual scale (전부 처음부터 full)
-        s3_scale = torch.zeros(S3_AD, device=dev)
-        s3_scale[0:5] = args.action_scale_arm
-        s3_scale[5] = args.action_scale_gripper
-        s3_scale[6:9] = args.action_scale_base
+        # Phase별 residual scale (Phase A: BC 보존, Phase B: RL 주도)
+        s3_scale_a = torch.zeros(S3_AD, device=dev)
+        s3_scale_a[0:5] = 0.05    # arm: BC 거의 그대로
+        s3_scale_a[5] = 0.05       # grip: BC 거의 그대로
+        s3_scale_a[6:9] = 0.10     # base: 약간 보정
+
+        s3_scale_b = torch.zeros(S3_AD, device=dev)
+        s3_scale_b[0:5] = 0.30     # arm: RL이 하강 동작 주도
+        s3_scale_b[5] = 0.80        # grip: RL이 열기 주도
+        s3_scale_b[6:9] = 0.10      # base: 미세 조정
 
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
         # 첫 iter이거나 모든 env가 S2일 때만 reset
@@ -1097,8 +1102,13 @@ def main_combined():
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
+            s3_scale = torch.where(
+                s3_phase_a_latch.unsqueeze(-1),
+                s3_scale_a.unsqueeze(0).expand(N, -1),
+                s3_scale_b.unsqueeze(0).expand(N, -1),
+            )
             combined = s3_ba + s3_ra * s3_scale
-            combined[:, 5] = torch.clamp(combined[:, 5], -0.45, 1.0)  # gripper action clamp (pos≈0.26)
+            combined[:, 5] = torch.clamp(combined[:, 5], -0.45, 1.0)  # gripper clamp: grip_pos >= ~0.26 (끼임 방지)
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
 
             # Merge action by phase
@@ -1357,19 +1367,23 @@ def main_combined():
                 r_arm_mask = phase_b & is_holding
                 rew[r_arm_mask] += r_arm[r_arm_mask]
 
-                # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.20 + is_holding) ──
-                # 데모: src_dst<0.20 진입 시 objZ≈0.19 → 0.003까지 하강
-                near_dest = phase_b & (src_dst_xy < 0.20) & is_holding
+                # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.20) ──
+                near_dest = phase_b & (src_dst_xy < 0.20)
                 if near_dest.any():
                     objz_delta = torch.clamp(prev_src_h - src_h, -0.01, 0.01)
-                    rew[near_dest] += (objz_delta * 100.0)[near_dest]  # 0.19m 하강 → +19 total
+                    rew[near_dest] += (objz_delta * 150.0)[near_dest]
 
-                # ── R_open: Phase B — gripper 열기 (near dest + low height + grip opening) ──
-                # carry 높이 ~0.20, place 시 arm 내려서 objZ < 0.15일 때 grip 열기 보상
-                release_ready = phase_b & (src_h < 0.15) & (grip_pos >= 0.20) & (src_dst_xy < S3_PLACE_RADIUS)
-                if release_ready.any():
-                    open_progress = torch.clamp((grip_pos[release_ready] - 0.30) / 0.70, 0.0, 1.0)
-                    rew[release_ready] += open_progress * 2.0
+                # ── R_arm_lower: Phase B — arm1 하강 보상 (데모: arm1이 올라감 = 팔 내림) ──
+                if near_dest.any():
+                    arm1 = arm_joints[:, 1]
+                    arm1_progress = torch.clamp((arm1 - 0.0) / 2.5, 0.0, 1.0)
+                    rew[near_dest] += (arm1_progress * 3.0)[near_dest]
+
+                # ── R_release: Phase B — grip 열기 (objZ < 0.10 + dest 근처) ──
+                low_enough = phase_b & (src_h < 0.10) & (src_dst_xy < S3_PLACE_RADIUS)
+                if low_enough.any():
+                    grip_open_progress = torch.clamp((grip_pos[low_enough] - 0.25) / 0.30, 0.0, 1.0)
+                    rew[low_enough] += grip_open_progress * 5.0
 
                 # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
@@ -1382,13 +1396,12 @@ def main_combined():
                 dest_penalty = torch.where(phase_b, torch.tensor(-0.1, device=dev), torch.tensor(-1.0, device=dev))
                 rew[dest_touching] += dest_penalty[dest_touching]
 
-                # ── R3: Place success (+200) ──
+                # ── R3: Place success (+200) — contact 기반 (물체 서있음 + dest 근처 + contact 없음) ──
                 place_cond = (
                     s3m & ~ms_place
-                    & (src_h > 0.025)
-                    & (src_h < 0.04)
                     & (src_dst_xy < S3_PLACE_RADIUS)
-                    & (grip_pos > 0.5)
+                    & (~has_contact)
+                    & (src_h > 0.029)             # 물체 서있음 (toppled < 0.029)
                     & ~s3_fail
                 )
                 if place_cond.any():

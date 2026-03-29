@@ -56,15 +56,17 @@ class DiffusionPolicyDataset(Dataset):
     obs_horizon=1 is sufficient — no stacking needed.
     """
 
-    def __init__(self, obs_list, act_list, pred_horizon):
+    def __init__(self, obs_list, act_list, pred_horizon, phase_a_oversample=1):
         """
         Args:
             obs_list: list of (T_i, obs_dim) arrays per episode
             act_list: list of (T_i, act_dim) arrays per episode
             pred_horizon: number of future actions to predict
+            phase_a_oversample: Phase A (obs[-1]==1.0) oversample factor
         """
         self.pred_horizon = pred_horizon
         self.samples = []
+        n_phase_a = 0
 
         for obs_ep, act_ep in zip(obs_list, act_list):
             T = len(obs_ep)
@@ -81,10 +83,18 @@ class DiffusionPolicyDataset(Dataset):
                     padding = np.tile(act_ep[-1:], (pad_len, 1))
                     action_seq = np.concatenate([available, padding], axis=0)
 
-                self.samples.append((
-                    obs.astype(np.float32),
-                    action_seq.astype(np.float32),
-                ))
+                sample = (obs.astype(np.float32), action_seq.astype(np.float32))
+                self.samples.append(sample)
+
+                # Phase A oversample: obs[-1] == 1.0 (phase_a_flag)
+                if phase_a_oversample > 1 and obs.shape[0] > 35 and obs[-1] > 0.5:
+                    for _ in range(phase_a_oversample - 1):
+                        self.samples.append(sample)
+                    n_phase_a += 1
+
+        if phase_a_oversample > 1 and n_phase_a > 0:
+            print(f"  Phase A oversample: {n_phase_a} steps × {phase_a_oversample}x = "
+                  f"{n_phase_a * phase_a_oversample} total (of {len(self.samples)})")
 
     def __len__(self):
         return len(self.samples)
@@ -194,8 +204,8 @@ def main():
                         help="Prediction horizon (official default: 16)")
     parser.add_argument("--action_horizon", type=int, default=8,
                         help="Execution horizon (official default: 8)")
-    parser.add_argument("--down_dims", type=int, nargs="+", default=[256, 512, 1024],
-                        help="UNet channel dims (official default: 256 512 1024)")
+    parser.add_argument("--down_dims", type=int, nargs="+", default=[64, 128, 256],
+                        help="UNet channel dims")
 
     # Diffusion (official defaults)
     parser.add_argument("--num_diffusion_iters", type=int, default=100,
@@ -227,6 +237,8 @@ def main():
                         help="Std of Gaussian noise added to arm+grip obs[0:6] (0.0=off)")
     parser.add_argument("--eval", action="store_true",
                         help="Run evaluation after training")
+    parser.add_argument("--phase_a_oversample", type=int, default=1,
+                        help="Phase A (obs[-1]==1.0) oversample factor (1=off, 10=10x)")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -259,7 +271,8 @@ def main():
     # =========================================================================
     # 3. Create dataset
     # =========================================================================
-    dataset = DiffusionPolicyDataset(obs_list, act_list, args.pred_horizon)
+    dataset = DiffusionPolicyDataset(obs_list, act_list, args.pred_horizon,
+                                     phase_a_oversample=args.phase_a_oversample)
     dataset.__init_augmentation__(
         vel_dropout_prob=args.vel_dropout,
         grip_noise_std=args.grip_noise,
