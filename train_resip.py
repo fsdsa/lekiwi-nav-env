@@ -1507,7 +1507,9 @@ def main_combined():
             valid_idx = valid_mask.nonzero(as_tuple=False).squeeze(-1)
             BV = len(valid_idx)
 
-            if BV > 0:
+            if BV == 0:
+                print(f"    [PPO] No valid S3 steps, skipping PPO update")
+            else:
                 bobs = obs_b.view(-1, RD)[valid_idx]
                 bact = act_b.view(-1, S3_AD)[valid_idx]
                 blp  = lp_b.view(-1)[valid_idx]
@@ -1517,8 +1519,9 @@ def main_combined():
                 B = BV
                 MB = max(B // max(args.num_minibatches, 1), 1)
 
-            idx = torch.randperm(B, device=dev)
-            for ep in range(args.update_epochs):
+            if BV > 0:
+              idx = torch.randperm(B, device=dev)
+              for ep in range(args.update_epochs):
                 stop = False
                 for st in range(0, B, MB):
                     mb = idx[st:st+MB]
