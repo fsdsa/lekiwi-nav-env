@@ -988,7 +988,8 @@ def main_combined():
     carry_grip_start_buf = torch.zeros(N, device=dev)
     s3_init_pose6 = torch.zeros(N, 6, device=dev)  # S2→S3 전환 시 arm5+grip1 (36D obs용)
     s3_phase_a_latch = torch.ones(N, dtype=torch.bool, device=dev)  # Phase A latch: 한번 B면 복귀 안 함
-    S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check
+    S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check (Phase A only)
+    s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
     S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.42   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
@@ -1317,14 +1318,19 @@ def main_combined():
                 # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
                 is_holding = has_contact & gripper_closed & (grip_pos >= 0.20)
 
-                # ── R0: Drop detection ──
-                # Contact lost → increment counter; contact present → reset
-                # Place 시도 판정
-                attempting_place = (base_dst_xy < S3_PHASE_B_DIST) & (src_h > 0.025)
+                # ── R0: Drop detection (topple + contact 기반) ──
+                # Topple: objZ < 0.029 연속 8 step (Phase A, B 공통)
+                s3_topple_counter[s3m & (src_h < 0.029)] += 1
+                s3_topple_counter[s3m & (src_h >= 0.029)] = 0
+                s3_topple_drop = s3m & (s3_topple_counter >= 8) & (~ms_place)
+
+                # Contact loss: Phase A 전용 (Phase B에서는 place 시 contact 사라지므로 무시)
                 s3_no_contact_counter[s3m & is_holding] = 0
-                s3_no_contact_counter[s3m & ~is_holding & ~attempting_place] += 1
-                s3_no_contact_counter[s3m & attempting_place] = 0
-                s3_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
+                s3_no_contact_counter[s3m & ~is_holding & s3_phase_a_latch] += 1  # Phase A만
+                s3_no_contact_counter[s3m & ~s3_phase_a_latch] = 0                # Phase B 리셋
+                s3_contact_drop = s3m & (s3_no_contact_counter >= S3_NO_CONTACT_STEPS) & (~ms_place)
+
+                s3_drop = s3_topple_drop | s3_contact_drop
                 # S3 timeout
                 s3_timeout = s3m & (s3_step_counter >= S3_MAX_STEPS) & (~ms_place)
                 # Wedge detection: objZ > 0.10인데 is_holding 아니고 gripper 닫힌 상태 지속
@@ -1396,12 +1402,12 @@ def main_combined():
                 dest_penalty = torch.where(phase_b, torch.tensor(-0.1, device=dev), torch.tensor(-1.0, device=dev))
                 rew[dest_touching] += dest_penalty[dest_touching]
 
-                # ── R3: Place success (+200) — contact 기반 (물체 서있음 + dest 근처 + contact 없음) ──
+                # ── R3: Place success (+200) — contact 기반 (물체 바닥에 서있음 + dest 근처 + contact 없음) ──
                 place_cond = (
                     s3m & ~ms_place
                     & (src_dst_xy < S3_PLACE_RADIUS)
                     & (~has_contact)
-                    & (src_h > 0.029)             # 물체 서있음 (toppled < 0.029)
+                    & (src_h > 0.029) & (src_h < 0.05)  # 바닥에 서있는 상태
                     & ~s3_fail
                 )
                 if place_cond.any():
@@ -1458,6 +1464,7 @@ def main_combined():
                 ep_step_counter[fail_ids] = 0
                 ms_place[fail_ids] = False
                 s3_no_contact_counter[fail_ids] = 0
+                s3_topple_counter[fail_ids] = 0
                 s3_step_counter[fail_ids] = 0
                 s3_wedged_counter[fail_ids] = 0
                 s3_init_pose6[fail_ids] = 0.0
@@ -1478,6 +1485,7 @@ def main_combined():
                 ep_step_counter[reset_mask] = 0
                 ms_place[reset_mask] = False
                 s3_no_contact_counter[reset_mask] = 0
+                s3_topple_counter[reset_mask] = 0
                 s3_step_counter[reset_mask] = 0
                 s3_wedged_counter[reset_mask] = 0
                 s3_init_pose6[reset_mask] = 0.0
