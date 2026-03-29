@@ -30,7 +30,7 @@ parser = argparse.ArgumentParser(description="ResiP v6.4")
 
 parser.add_argument("--bc_checkpoint", type=str, required=True)
 parser.add_argument("--skill", type=str, required=True,
-                    choices=["approach_and_grasp", "carry_and_place", "combined_s2_s3", "carry"])
+                    choices=["approach_and_grasp", "carry_and_place", "combined_s2_s3", "carry", "navigate"])
 parser.add_argument("--num_envs", type=int, default=64)
 parser.add_argument("--num_env_steps", type=int, default=700)
 parser.add_argument("--object_usd", type=str, default="")
@@ -297,6 +297,8 @@ def main():
         return main_combined()
     if args.skill == "carry":
         return main_carry()
+    if args.skill == "navigate":
+        return main_navigate()
 
     seed = args.seed or random.randint(0, 2**32 - 1)
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
@@ -984,10 +986,12 @@ def main_combined():
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
     carry_arm_start_buf = torch.zeros(N, 5, device=dev)  # Phase A arm override test용
     carry_grip_start_buf = torch.zeros(N, device=dev)
+    s3_init_pose6 = torch.zeros(N, 6, device=dev)  # S2→S3 전환 시 arm5+grip1 (36D obs용)
+    s3_phase_a_latch = torch.ones(N, dtype=torch.bool, device=dev)  # Phase A latch: 한번 B면 복귀 안 함
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check
     S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
-    S3_PHASE_B_DIST = 0.40   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
+    S3_PHASE_B_DIST = 0.42   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
     S3_REST_POSE = torch.tensor([-0.027, -0.207, 0.203, 0.123, 0.034], device=dev)
 
@@ -1032,6 +1036,7 @@ def main_combined():
 
         # ── Rollout ──
         s3_step_count = torch.zeros(N, dtype=torch.long, device=dev)
+        s3_valid = torch.zeros((S, N), dtype=torch.bool, device=dev)
         for step in range(S):
             if not ev: gs += N
 
@@ -1059,13 +1064,21 @@ def main_combined():
                 dest_rel_body = quat_apply_inverse(robot_quat, rel_w)
                 # contact force (연속값) — S3 obs[24]
                 contact_force = env.env._contact_force_per_env().unsqueeze(-1)  # (N, 1)
-                s3_obs = torch.cat([
+                s3_obs29 = torch.cat([
                     actor_obs[:, 0:21],      # arm(5)+grip(1)+base_vel(3)+lin_vel(3)+ang_vel(3)+arm_vel(6) = 21D
                     dest_rel_body,            # [21:24] dest relative pos 3D
                     contact_force,            # [24:25] grip force 1D (연속값)
                     actor_obs[:, 26:29],      # [25:28] bbox 3D
                     actor_obs[:, 29:30],      # [28:29] category 1D
                 ], dim=-1)  # 29D
+                # 36D = 29D + init_pose(6D) + phase_a_flag(1D, latch)
+                bdxy = torch.norm(
+                    env.env.robot.data.root_pos_w[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1)
+                # Latch: 한번 0.40m 이하 진입 시 영구 Phase B
+                entered_b = s3_phase_a_latch & (bdxy <= S3_PHASE_B_DIST)
+                s3_phase_a_latch[entered_b] = False
+                phase_a_flag = s3_phase_a_latch.float().unsqueeze(-1)  # (N, 1)
+                s3_obs = torch.cat([s3_obs29, s3_init_pose6, phase_a_flag], dim=-1)  # 36D
 
                 # S3 BC base action
                 s3_ba = s3_dp.base_action_normalized(s3_obs)
@@ -1127,6 +1140,7 @@ def main_combined():
             done_b[step] = next_done
             # Mark S2 phase steps as done (won't contribute to GAE)
             done_b[step][is_s2] = 1.0
+            s3_valid[step] = is_s3
 
             # DEBUG: gripper 추적 + S3 hold env jaw/wrist 분석
             if N <= 4:
@@ -1232,9 +1246,12 @@ def main_combined():
                 s3_no_contact_counter[t_ids] = 0
                 s3_step_counter[t_ids] = 0
                 s3_wedged_counter[t_ids] = 0
-                # Phase A arm override test: S2→S3 전환 시 arm pose 캡처
+                s3_phase_a_latch[t_ids] = True  # Phase A로 시작
+                # S2→S3 전환 시 arm pose 캡처 (Phase A arm override + 36D obs)
                 carry_arm_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx[:5]]
                 carry_grip_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
+                s3_init_pose6[t_ids, :5] = carry_arm_start_buf[t_ids]
+                s3_init_pose6[t_ids, 5] = carry_grip_start_buf[t_ids]
                 # Initialize prev distance for delta reward
                 prev_base_dst_xy[t_ids] = torch.norm(
                     rpos[:, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
@@ -1307,17 +1324,26 @@ def main_combined():
                 s3_wedge_fail = s3m & (s3_wedged_counter >= 30)
                 s3_fail = s3_drop | s3_timeout | s3_wedge_fail
 
-                # ── Phase 판정 ──
-                phase_a = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy > S3_PHASE_B_DIST)
-                phase_b = s3m & (~ms_place) & (~s3_fail) & (base_dst_xy <= S3_PHASE_B_DIST)
+                # ── Phase 판정 (latch, obs의 phase_a_flag와 동일) ──
+                phase_a = s3m & (~ms_place) & (~s3_fail) & s3_phase_a_latch
+                phase_b = s3m & (~ms_place) & (~s3_fail) & (~s3_phase_a_latch)
                 phase_c = s3m & ms_place
 
                 # ── R_hold: Phase A에서 hold 보상 (hold-forever 방지: 0.05/step) ──
                 hold = phase_a & is_holding & (src_h > 0.033)
                 rew[hold] += 0.05
 
+                # ── R_arm_maintain: Phase A에서 init_arm_pose 유지 보상 ──
+                if phase_a.any():
+                    arm_jp = env.env.robot.data.joint_pos[:, env.env.arm_idx[:5]]
+                    grip_jp = env.env.robot.data.joint_pos[:, env.env.arm_idx[5:6]]
+                    arm_err = (arm_jp - s3_init_pose6[:, :5]).pow(2).sum(dim=-1)
+                    grip_err = (grip_jp.squeeze(-1) - s3_init_pose6[:, 5]).pow(2)
+                    r_arm = 0.10 * torch.exp(-arm_err / (0.3 ** 2)) + 0.05 * torch.exp(-grip_err / (0.2 ** 2))
+                    rew[phase_a] += r_arm[phase_a]
+
                 # ── R1: Phase A — base → dest 접근 (delta × 30, 잡고 있을 때만) ──
-                R1_TARGET = 0.35
+                R1_TARGET = S3_PHASE_B_DIST  # 0.42 — Phase A 끝까지 접근 보상
                 prev_err = (prev_base_dst_xy - R1_TARGET).abs()
                 curr_err = (base_dst_xy - R1_TARGET).abs()
                 approach_delta = torch.clamp(prev_err - curr_err, -0.05, 0.05)
@@ -1338,22 +1364,23 @@ def main_combined():
                     objz_delta = torch.clamp(prev_src_h - src_h, -0.01, 0.01)
                     rew[near_dest] += (objz_delta * 100.0)[near_dest]  # 0.19m 하강 → +19 total
 
-                # ── R_open: Phase B — gripper 열기 (objZ < 0.01 + src_dst < 0.14) ──
-                # 데모: objZ≈0.003일 때 grip 0.3→0.9 열기
-                ready_to_release = phase_b & (src_h < 0.01) & (src_dst_xy < S3_PLACE_RADIUS)
-                if ready_to_release.any():
-                    grip_progress = torch.clamp(grip_pos[ready_to_release] / 0.9, 0.0, 1.0)
-                    rew[ready_to_release] += grip_progress * 0.5  # grip 0→0.9 × ~50step → +25 total
+                # ── R_open: Phase B — gripper 열기 (near dest + low height + grip opening) ──
+                # carry 높이 ~0.20, place 시 arm 내려서 objZ < 0.15일 때 grip 열기 보상
+                release_ready = phase_b & (src_h < 0.15) & (grip_pos >= 0.20) & (src_dst_xy < S3_PLACE_RADIUS)
+                if release_ready.any():
+                    open_progress = torch.clamp((grip_pos[release_ready] - 0.30) / 0.70, 0.0, 1.0)
+                    rew[release_ready] += open_progress * 2.0
 
                 # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
                 prev_src_dst_xy[s3m] = src_dst_xy[s3m]
                 prev_src_h[s3m] = src_h[s3m]
 
-                # ── R2: dest contact penalty ──
+                # ── R2: dest contact penalty (Phase B에서 완화) ──
                 dest_cf = env.env._dest_contact_force_per_env()
                 dest_touching = (dest_cf > 0.3) & s3m
-                rew[dest_touching] += S3_DEST_CONTACT_PENALTY  # -1.0
+                dest_penalty = torch.where(phase_b, torch.tensor(-0.1, device=dev), torch.tensor(-1.0, device=dev))
+                rew[dest_touching] += dest_penalty[dest_touching]
 
                 # ── R3: Place success (+200) ──
                 place_cond = (
@@ -1374,10 +1401,10 @@ def main_combined():
                 # 데모: place 후 grip→-0.20(닫힘) + arm→rest pose
                 if phase_c.any():
                     pose_err = torch.norm(arm_joints[phase_c, :5] - S3_REST_POSE, dim=-1)
-                    r4_pose = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.1
+                    r4_pose = torch.exp(-0.5 * (pose_err / 0.3) ** 2) * 0.5
                     # grip close: 0.5→-0.20 (데모 최종 grip=-0.20)
                     grip_close_progress = torch.clamp((0.5 - grip_pos[phase_c]) / 0.7, 0.0, 1.0)
-                    r4_grip = grip_close_progress * 0.05
+                    r4_grip = grip_close_progress * 0.3
                     rew[phase_c] += r4_pose + r4_grip
 
                 # ── R5: Time penalty ──
@@ -1420,6 +1447,8 @@ def main_combined():
                 s3_no_contact_counter[fail_ids] = 0
                 s3_step_counter[fail_ids] = 0
                 s3_wedged_counter[fail_ids] = 0
+                s3_init_pose6[fail_ids] = 0.0
+                s3_phase_a_latch[fail_ids] = True
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
                 prev_src_h[fail_ids] = 0.0
@@ -1438,6 +1467,8 @@ def main_combined():
                 s3_no_contact_counter[reset_mask] = 0
                 s3_step_counter[reset_mask] = 0
                 s3_wedged_counter[reset_mask] = 0
+                s3_init_pose6[reset_mask] = 0.0
+                s3_phase_a_latch[reset_mask] = True
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
                 prev_src_h[reset_mask] = 0.0
@@ -1454,25 +1485,37 @@ def main_combined():
                 rel_w_f = dest_pos_f - robot_pos_f
                 dest_rel_f = quat_apply_inverse(robot_quat_f, rel_w_f)
                 cf_f = env.env._contact_force_per_env().unsqueeze(-1)
-                s3_obs_final = torch.cat([
+                s3_obs29_f = torch.cat([
                     next_obs[:, 0:21], dest_rel_f, cf_f,
                     next_obs[:, 26:29], next_obs[:, 29:30],
                 ], dim=-1)
+                # bootstrap: latch 상태 그대로 사용 (rollout 마지막 시점의 phase)
+                phase_a_flag_f = s3_phase_a_latch.float().unsqueeze(-1)
+                s3_obs_final = torch.cat([s3_obs29_f, s3_init_pose6, phase_a_flag_f], dim=-1)  # 36D
                 s3_no_f = torch.nan_to_num(torch.clamp(
                     s3_dp.normalizer(s3_obs_final, "obs", forward=True), -3, 3), nan=0.0)
                 s3_ba_f = torch.nan_to_num(s3_dp.base_action_normalized(s3_obs_final), nan=0.0)
                 s3_ro_f = torch.cat([s3_no_f, s3_ba_f], dim=-1)
                 nv = rpol.get_value(s3_ro_f).view(-1)
 
-            bret, badv = compute_gae(val_b, nv, rew_b, done_b,
+            badv, bret = compute_gae(val_b, nv, rew_b, done_b,
                                      next_done, S, args.discount, args.gae_lambda)
             badv = (badv - badv.mean()) / (badv.std() + 1e-8)
-            bobs = obs_b.view(-1, RD)
-            bact = act_b.view(-1, S3_AD)
-            blp  = lp_b.view(-1)
-            bret = bret.view(-1)
-            badv = badv.view(-1)
-            bv   = val_b.view(-1)
+
+            # Filter to S3 phase transitions only (carry와 동일)
+            valid_mask = s3_valid.reshape(-1)
+            valid_idx = valid_mask.nonzero(as_tuple=False).squeeze(-1)
+            BV = len(valid_idx)
+
+            if BV > 0:
+                bobs = obs_b.view(-1, RD)[valid_idx]
+                bact = act_b.view(-1, S3_AD)[valid_idx]
+                blp  = lp_b.view(-1)[valid_idx]
+                bret = bret.view(-1)[valid_idx]
+                badv = badv.view(-1)[valid_idx]
+                bv   = val_b.view(-1)[valid_idx]
+                B = BV
+                MB = max(B // max(args.num_minibatches, 1), 1)
 
             idx = torch.randperm(B, device=dev)
             for ep in range(args.update_epochs):
@@ -1581,9 +1624,9 @@ def main_carry():
     s2_scale = torch.zeros(S2_AD, device=dev)
     s2_scale[0:5] = 0.20; s2_scale[5] = 0.25; s2_scale[6:9] = 0.35
 
-    # ── Load carry BC (frozen, 33D obs) ──
+    # ── Load carry BC (frozen, 39D obs) ──
     s3_dp, s3_dpc = load_frozen_dp(args.s3_bc_checkpoint, dev)
-    S3_OD = s3_dpc["obs_dim"]  # expected 33
+    S3_OD = s3_dpc["obs_dim"]  # expected 39 (30D + dir_cmd 3D + init_arm_pose 6D)
     S3_AD = s3_dpc["act_dim"]  # 9
     print(f"  [Carry] BC loaded: {args.s3_bc_checkpoint} (obs={S3_OD}D, act={S3_AD}D)")
 
@@ -1600,11 +1643,11 @@ def main_carry():
     ).to(dev)
     print(f"  [Carry] Residual params: {sum(p.numel() for p in rpol.parameters()):,}")
 
-    # Scale: arm=0, grip=0, base=action_scale_base (residual only controls base)
+    # Scale: arm=0.02 (small correction), base=action_scale_base
     carry_scale = torch.zeros(S3_AD, device=dev)
-    carry_scale[0:5] = 0.0
-    carry_scale[5] = 0.0
-    carry_scale[6:9] = args.action_scale_base
+    carry_scale[0:5] = 0.05   # arm: RL이 pose drift 보정
+    carry_scale[5] = 0.05      # gripper
+    carry_scale[6:9] = 0.0     # base: BC 그대로 (navigate v5와 동일)
 
     opt_a = optim.AdamW([p for n, p in rpol.named_parameters() if "critic" not in n],
                         lr=args.lr_actor, betas=(0.9, 0.999), eps=1e-5, weight_decay=1e-6)
@@ -1676,6 +1719,8 @@ def main_carry():
     carry_arm_start = torch.zeros(N, 5, device=dev)  # captured at S2→carry transition
     carry_grip_start = torch.zeros(N, device=dev)
     carry_step_counter = torch.zeros(N, dtype=torch.long, device=dev)
+    # init_arm_pose: S2→carry 전환 시점의 arm pose (39D obs용, 6D)
+    carry_init_arm_pose = torch.zeros(N, 6, device=dev)
 
     prev_action = torch.zeros(N, S3_AD, device=dev)  # for smoothness reward
 
@@ -1744,8 +1789,8 @@ def main_carry():
                 else:
                     s2_action = s2_dp.normalizer(s2_ba, "action", forward=False)
 
-                # ── Carry obs: env 30D + direction_cmd 3D → 33D ──
-                carry_obs = torch.cat([actor_obs, direction_cmd], dim=-1)  # (N, 33)
+                # ── Carry obs: env 30D + direction_cmd 3D + init_arm_pose 6D → 39D ──
+                carry_obs = torch.cat([actor_obs, direction_cmd, carry_init_arm_pose], dim=-1)  # (N, 39)
                 # Lookup table base action + velocity ramp (50step 가속)
                 vel_ramp = (carry_step_counter.float() / 50.0).clamp(max=1.0)
                 carry_ba = torch.zeros(N, S3_AD, device=dev)
@@ -1852,6 +1897,9 @@ def main_carry():
                 # Capture arm pose at transition
                 carry_arm_start[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx][:, :5]
                 carry_grip_start[t_ids] = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
+                # init_arm_pose for 39D obs
+                carry_init_arm_pose[t_ids, :5] = carry_arm_start[t_ids]
+                carry_init_arm_pose[t_ids, 5] = carry_grip_start[t_ids]
                 phase[t_ids] = 1
                 ep_step_counter[t_ids] = 0
                 carry_step_counter[t_ids] = 0
@@ -1886,13 +1934,22 @@ def main_carry():
                 rew_lin = 1.5 * torch.exp(-lin_err / (CARRY_LIN_STD ** 2))
                 rew_ang = 1.5 * torch.exp(-ang_err / (CARRY_ANG_STD ** 2))
 
-                # Smoothness
+                # Smoothness (base + arm)
                 delta_base = combined[:, 6:9] - prev_action[:, 6:9]
-                rew_smooth = -0.005 * (delta_base ** 2).sum(dim=-1)
+                delta_arm = combined[:, 0:6] - prev_action[:, 0:6]
+                rew_smooth = -0.005 * (delta_base ** 2).sum(dim=-1) - 0.01 * (delta_arm ** 2).sum(dim=-1)
 
                 # Hold bonus
                 objZ = env.env.object_pos_w[:, 2] - env_origins[:, 2]
                 rew_hold = 0.05 * (objZ > 0.05).float()
+
+                # Arm pose maintenance reward (init_arm_pose 유지)
+                jp = env.env.robot.data.joint_pos
+                cur_arm = jp[:, env.env.arm_idx[:5]]
+                cur_grip = jp[:, env.env.arm_idx[5:6]]
+                arm_err = (cur_arm - carry_init_arm_pose[:, :5]).pow(2).sum(dim=-1)
+                grip_err = (cur_grip.squeeze(-1) - carry_init_arm_pose[:, 5]).pow(2)
+                rew_arm_hold = 2.0 * torch.exp(-arm_err / (0.3 ** 2)) + 0.5 * torch.exp(-grip_err / (0.2 ** 2))
 
                 # Time penalty
                 rew_time = -0.01
@@ -1901,7 +1958,7 @@ def main_carry():
                 dropped = objZ < 0.03
                 rew_drop = -5.0 * dropped.float()
 
-                rew[cm] = (rew_lin + rew_ang + rew_smooth + rew_hold + rew_time + rew_drop)[cm]
+                rew[cm] = (rew_lin + rew_ang + rew_smooth + rew_hold + rew_arm_hold + rew_time + rew_drop)[cm]
 
                 # Accumulate for logging
                 n_carry = cm.sum().item()
@@ -1961,7 +2018,7 @@ def main_carry():
         # ── PPO Update (carry transitions only, navigate-identical structure) ──
         if not ev:
             with torch.no_grad():
-                carry_obs_f = torch.cat([next_obs, direction_cmd], dim=-1)
+                carry_obs_f = torch.cat([next_obs, direction_cmd, carry_init_arm_pose], dim=-1)
                 carry_no_f = torch.nan_to_num(torch.clamp(
                     s3_dp.normalizer(carry_obs_f, "obs", forward=True), -3, 3), nan=0.0)
                 vel_ramp_f = (carry_step_counter.float() / 50.0).clamp(max=1.0)
@@ -2125,6 +2182,337 @@ def main_carry():
         "iteration": gi, "global_step": gs, "args": vars(args),
     }, save_dir / "resip_carry_final.pt")
     env.env.close(); simulation_app.close()
+
+
+def main_navigate():
+    """Navigate ResiP on Skill2EvalEnv (cuboid ground, friction=0.5)."""
+    seed = args.seed or random.randint(0, 2**32 - 1)
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    print(f"Seed: {seed}")
+
+    # ── Env (Skill2EvalEnv) ──
+    from lekiwi_skill2_eval import Skill2Env, Skill2EnvCfg
+    cfg = Skill2EnvCfg()
+    cfg.scene.num_envs = args.num_envs
+    cfg.sim.device = "cuda:0"
+    cfg.enable_domain_randomization = False
+    cfg.arm_limit_write_to_sim = False
+    cfg.episode_length_s = float(args.num_env_steps) * cfg.sim.dt * cfg.decimation + 1.0
+    cfg.max_dist_from_origin = 50.0
+    cfg.dr_action_delay_steps = 0
+    cfg.grasp_success_height = 100.0  # task_success 비활성화 (navigate에 물체 없음)
+    if args.object_usd:
+        cfg.object_usd = os.path.expanduser(args.object_usd)
+    cfg.gripper_contact_prim_path = args.gripper_contact_prim_path
+    if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
+        cfg.arm_limit_json = args.arm_limit_json
+
+    from isaaclab.envs import DirectRLEnvCfg
+    env = Skill2Env(cfg=cfg)
+    dev = env.device
+    N = env.num_envs
+
+    # env 기본 _apply_action 사용 (arm_action_to_limits 매핑 포함)
+    # navigate에서도 approach_lift와 동일한 [-1,1] action space
+    # Tucked pose in normalized [-1,1] space (reward 계산용)
+    _TUCKED_ARM_T = torch.tensor([-0.02966, -0.213839, 0.09066, -0.4, 0.058418], device=dev)
+    _TUCKED_GRIP_V = -0.201554
+
+    # terminate 비활성화 (task_success 오판 방지, timeout만 유지)
+    _orig_dones = env._get_dones
+    def _nav_dones():
+        t, tr = _orig_dones()
+        t[:] = False  # out_of_bounds, fell, topple 비활성화
+        tr[:] = env.episode_length_buf >= (env.max_episode_length - 1)  # timeout만
+        return t, tr
+    env._get_dones = _nav_dones
+
+    # direction_cmd 버퍼
+    direction_cmd = torch.zeros(N, 3, device=dev)
+
+    # 4 linear directions only (turn 제외 — BC로 충분)
+    DIR_CMDS = torch.tensor([
+        [0.0, 1.0, 0.0],    # forward
+        [0.0, -1.0, 0.0],   # backward
+        [-1.0, 0.0, 0.0],   # strafe left
+        [1.0, 0.0, 0.0],    # strafe right
+    ], device=dev)
+
+    # ── Policy ──
+    from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
+    dp_ckpt = torch.load(args.bc_checkpoint, map_location=dev, weights_only=False)
+    dp_cfg = dp_ckpt["config"]
+    OD = dp_cfg["obs_dim"]  # 20
+    AD = dp_cfg["act_dim"]  # 9
+
+    dp_agent = DiffusionPolicyAgent(
+        obs_dim=OD, act_dim=AD,
+        pred_horizon=dp_cfg["pred_horizon"],
+        action_horizon=dp_cfg["action_horizon"],
+        num_diffusion_iters=dp_cfg["num_diffusion_iters"],
+        inference_steps=4,
+        down_dims=dp_cfg.get("down_dims", [256, 512, 1024]),
+    ).to(dev)
+    sd = dp_ckpt["model_state_dict"]
+    dp_agent.model.load_state_dict({k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")})
+    dp_agent.normalizer.load_state_dict(
+        {k[len("normalizer."):]: v for k, v in sd.items() if k.startswith("normalizer.")}, device=dev)
+    dp_agent.eval()
+    for p in dp_agent.parameters():
+        p.requires_grad = False
+
+    residual = ResidualPolicy(
+        obs_dim=OD, action_dim=AD,
+        actor_hidden_size=args.actor_hidden_size,
+        actor_num_layers=args.actor_num_layers,
+        critic_hidden_size=args.critic_hidden_size,
+        critic_num_layers=args.critic_num_layers,
+        action_scale=0.1,
+        init_logstd=args.init_logstd,
+        action_head_std=args.action_head_std,
+        learn_std=True,
+    ).to(dev)
+
+    per_dim = torch.zeros(AD, device=dev)
+    per_dim[0:5] = 0.05   # arm: RL이 pose drift 보정
+    per_dim[5] = 0.05      # gripper
+    per_dim[6:9] = 0.0     # base: BC 그대로 (이미 최적)
+
+    opt_actor = torch.optim.AdamW(
+        [p for n, p in residual.named_parameters() if "critic" not in n],
+        lr=args.lr_actor, betas=(0.9, 0.999), eps=1e-5, weight_decay=1e-6)
+    opt_critic = torch.optim.AdamW(
+        [p for n, p in residual.named_parameters() if "critic" in n],
+        lr=args.lr_critic, eps=1e-5, weight_decay=1e-6)
+
+    # ── Obs helper ──
+    # init_arm_pose: 에피소드 시작 시점의 arm pose (reset 시 캡처)
+    init_arm_pose = torch.zeros(N, 6, device=dev)  # (N, arm5+grip1)
+
+    def capture_init_arm_pose(env_ids=None):
+        """Reset된 env의 현재 arm pose를 init_arm_pose에 저장."""
+        jp = env.robot.data.joint_pos
+        if env_ids is None:
+            init_arm_pose[:, :5] = jp[:, env.arm_idx[:5]]
+            init_arm_pose[:, 5:] = jp[:, env.arm_idx[5:6]]
+        else:
+            init_arm_pose[env_ids, :5] = jp[env_ids][:, env.arm_idx[:5]]
+            init_arm_pose[env_ids, 5:] = jp[env_ids][:, env.arm_idx[5:6]]
+
+    def build_nav_obs():
+        jp = env.robot.data.joint_pos
+        arm = jp[:, env.arm_idx[:5]]     # (N, 5) 실제 관절 위치
+        grip = jp[:, env.arm_idx[5:6]]   # (N, 1)
+        bv = env.robot.data.root_lin_vel_b[:, :2]
+        wz = env.robot.data.root_ang_vel_b[:, 2:3]
+        base_vel = torch.cat([bv, wz], dim=-1)
+        lidar = torch.ones(N, 8, device=dev)
+        # 26D: arm(5)+grip(1)+base_vel(3)+dir_cmd(3)+lidar(8)+init_arm(5)+init_grip(1)
+        return torch.cat([arm, grip, base_vel, direction_cmd, lidar, init_arm_pose], dim=-1)
+
+    # ── Save dir ──
+    save_dir = Path(args.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Training loop ──
+    rollout_steps = args.num_env_steps
+    total_iters = args.total_timesteps // (N * rollout_steps)
+    print(f"\n  Navigate ResiP on Skill2EvalEnv")
+    print(f"  BC: {args.bc_checkpoint}")
+    print(f"  obs={OD}, act={AD}, envs={N}, rollout={rollout_steps}")
+    print(f"  per_dim_scale: base={args.action_scale_base}")
+    print(f"  total_iters={total_iters}\n")
+
+    # Buffers — obs_buf stores pre-computed res_input (OD + AD), not raw obs
+    RES_DIM = OD + AD  # normalized obs + base action
+    obs_buf = torch.zeros(rollout_steps, N, RES_DIM, device=dev)
+    act_buf = torch.zeros(rollout_steps, N, AD, device=dev)
+    logp_buf = torch.zeros(rollout_steps, N, device=dev)
+    val_buf = torch.zeros(rollout_steps, N, device=dev)
+    rew_buf = torch.zeros(rollout_steps, N, device=dev)
+    done_buf = torch.zeros(rollout_steps, N, device=dev)
+
+    obs, _ = env.reset()
+    capture_init_arm_pose()  # 초기 arm pose 캡처
+    # 균등 분배: N envs를 4방향으로 나눔
+    n_dirs = len(DIR_CMDS)
+    idx = torch.arange(N, device=dev) % n_dirs
+    direction_cmd[:] = DIR_CMDS[idx]
+    dp_agent.reset()
+
+    for gi in range(total_iters):
+        dp_agent.reset()
+
+        for step in range(rollout_steps):
+            nav_obs = build_nav_obs()
+
+            # BC + Residual
+            with torch.no_grad():
+                base_nact = dp_agent.base_action_normalized(nav_obs)
+                nobs = dp_agent.normalizer(nav_obs, "obs", forward=True)
+                nobs = torch.clamp(nobs, -3, 3)
+                nobs = torch.nan_to_num(nobs, nan=0.0)
+            res_input = torch.cat([nobs, base_nact], dim=-1)
+            obs_buf[step] = res_input  # pre-computed, PPO에서 재사용
+            with torch.no_grad():
+                res_action, res_logp, res_entropy, res_val, res_mean = \
+                    residual.get_action_and_value(res_input)
+            nact = base_nact + res_action * per_dim
+            action = dp_agent.normalizer(nact, "action", forward=False)
+            action = action.clamp(-1, 1)
+
+            act_buf[step] = res_action
+            logp_buf[step] = res_logp
+            val_buf[step] = res_val.squeeze(-1)
+
+            # Step env
+            next_obs, rew_env, ter, tru, info = env.step(action)
+            done = ter | tru
+
+            # ── Navigate Reward ──
+            base_vel = env.robot.data.root_lin_vel_b  # (N, 3)
+            target_lin = direction_cmd[:, :2] * env.cfg.max_lin_vel
+            target_wz = direction_cmd[:, 2] * env.cfg.max_ang_vel
+            actual_lin = base_vel[:, :2]
+            actual_wz = base_vel[:, 2]
+
+            lin_err = (target_lin - actual_lin).pow(2).sum(dim=-1)
+            ang_err = (target_wz - actual_wz).pow(2)
+            rew_lin = 1.5 * torch.exp(-lin_err / (0.25 ** 2))
+            rew_ang = 1.5 * torch.exp(-ang_err / (0.25 ** 2))
+
+            prev = env.prev_actions if hasattr(env, 'prev_actions') else torch.zeros_like(action)
+            delta_base = action[:, 6:9] - prev[:, 6:9]
+            delta_arm = action[:, 0:6] - prev[:, 0:6]
+            rew_smooth = -0.005 * (delta_base ** 2).sum(dim=-1) - 0.01 * (delta_arm ** 2).sum(dim=-1)
+            rew_time = torch.full((N,), -0.01, device=dev)
+
+            # ── Arm pose maintenance reward: init_arm_pose 유지 ──
+            jp = env.robot.data.joint_pos
+            cur_arm = jp[:, env.arm_idx[:5]]         # (N, 5)
+            cur_grip = jp[:, env.arm_idx[5:6]]       # (N, 1)
+            arm_err = (cur_arm - init_arm_pose[:, :5]).pow(2).sum(dim=-1)
+            grip_err = (cur_grip.squeeze(-1) - init_arm_pose[:, 5]).pow(2)
+            rew_tucked = 2.0 * torch.exp(-arm_err / (0.3 ** 2)) + 0.5 * torch.exp(-grip_err / (0.2 ** 2))
+
+            reward = rew_lin + rew_ang + rew_tucked + rew_smooth + rew_time
+            reward = torch.nan_to_num(reward, nan=0.0)  # NaN 방어
+            rew_buf[step] = reward
+            done_buf[step] = done.float().squeeze(-1) if done.dim() > 1 else done.float()
+
+            # Reset done envs: 균등 분배 + init_arm_pose 재캡처
+            if done.any():
+                done_ids = done.nonzero(as_tuple=False).squeeze(-1)
+                if done_ids.dim() == 0:
+                    done_ids = done_ids.unsqueeze(0)
+                new_idx = done_ids % n_dirs
+                direction_cmd[done_ids] = DIR_CMDS[new_idx]
+                capture_init_arm_pose(done_ids)
+                dp_agent.reset()
+
+            obs = next_obs
+
+        # ── PPO Update ──
+        with torch.no_grad():
+            last_obs = build_nav_obs()
+            base_nact_last = dp_agent.base_action_normalized(last_obs)
+            nobs_last = dp_agent.normalizer(last_obs, "obs", forward=True).clamp(-3, 3)
+            nobs_last = torch.nan_to_num(nobs_last, nan=0.0)
+            res_input_last = torch.cat([nobs_last, base_nact_last], dim=-1)
+            last_val = residual.get_value(res_input_last).squeeze(-1)
+
+        dp_agent.reset()
+
+        # GAE
+        advantages = torch.zeros_like(rew_buf)
+        lastgaelam = 0
+        for t in reversed(range(rollout_steps)):
+            if t == rollout_steps - 1:
+                next_val = last_val
+                next_nonterminal = 1.0 - done_buf[t]
+            else:
+                next_val = val_buf[t + 1]
+                next_nonterminal = 1.0 - done_buf[t]
+            delta = rew_buf[t] + args.discount * next_val * next_nonterminal - val_buf[t]
+            advantages[t] = lastgaelam = delta + args.discount * args.gae_lambda * next_nonterminal * lastgaelam
+        returns = advantages + val_buf
+
+        # Flatten — obs_buf already contains pre-computed res_input
+        b_obs = obs_buf.reshape(-1, RES_DIM)
+        b_act = act_buf.reshape(-1, AD)
+        b_logp = logp_buf.reshape(-1)
+        b_adv = advantages.reshape(-1)
+        b_ret = returns.reshape(-1)
+        b_val = val_buf.reshape(-1)
+        B = b_obs.shape[0]
+
+        if args.norm_adv:
+            b_adv = (b_adv - b_adv.mean()) / (b_adv.std() + 1e-8)
+
+        # Mini-batch PPO
+        for epoch in range(args.update_epochs):
+            idx = torch.randperm(B, device=dev)
+            mb_size = B // max(args.num_minibatches, 1)
+            for start in range(0, B, mb_size):
+                end = start + mb_size
+                mb = idx[start:end]
+
+                # b_obs[mb] is already pre-computed res_input — no dp_agent call needed
+                _, new_logp, new_entropy_mb, new_val_t, _ = \
+                    residual.get_action_and_value(b_obs[mb], b_act[mb])
+                new_val = new_val_t.squeeze(-1)
+
+                ratio = (new_logp - b_logp[mb]).exp()
+                surr1 = ratio * b_adv[mb]
+                surr2 = torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef) * b_adv[mb]
+                pg_loss = -torch.min(surr1, surr2).mean()
+
+                v_loss = 0.5 * ((new_val - b_ret[mb]) ** 2).mean()
+
+                entropy = new_entropy_mb.mean()
+                loss = pg_loss + args.vf_coef * v_loss - args.ent_coef * entropy
+
+                opt_actor.zero_grad()
+                opt_critic.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(residual.parameters(), args.max_grad_norm)
+                opt_actor.step()
+                opt_critic.step()
+
+            # KL early stopping — b_obs is already pre-computed res_input
+            with torch.no_grad():
+                _, new_logp_all, _, _, _ = residual.get_action_and_value(b_obs, b_act)
+                log_ratio = new_logp_all - b_logp
+                kl = ((log_ratio.exp() - 1) - log_ratio).mean()
+            if kl > args.target_kl:
+                break
+
+        # Logging
+        avg_rew = rew_buf.mean().item()
+        avg_lin = rew_lin.mean().item() if 'rew_lin' in dir() else 0
+        avg_ang = rew_ang.mean().item() if 'rew_ang' in dir() else 0
+        avg_tuck = rew_tucked.mean().item() if 'rew_tucked' in dir() else 0
+        print(f"  iter={gi:4d} rew={avg_rew:.3f} lin={avg_lin:.3f} ang={avg_ang:.3f} tuck={avg_tuck:.3f} "
+              f"kl={kl:.4f} v_loss={v_loss:.4f} entropy={entropy:.4f}")
+
+        # Save
+        if (gi + 1) % 10 == 0 or gi == total_iters - 1:
+            torch.save({
+                "residual_policy_state_dict": residual.state_dict(),
+                "iteration": gi,
+                "args": vars(args),
+            }, save_dir / f"resip_nav_iter{gi}.pt")
+            print(f"  → Saved resip_nav_iter{gi}.pt")
+
+    # Final save
+    torch.save({
+        "residual_policy_state_dict": residual.state_dict(),
+        "iteration": total_iters - 1,
+        "args": vars(args),
+    }, save_dir / "resip_nav_best.pt")
+    print(f"\nDone. Final: {save_dir / 'resip_nav_best.pt'}")
+    env.close()
+    simulation_app.close()
 
 
 if __name__ == "__main__":
