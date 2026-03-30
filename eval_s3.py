@@ -168,9 +168,9 @@ def build_s3_obs(obs_30d, init_pose6, phase_a_flag_val):
 
 # Phase-wise residual scale (must match train_resip.py main_combined)
 s3_scale_a = torch.zeros(s3_cfg["act_dim"], device=dev)
-s3_scale_a[0:5] = 0.05; s3_scale_a[5] = 0.05; s3_scale_a[6:9] = 0.10
+s3_scale_a[0:5] = 0.10; s3_scale_a[5] = 0.10; s3_scale_a[6:9] = 0.10
 s3_scale_b = torch.zeros(s3_cfg["act_dim"], device=dev)
-s3_scale_b[0:5] = 0.30; s3_scale_b[5] = 0.80; s3_scale_b[6:9] = 0.20
+s3_scale_b[0:5] = 0.30; s3_scale_b[5] = 1.50; s3_scale_b[6:9] = 0.20
 
 def get_s3_action(s3_obs, phase_a=True):
     with torch.no_grad():

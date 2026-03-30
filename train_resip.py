@@ -983,6 +983,7 @@ def main_combined():
     prev_base_dst_xy = torch.zeros(N, device=dev)                 # R1 delta 계산용
     prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
     prev_src_h = torch.zeros(N, device=dev)                       # R_lower delta 계산용
+    prev_arm1 = torch.zeros(N, device=dev)                         # R_arm_lower delta 계산용
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
     carry_arm_start_buf = torch.zeros(N, 5, device=dev)  # Phase A arm override test용
     carry_grip_start_buf = torch.zeros(N, device=dev)
@@ -1024,14 +1025,14 @@ def main_combined():
 
         # Phase별 residual scale (Phase A: BC 보존, Phase B: RL 주도)
         s3_scale_a = torch.zeros(S3_AD, device=dev)
-        s3_scale_a[0:5] = 0.05    # arm: BC 거의 그대로
-        s3_scale_a[5] = 0.05       # grip: BC 거의 그대로
+        s3_scale_a[0:5] = 0.10    # arm: BC 보정 여지 확대 (early drop 보완)
+        s3_scale_a[5] = 0.10       # grip: BC 보정 여지 확대
         s3_scale_a[6:9] = 0.10     # base: 약간 보정
 
         s3_scale_b = torch.zeros(S3_AD, device=dev)
         s3_scale_b[0:5] = 0.30     # arm: RL이 하강 동작 주도
-        s3_scale_b[5] = 0.80        # grip: RL이 열기 주도
-        s3_scale_b[6:9] = 0.20      # base: Phase B 미세 접근 (was 0.10)
+        s3_scale_b[5] = 1.50        # grip: RL이 열기 주도 (BC=-0.573 상쇄 필요)
+        s3_scale_b[6:9] = 0.20      # base: Phase B 미세 접근
 
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
         # 첫 iter이거나 모든 env가 S2일 때만 reset
@@ -1084,11 +1085,12 @@ def main_combined():
                 bdxy = torch.norm(
                     env.env.robot.data.root_pos_w[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1)
                 # Latch: 한번 0.40m 이하 진입 시 영구 Phase B
-                entered_b = s3_phase_a_latch & (bdxy <= S3_PHASE_B_DIST)
+                entered_b = (phase == 1) & s3_phase_a_latch & (bdxy <= S3_PHASE_B_DIST)
                 if entered_b.any():
                     arm_joints_at_entry = env.env.robot.data.joint_pos[entered_b][:, env.env.arm_idx[:5]]
                     s3_arm1_at_phase_b_entry[entered_b] = arm_joints_at_entry[:, 1]
-                    s3_objZ_at_phase_b_entry[entered_b] = src_h[entered_b]
+                    _src_h_local = env.env.object_pos_w[:, 2] - env.env.scene.env_origins[:, 2]
+                    s3_objZ_at_phase_b_entry[entered_b] = _src_h_local[entered_b]
                 s3_phase_a_latch[entered_b] = False
                 phase_a_flag = s3_phase_a_latch.float().unsqueeze(-1)  # (N, 1)
                 s3_obs = torch.cat([s3_obs29, s3_init_pose6, phase_a_flag], dim=-1)  # 36D
@@ -1105,7 +1107,7 @@ def main_combined():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
-            S3_BC_WARMUP_ITERS = 30
+            S3_BC_WARMUP_ITERS = 10
             residual_alpha = min(1.0, gi / S3_BC_WARMUP_ITERS)
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
@@ -1278,6 +1280,7 @@ def main_combined():
                 prev_src_dst_xy[t_ids] = torch.norm(
                     env.env.object_pos_w[t_ids, :2] - torch.stack([dest_x, dest_y], dim=-1), dim=-1)
                 prev_src_h[t_ids] = (env.env.object_pos_w[t_ids, 2] - env.env.scene.env_origins[t_ids, 2])
+                prev_arm1[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx[1]]
                 s2_success_total += t_ids.shape[0]
                 s3_dp.reset()  # S3 BC deque 클리어 (S2 obs 기반 stale action 제거)
                 # DEBUG: S2→S3 전환 시점 gripper 상태
@@ -1311,7 +1314,8 @@ def main_combined():
                 # Contact forces
                 jaw_cf = env.env._contact_force_per_env()          # jaw↔source
                 wrist_cf = env.env._wrist_contact_force_per_env()  # wrist↔source
-                has_contact = (jaw_cf > 0.3) & (wrist_cf > 0.3)   # 양쪽 gripper 모두 접촉
+                has_contact = (jaw_cf > 0.3) & (wrist_cf > 0.3)   # Phase A: 양쪽 모두 (엄격)
+                has_contact_phb = (jaw_cf > 0.3) | (wrist_cf > 0.3)  # Phase B: 한쪽이라도 (완화)
 
                 # Robot base position
                 base_pos = env.env.robot.data.root_pos_w  # (N, 3)
@@ -1326,6 +1330,7 @@ def main_combined():
 
                 # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
                 is_holding = has_contact & gripper_closed & (grip_pos >= 0.20)
+                is_holding_phb = has_contact_phb & gripper_closed & (grip_pos >= 0.15)
 
                 # ── R0: Drop detection (topple + contact 기반) ──
                 # Phase A: 0.04 (carrying height), Phase B: 0.029 (topple)
@@ -1380,7 +1385,7 @@ def main_combined():
                 # ── R_arm: Phase B — src↔dst XY delta (팔 뻗기 + base 접근, is_holding) ──
                 src_dst_delta = torch.clamp(prev_src_dst_xy - src_dst_xy, -0.05, 0.05)
                 r_arm = src_dst_delta * 80.0  # balanced with R_lower
-                r_arm_mask = phase_b & is_holding
+                r_arm_mask = phase_b & is_holding_phb
                 rew[r_arm_mask] += r_arm[r_arm_mask]
 
                 # ── R_base_approach: Phase B — base → dest 미세 접근 ──
@@ -1388,29 +1393,33 @@ def main_combined():
                 r_base_approach = base_dst_delta * 15.0
                 rew[phase_b] += r_base_approach[phase_b]
 
-                # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.25) ──
-                near_dest = phase_b & (src_dst_xy < 0.25)
+                # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.30) ──
+                near_dest = phase_b & (src_dst_xy < 0.30)
                 if near_dest.any():
                     objz_delta = torch.clamp(prev_src_h - src_h, -0.01, 0.01)
                     rew[near_dest] += (objz_delta * 80.0)[near_dest]  # balanced with R_arm
 
-                # ── R_arm_lower: Phase B — arm1 하강 보상 (데모: arm1이 올라감 = 팔 내림) ──
+                # ── R_arm_lower: Phase B — arm1 하강 delta 보상 ──
+                # 데모: arm1 총 Δ=3.21 over ~583스텝, per-step mean=0.00554
+                # delta×30 → 에피소드 총 ~96 (stall 시 0). Place(400)의 24%.
                 if near_dest.any():
                     arm1 = arm_joints[:, 1]
-                    arm1_progress = torch.clamp((arm1 - 0.0) / 2.5, 0.0, 1.0)
-                    rew[near_dest] += (arm1_progress * 3.0)[near_dest]
+                    arm1_delta = torch.clamp(arm1 - prev_arm1, 0.0, 0.05)  # 상승만 보상, per-step max 0.05
+                    rew[near_dest] += (arm1_delta * 30.0)[near_dest]
 
-                # ── R_release: Phase B — grip 열기 (Gaussian proximity, objZ < 0.10) ──
-                low_enough = phase_b & (src_h < 0.10)
-                if low_enough.any():
-                    proximity = torch.exp(-0.5 * (src_dst_xy[low_enough] / 0.15) ** 2)  # σ=0.15, src_dst=0.14→0.76, 0.20→0.41
-                    grip_open_progress = torch.clamp((grip_pos[low_enough] - 0.25) / 0.30, 0.0, 1.0)
-                    rew[low_enough] += grip_open_progress * proximity * 8.0
+                # ── R_release: Phase B — grip 열기 (arm1 > 2.0 + dest 근처, Gaussian proximity) ──
+                # 기존 src_h<0.10은 물체를 쥐고 있으면 불가능 (EP17: arm1=2.75 → objZ=0.135)
+                release_ready = phase_b & (arm_joints[:, 1] > 2.0) & (src_dst_xy < 0.20)
+                if release_ready.any():
+                    proximity = torch.exp(-0.5 * (src_dst_xy[release_ready] / 0.15) ** 2)
+                    grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.25) / 0.30, 0.0, 1.0)
+                    rew[release_ready] += grip_open_progress * proximity * 8.0
 
                 # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
                 prev_src_dst_xy[s3m] = src_dst_xy[s3m]
                 prev_src_h[s3m] = src_h[s3m]
+                prev_arm1[s3m] = arm_joints[s3m, 1]
 
                 # ── R2: dest contact penalty (Phase B에서 완화) ──
                 dest_cf = env.env._dest_contact_force_per_env()
@@ -1428,7 +1437,12 @@ def main_combined():
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
-                    rew[place_cond] += 200.0
+                    rew[place_cond] += 300.0
+                    # REAL place 보너스: arm이 실제로 내려가서 place한 경우
+                    real_place = place_cond & (
+                        (arm_joints[:, 1] - s3_arm1_at_phase_b_entry) > 1.5
+                    ) & (s3_step_counter > 100)
+                    rew[real_place] += 100.0
                     s3_place_total += place_cond.sum().item()
                     # Detailed PLACE log: arm1 trajectory, Phase B duration, quality
                     # (real/suspect counters updated after computation below)
@@ -1515,6 +1529,7 @@ def main_combined():
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
                 prev_src_h[fail_ids] = 0.0
+                prev_arm1[fail_ids] = 0.0
 
             # Handle env auto-resets (terminated/truncated by env)
             next_done = (ter | tru).view(-1).float()
@@ -1538,6 +1553,7 @@ def main_combined():
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
                 prev_src_h[reset_mask] = 0.0
+                prev_arm1[reset_mask] = 0.0
                 total_episodes += reset_mask.sum().item()
 
             s3_step_count[is_s3] += 1
