@@ -166,17 +166,23 @@ def build_s3_obs(obs_30d, init_pose6, phase_a_flag_val):
     s3_obs = torch.cat([s3_obs29, init_pose6.unsqueeze(0), flag], dim=-1)  # (1, 36)
     return s3_obs
 
-def get_s3_action(s3_obs):
+# Phase-wise residual scale (must match train_resip.py main_combined)
+s3_scale_a = torch.zeros(s3_cfg["act_dim"], device=dev)
+s3_scale_a[0:5] = 0.05; s3_scale_a[5] = 0.05; s3_scale_a[6:9] = 0.10
+s3_scale_b = torch.zeros(s3_cfg["act_dim"], device=dev)
+s3_scale_b[0:5] = 0.30; s3_scale_b[5] = 0.80; s3_scale_b[6:9] = 0.20
+
+def get_s3_action(s3_obs, phase_a=True):
     with torch.no_grad():
         base_nact = s3_dp.base_action_normalized(s3_obs)
+        base_nact = torch.nan_to_num(base_nact, nan=0.0)
         if s3_resip is not None:
-            nobs = s3_dp.normalizer(s3_obs, "obs", forward=True).clamp(-3, 3)
-            nobs = torch.nan_to_num(nobs, nan=0.0)
+            nobs = torch.nan_to_num(
+                s3_dp.normalizer(s3_obs, "obs", forward=True).clamp(-3, 3), nan=0.0)
             ri = torch.cat([nobs, base_nact], dim=-1)
             _, _, _, _, ra_mean = s3_resip.get_action_and_value(ri)
-            # S3 resip scale: use same as training
-            s3_scale = torch.zeros(s3_cfg["act_dim"], device=dev)
-            s3_scale[0:5] = 0.20; s3_scale[5] = 0.25; s3_scale[6:9] = 0.35
+            ra_mean = torch.clamp(ra_mean, -1.0, 1.0)
+            s3_scale = s3_scale_a if phase_a else s3_scale_b
             nact = base_nact + ra_mean * s3_scale
         else:
             nact = base_nact
@@ -319,7 +325,7 @@ for ep in range(args.num_episodes):
 
         flag_val = 1.0 if phase_a_active else 0.0
         s3_obs = build_s3_obs(obs_30d, init_pose6, flag_val)
-        action = get_s3_action(s3_obs)
+        action = get_s3_action(s3_obs, phase_a=phase_a_active)
         action_np = action[0].cpu().tolist()
 
         # Action delta (smoothness)
