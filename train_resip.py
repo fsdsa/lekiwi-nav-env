@@ -1189,7 +1189,14 @@ def main_combined():
                 _none = ((_jaw_s3 <= 0.3) & (_wrist_s3 <= 0.3)).sum().item()
                 _oh_s3 = (env.env.object_pos_w[_s3m, 2] - env.env.scene.env_origins[_s3m, 2])
                 _held = (_oh_s3 > 0.04).sum().item()
-                print(f"    [CONTACT] step={step} S3={_s3m.sum().item()} jaw_only={_jaw_only} wrist_only={_wrist_only} both={_both} none={_none} held(objZ>0.04)={_held}")
+                _phb = (~s3_phase_a_latch[_s3m]).sum().item()
+                _arm1_s3 = env.env.robot.data.joint_pos[_s3m][:, env.env.arm_idx[1]]
+                _arm1_hi = (_arm1_s3 > 2.0).sum().item()
+                _grip_s3 = env.env.robot.data.joint_pos[_s3m, env.env.gripper_idx]
+                _grip_open = (_grip_s3 > 0.40).sum().item()
+                _src_dst_s3 = torch.norm(env.env.object_pos_w[_s3m, :2] - env.env.dest_object_pos_w[_s3m, :2], dim=-1)
+                _near = (_src_dst_s3 < 0.14).sum().item()
+                print(f"    [CONTACT] step={step} S3={_s3m.sum().item()} phB={_phb} | ct: jaw={_jaw_only} wrist={_wrist_only} both={_both} none={_none} | held={_held} arm1>2={_arm1_hi} grip>0.4={_grip_open} near_dest={_near}")
 
             # Step env
             next_obs, _, ter, tru, info = env.step(action)
@@ -1647,6 +1654,19 @@ def main_combined():
             print(f"  S2→S3: {s2_success_total} total | S3 envs: {s3_envs} (hold={s3_holding}, placed={s3_placed}, drop={s3_dropped}) | place_total={s3_place_total} (REAL={s3_place_real_total} SUSPECT={s3_place_suspect_total}) drop_total={s3_drop_total}")
             print(f"  S3 objZ: min={s3_oh.min():.3f} mean={s3_oh.mean():.3f} max={s3_oh.max():.3f}")
             print(f"  S3 src→dst: min={s3_src_dst.min():.3f} mean={s3_src_dst.mean():.3f} | base→dst: min={s3_base_dst.min():.3f} mean={s3_base_dst.mean():.3f}")
+            # Phase B detailed stats
+            _phb_mask = s3_mask & (~s3_phase_a_latch)
+            if _phb_mask.any():
+                _phb_arm1 = env.env.robot.data.joint_pos[_phb_mask][:, env.env.arm_idx[1]]
+                _phb_grip = env.env.robot.data.joint_pos[_phb_mask, env.env.gripper_idx]
+                _phb_src_dst = torch.norm(env.env.object_pos_w[_phb_mask, :2] - env.env.dest_object_pos_w[_phb_mask, :2], dim=-1)
+                _a1_lo = (_phb_arm1 < 0.5).sum().item()
+                _a1_mid = ((_phb_arm1 >= 0.5) & (_phb_arm1 < 2.0)).sum().item()
+                _a1_hi = (_phb_arm1 >= 2.0).sum().item()
+                _g_closed = (_phb_grip < 0.30).sum().item()
+                _g_open = (_phb_grip >= 0.40).sum().item()
+                print(f"  PhB: n={_phb_mask.sum().item()} arm1(<0.5/{0.5}~2/>2)={_a1_lo}/{_a1_mid}/{_a1_hi} "
+                      f"grip(<0.3/>0.4)={_g_closed}/{_g_open} src_dst<0.14={(_phb_src_dst < 0.14).sum().item()}")
         else:
             print(f"  S2→S3: {s2_success_total} total | S3 envs: 0 | place={s3_place_total}")
         print(f"  Total episodes: {total_episodes} | S3 steps: {s3_steps}")
