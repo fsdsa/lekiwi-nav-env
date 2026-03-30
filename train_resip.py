@@ -988,6 +988,8 @@ def main_combined():
     carry_grip_start_buf = torch.zeros(N, device=dev)
     s3_init_pose6 = torch.zeros(N, 6, device=dev)  # S2→S3 전환 시 arm5+grip1 (36D obs용)
     s3_phase_a_latch = torch.ones(N, dtype=torch.bool, device=dev)  # Phase A latch: 한번 B면 복귀 안 함
+    s3_arm1_at_phase_b_entry = torch.zeros(N, device=dev)  # Phase B 진입 시 arm1 값
+    s3_objZ_at_phase_b_entry = torch.zeros(N, device=dev)  # Phase B 진입 시 objZ
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check (Phase A only)
     s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
     S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
@@ -1000,6 +1002,7 @@ def main_combined():
     bsr, bsl, bgr = 0.0, 0, 0
     tt = 0; t0 = time.time()
     s2_success_total = 0; s3_success_total = 0; s3_place_total = 0; s3_drop_total = 0; total_episodes = 0
+    s3_place_real_total = 0; s3_place_suspect_total = 0
 
     next_obs = env.reset(); s2_dp.reset(); s3_dp.reset()
     next_done = torch.zeros(N, device=dev)
@@ -1082,6 +1085,10 @@ def main_combined():
                     env.env.robot.data.root_pos_w[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1)
                 # Latch: 한번 0.40m 이하 진입 시 영구 Phase B
                 entered_b = s3_phase_a_latch & (bdxy <= S3_PHASE_B_DIST)
+                if entered_b.any():
+                    arm_joints_at_entry = env.env.robot.data.joint_pos[entered_b][:, env.env.arm_idx[:5]]
+                    s3_arm1_at_phase_b_entry[entered_b] = arm_joints_at_entry[:, 1]
+                    s3_objZ_at_phase_b_entry[entered_b] = src_h[entered_b]
                 s3_phase_a_latch[entered_b] = False
                 phase_a_flag = s3_phase_a_latch.float().unsqueeze(-1)  # (N, 1)
                 s3_obs = torch.cat([s3_obs29, s3_init_pose6, phase_a_flag], dim=-1)  # 36D
@@ -1258,6 +1265,8 @@ def main_combined():
                 s3_step_counter[t_ids] = 0
                 s3_wedged_counter[t_ids] = 0
                 s3_phase_a_latch[t_ids] = True  # Phase A로 시작
+                s3_arm1_at_phase_b_entry[t_ids] = 0.0
+                s3_objZ_at_phase_b_entry[t_ids] = 0.0
                 # S2→S3 전환 시 arm pose 캡처 (Phase A arm override + 36D obs)
                 carry_arm_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx[:5]]
                 carry_grip_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids, env.env.gripper_idx]
@@ -1415,7 +1424,23 @@ def main_combined():
                     ms_place[place_cond] = True
                     rew[place_cond] += 200.0
                     s3_place_total += place_cond.sum().item()
-                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs at step {step} base_dst={base_dst_xy[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()} grip={grip_pos[place_cond].tolist()} s3_step={s3_step_counter[place_cond].tolist()}")
+                    # Detailed PLACE log: arm1 trajectory, Phase B duration, quality
+                    # (real/suspect counters updated after computation below)
+                    _p_arm1_now = arm_joints[place_cond, 1]
+                    _p_arm1_entry = s3_arm1_at_phase_b_entry[place_cond]
+                    _p_arm1_delta = _p_arm1_now - _p_arm1_entry
+                    _p_objZ_entry = s3_objZ_at_phase_b_entry[place_cond]
+                    _p_objZ_now = src_h[place_cond]
+                    _p_s3step = s3_step_counter[place_cond]
+                    _p_real = ((_p_arm1_delta > 1.0) & (_p_s3step > 50)).sum().item()
+                    _p_suspect = place_cond.sum().item() - _p_real
+                    s3_place_real_total += _p_real
+                    s3_place_suspect_total += _p_suspect
+                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs (REAL={_p_real} SUSPECT={_p_suspect}) step={step} "
+                          f"s3_step={_p_s3step.tolist()} | "
+                          f"arm1: entry={_p_arm1_entry.tolist()}→now={_p_arm1_now.tolist()} Δ={_p_arm1_delta.tolist()} | "
+                          f"objZ: entry={_p_objZ_entry.tolist()}→now={_p_objZ_now.tolist()} | "
+                          f"grip={grip_pos[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()}")
 
                 # ── R4: Phase C — rest pose + gripper close ──
                 # 데모: place 후 grip→-0.20(닫힘) + arm→rest pose
@@ -1447,10 +1472,19 @@ def main_combined():
                 _grip_d = grip_pos[s3_drop]
                 _oh_d = src_h[s3_drop]
                 _arm_d = arm_joints[s3_drop, :5]
+                _d_arm1_entry = s3_arm1_at_phase_b_entry[s3_drop]
+                _d_arm1_now = arm_joints[s3_drop, 1]
+                _d_phase_a = s3_phase_a_latch[s3_drop]  # True=Phase A에서 drop
+                _d_in_a = _d_phase_a.sum().item()
+                _d_in_b = s3_drop.sum().item() - _d_in_a
                 if s3_drop_early + s3_drop_late > 0:
                     _wedged = (_oh_d > 0.04).sum().item()
                     _real = (_oh_d <= 0.04).sum().item()
-                    print(f"    [DROP] early={s3_drop_early} late={s3_drop_late} avg_step={_drop_steps.float().mean():.0f} | jaw={_jaw_d.mean():.2f} wrist={_wrist_d.mean():.2f} grip={_grip_d.mean():.3f} objZ={_oh_d.mean():.3f} | real={_real} wedged={_wedged}")
+                    print(f"    [DROP] phA={_d_in_a} phB={_d_in_b} early={s3_drop_early} late={s3_drop_late} "
+                          f"avg_step={_drop_steps.float().mean():.0f} | "
+                          f"grip={_grip_d.mean():.3f} objZ={_oh_d.mean():.3f} | "
+                          f"real={_real} wedged={_wedged} | "
+                          f"arm1: entry={_d_arm1_entry.mean():.3f}→now={_d_arm1_now.mean():.3f}")
                     if _wedged > 0:
                         _w_mask = _oh_d > 0.04
                         print(f"      [WEDGED] grip={_grip_d[_w_mask].mean():.3f} objZ={_oh_d[_w_mask].mean():.3f} arm={_arm_d[_w_mask].mean(dim=0).tolist()}")
@@ -1470,6 +1504,8 @@ def main_combined():
                 s3_wedged_counter[fail_ids] = 0
                 s3_init_pose6[fail_ids] = 0.0
                 s3_phase_a_latch[fail_ids] = True
+                s3_arm1_at_phase_b_entry[fail_ids] = 0.0
+                s3_objZ_at_phase_b_entry[fail_ids] = 0.0
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
                 prev_src_h[fail_ids] = 0.0
@@ -1491,6 +1527,8 @@ def main_combined():
                 s3_wedged_counter[reset_mask] = 0
                 s3_init_pose6[reset_mask] = 0.0
                 s3_phase_a_latch[reset_mask] = True
+                s3_arm1_at_phase_b_entry[reset_mask] = 0.0
+                s3_objZ_at_phase_b_entry[reset_mask] = 0.0
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
                 prev_src_h[reset_mask] = 0.0
@@ -1584,7 +1622,7 @@ def main_combined():
                 env.env.object_pos_w[s3_mask, :2] - env.env.dest_object_pos_w[s3_mask, :2], dim=-1)
             s3_base_dst = torch.norm(
                 env.env.robot.data.root_pos_w[s3_mask, :2] - env.env.dest_object_pos_w[s3_mask, :2], dim=-1)
-            print(f"  S2→S3: {s2_success_total} total | S3 envs: {s3_envs} (hold={s3_holding}, placed={s3_placed}, drop={s3_dropped}) | place_total={s3_place_total} drop_total={s3_drop_total}")
+            print(f"  S2→S3: {s2_success_total} total | S3 envs: {s3_envs} (hold={s3_holding}, placed={s3_placed}, drop={s3_dropped}) | place_total={s3_place_total} (REAL={s3_place_real_total} SUSPECT={s3_place_suspect_total}) drop_total={s3_drop_total}")
             print(f"  S3 objZ: min={s3_oh.min():.3f} mean={s3_oh.mean():.3f} max={s3_oh.max():.3f}")
             print(f"  S3 src→dst: min={s3_src_dst.min():.3f} mean={s3_src_dst.mean():.3f} | base→dst: min={s3_base_dst.min():.3f} mean={s3_base_dst.mean():.3f}")
         else:

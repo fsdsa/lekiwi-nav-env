@@ -284,6 +284,17 @@ for ep in range(args.num_episodes):
     arm_init_err_count = 0
     prev_action = None
 
+    # Phase A ghost carry tracking
+    phase_a_cf_zero_count = 0
+    phase_a_cf_zero_max = 0
+
+    # Phase B arm trajectory tracking
+    arm1_at_phase_b_entry = None
+    arm1_max_in_phase_b = -999.0
+    objZ_at_phase_b_entry = None
+    objZ_min_in_phase_b = 999.0
+    grip_at_phase_b_entry = None
+
     base_dst_start = torch.norm(env.robot.data.root_pos_w[0, :2] - env.dest_object_pos_w[0, :2]).item()
 
     for s3_step in range(args.s3_max_steps):
@@ -298,7 +309,13 @@ for ep in range(args.num_episodes):
             arm_at_trans = jp_at_trans[env.arm_idx[:5]].cpu().tolist()
             grip_at_trans = jp_at_trans[env.arm_idx[5]].item()
             arm_trans_str = ",".join(f"{v:+.3f}" for v in arm_at_trans)
-            print(f"    [Phase A→B] step={s3_step} base_dst={base_dst:.3f} arm=[{arm_trans_str}] grip={grip_at_trans:.3f} objZ={objZ:.3f}")
+            # Phase B entry tracking
+            arm1_at_phase_b_entry = arm_at_trans[1]
+            objZ_at_phase_b_entry = objZ
+            grip_at_phase_b_entry = grip_at_trans
+            ghost_str = f" ⚠ghost_cf0={phase_a_cf_zero_max}" if phase_a_cf_zero_max >= 5 else ""
+            print(f"    [Phase A→B] step={s3_step} base_dst={base_dst:.3f} arm=[{arm_trans_str}] "
+                  f"grip={grip_at_trans:.3f} objZ={objZ:.3f} cf={cf_val:.1f}{ghost_str}")
 
         flag_val = 1.0 if phase_a_active else 0.0
         s3_obs = build_s3_obs(obs_30d, init_pose6, flag_val)
@@ -342,38 +359,82 @@ for ep in range(args.num_episodes):
             arm_err = sum((arm_jp[i] - init_np[i])**2 for i in range(5)) ** 0.5
             arm_init_err_sum += arm_err
             arm_init_err_count += 1
+            # Ghost carry detection (cf=0 연속)
+            if not has_contact and s3_step > 5:
+                phase_a_cf_zero_count += 1
+                phase_a_cf_zero_max = max(phase_a_cf_zero_max, phase_a_cf_zero_count)
+            else:
+                phase_a_cf_zero_count = 0
+        else:
+            # Phase B arm trajectory tracking
+            arm1_max_in_phase_b = max(arm1_max_in_phase_b, arm_jp[1])
+            objZ_min_in_phase_b = min(objZ_min_in_phase_b, objZ)
 
-        if s3_step % 50 == 0:
+        # Phase A: every 50 steps, Phase B: every 10 steps
+        log_interval = 50 if phase_a_active else 10
+        phase_b_elapsed = s3_step - phase_b_step_start if phase_b_step_start >= 0 else 0
+        if s3_step % log_interval == 0:
             phase_str = "A" if phase_a_active else "B"
             contact_str = f"cf={cf_val:.1f}" if has_contact else "cf=0"
             act_base_str = ",".join(f"{v:+.3f}" for v in action_np[6:9])
+            ghost_str = f" cf0_run={phase_a_cf_zero_count}" if phase_a_active and phase_a_cf_zero_count >= 3 else ""
+            phb_str = f" phB_t={phase_b_elapsed}" if not phase_a_active else ""
             print(f"    [S3-{phase_str} t={s3_step:4d}] objZ={objZ:.3f} grip={grip_pos:.3f} "
                   f"base_dst={base_dst:.3f} src_dst={src_dst:.3f} {contact_str} "
-                  f"arm=[{arm_str}] act_arm=[{act_arm_str}] act_base=[{act_base_str}]{action_delta_str}")
+                  f"arm=[{arm_str}] act_arm=[{act_arm_str}] act_base=[{act_base_str}]"
+                  f"{action_delta_str}{ghost_str}{phb_str}")
 
         # Drop detection — Phase A: 0.04 (carrying height), Phase B: 0.029 (topple)
         drop_thresh = 0.04 if phase_a_active else 0.029
         if objZ < drop_thresh and s3_step > 10:
-            print(f"    [DROP] step={s3_step} objZ={objZ:.3f} grip={grip_pos:.3f} {contact_str} "
-                  f"arm=[{arm_str}] act=[{act_arm_str}] phase={'A' if phase_a_active else 'B'}")
+            phase_str_d = "A" if phase_a_active else "B"
+            phase_b_dur = s3_step - phase_b_step_start if phase_b_step_start >= 0 else -1
+            arm1_info = ""
+            if arm1_at_phase_b_entry is not None:
+                arm1_info = f" arm1: entry={arm1_at_phase_b_entry:+.3f}→now={arm_jp[1]:+.3f}"
+            ghost_str = f" ghost_cf0_max={phase_a_cf_zero_max}" if phase_a_active else ""
+            print(f"    [DROP] step={s3_step} phase={phase_str_d} phB_dur={phase_b_dur} | "
+                  f"objZ={objZ:.3f} grip={grip_pos:.3f} cf={cf_val:.1f} | "
+                  f"arm=[{arm_str}] act=[{act_arm_str}]{arm1_info}{ghost_str}")
             dropped = True
             break
 
         # Place detection — contact 기반 (데모 패턴: arm 내려놓으면 cf→0, 물체 서있음)
-        if src_dst < S3_PLACE_RADIUS and not has_contact and objZ > 0.029 and s3_step > 50:
-            print(f"    [PLACE] step={s3_step} objZ={objZ:.3f} src_dst={src_dst:.3f} grip={grip_pos:.3f} "
-                  f"cf={cf_val:.1f} arm=[{arm_str}]")
+        if src_dst < S3_PLACE_RADIUS and not has_contact and objZ > 0.029 and objZ < 0.05 and s3_step > 50:
+            phase_b_dur = s3_step - phase_b_step_start if phase_b_step_start >= 0 else -1
+            arm1_delta = arm_jp[1] - arm1_at_phase_b_entry if arm1_at_phase_b_entry is not None else 0
+            objZ_delta = objZ - objZ_at_phase_b_entry if objZ_at_phase_b_entry is not None else 0
+            # Quality assessment
+            is_real = phase_b_dur >= 30 and arm1_delta > 1.0
+            quality = "REAL" if is_real else "SUSPECT"
+            print(f"    [PLACE-{quality}] step={s3_step} phB_dur={phase_b_dur} | "
+                  f"objZ={objZ:.3f} src_dst={src_dst:.3f} grip={grip_pos:.3f} cf={cf_val:.1f} | "
+                  f"arm=[{arm_str}] | "
+                  f"arm1: entry={arm1_at_phase_b_entry:+.3f}→now={arm_jp[1]:+.3f} (Δ={arm1_delta:+.3f}) | "
+                  f"objZ: entry={objZ_at_phase_b_entry:.3f}→now={objZ:.3f} (Δ={objZ_delta:+.3f})")
             placed = True
             break
 
     status = "place" if placed else ("drop" if dropped else "timeout")
     avg_arm_err = arm_init_err_sum / max(arm_init_err_count, 1)
+    phase_b_dur = s3_step - phase_b_step_start if phase_b_step_start >= 0 else -1
     results.append({"status": status, "s3_steps": s3_step, "phase_a_steps": phase_a_steps,
+                     "phase_b_dur": phase_b_dur,
                      "min_objZ": min_objZ, "max_grip": max_grip_open, "min_src_dst": min_src_dst,
-                     "arm_err": avg_arm_err})
+                     "arm_err": avg_arm_err,
+                     "arm1_entry": arm1_at_phase_b_entry, "arm1_max_b": arm1_max_in_phase_b,
+                     "objZ_entry": objZ_at_phase_b_entry, "objZ_min_b": objZ_min_in_phase_b,
+                     "ghost_cf0": phase_a_cf_zero_max})
+    # Phase B summary
+    phb_info = ""
+    if arm1_at_phase_b_entry is not None:
+        phb_info = (f" | PhaseB: dur={phase_b_dur} arm1={arm1_at_phase_b_entry:+.3f}→max={arm1_max_in_phase_b:+.3f} "
+                    f"objZ={objZ_at_phase_b_entry:.3f}→min={objZ_min_in_phase_b:.3f}")
+    ghost_info = f" | ghost_cf0={phase_a_cf_zero_max}" if phase_a_cf_zero_max >= 5 else ""
     print(f"  Episode {ep+1}: {status} ({s3_step} steps) | "
           f"PhaseA={phase_a_steps} arm_err={avg_arm_err:.3f} | "
-          f"min_objZ={min_objZ:.3f} max_grip={max_grip_open:.3f} min_src_dst={min_src_dst:.3f}\n")
+          f"min_objZ={min_objZ:.3f} max_grip={max_grip_open:.3f} min_src_dst={min_src_dst:.3f}"
+          f"{phb_info}{ghost_info}\n")
 
 # Summary
 n = len(results)
@@ -389,9 +450,15 @@ avg_arm_err = sum(r.get("arm_err", 0) for r in s3_results) / max(len(s3_results)
 avg_min_src = sum(r.get("min_src_dst", 0) for r in s3_results) / max(len(s3_results), 1)
 avg_max_grip = sum(r.get("max_grip", 0) for r in s3_results) / max(len(s3_results), 1)
 
+place_results = [r for r in results if r["status"] == "place"]
+n_real_place = sum(1 for r in place_results
+                   if r.get("phase_b_dur", 0) >= 30
+                   and r.get("arm1_max_b", -999) - (r.get("arm1_entry", 0) or 0) > 1.0)
+n_suspect_place = n_place - n_real_place
+
 print(f"\n{'='*60}")
 print(f"  Results: {n} episodes")
-print(f"  Place:      {n_place}/{n} ({n_place/max(n,1)*100:.0f}%)")
+print(f"  Place:      {n_place}/{n} ({n_place/max(n,1)*100:.0f}%) — REAL={n_real_place} SUSPECT={n_suspect_place}")
 print(f"  Drop:       {n_drop}/{n} (PhaseA={n_drop_a}, PhaseB={n_drop_b})")
 print(f"  Timeout:    {n_timeout}/{n}")
 print(f"  S2 Fail:    {n_s2_fail}/{n}")
@@ -399,11 +466,37 @@ print(f"  ---")
 print(f"  Avg PhaseA arm_err: {avg_arm_err:.3f}")
 print(f"  Avg min src_dst:    {avg_min_src:.3f}")
 print(f"  Avg max grip_open:  {avg_max_grip:.3f}")
+# Phase B arm lowering stats
+phb_results = [r for r in s3_results if r.get("arm1_entry") is not None]
+if phb_results:
+    arm1_deltas = [r["arm1_max_b"] - r["arm1_entry"] for r in phb_results]
+    n_arm_moved = sum(1 for d in arm1_deltas if d > 0.5)
+    n_arm_lowered = sum(1 for d in arm1_deltas if d > 1.5)
+    n_arm_place_ready = sum(1 for d in arm1_deltas if d > 2.5)
+    print(f"  ---")
+    print(f"  Phase B arm lowering ({len(phb_results)} episodes):")
+    print(f"    arm1 Δ>0.5 (started):    {n_arm_moved}/{len(phb_results)}")
+    print(f"    arm1 Δ>1.5 (halfway):    {n_arm_lowered}/{len(phb_results)}")
+    print(f"    arm1 Δ>2.5 (place-ready): {n_arm_place_ready}/{len(phb_results)}")
+    avg_delta = sum(arm1_deltas) / len(arm1_deltas)
+    max_delta = max(arm1_deltas)
+    print(f"    avg arm1 Δ: {avg_delta:.3f}, max: {max_delta:.3f}")
+# Ghost carry
+ghost_eps = [r for r in s3_results if r.get("ghost_cf0", 0) >= 5]
+if ghost_eps:
+    print(f"  ---")
+    print(f"  Ghost carry (cf0≥5): {len(ghost_eps)} episodes")
 print(f"  ---")
 print(f"  Per episode:")
 for i, r in enumerate(results):
-    print(f"    ep{i+1}: {r['status']:>7} | steps={r.get('s3_steps',0):4d} phA={r.get('phase_a_steps',0):3d} "
-          f"arm_err={r.get('arm_err',0):.3f} min_src={r.get('min_src_dst',0):.3f} max_grip={r.get('max_grip',0):.3f}")
+    phb_str = ""
+    if r.get("arm1_entry") is not None:
+        arm1_d = r["arm1_max_b"] - r["arm1_entry"]
+        phb_str = f" phB={r['phase_b_dur']:4d} arm1Δ={arm1_d:+.2f}"
+    ghost_str = f" ⚠ghost" if r.get("ghost_cf0", 0) >= 5 else ""
+    print(f"    ep{i+1}: {r['status']:>7} | steps={r.get('s3_steps',0):4d} phA={r.get('phase_a_steps',0):3d}"
+          f" arm_err={r.get('arm_err',0):.3f} min_src={r.get('min_src_dst',0):.3f}"
+          f" max_grip={r.get('max_grip',0):.3f}{phb_str}{ghost_str}")
 print(f"{'='*60}")
 
 sim_app.close()
