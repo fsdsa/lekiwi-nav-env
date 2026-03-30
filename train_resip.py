@@ -1455,7 +1455,8 @@ def main_combined():
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
-                    rew[place_cond] += 400.0
+                    arm1_quality = torch.clamp((s3_arm1_max_buf[place_cond] - 2.0) / 1.0, 0.0, 1.0)
+                    rew[place_cond] += 100.0 + 200.0 * arm1_quality  # arm1=2.0→100, 3.0→300
                     s3_place_total += place_cond.sum().item()
                     # Detailed PLACE log: arm1 trajectory, Phase B duration, quality
                     # (real/suspect counters updated after computation below)
