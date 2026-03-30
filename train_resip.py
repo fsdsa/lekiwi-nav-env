@@ -984,6 +984,7 @@ def main_combined():
     prev_src_dst_xy = torch.zeros(N, device=dev)                  # Phase B src→dst delta 계산용
     prev_src_h = torch.zeros(N, device=dev)                       # R_lower delta 계산용
     prev_arm1 = torch.zeros(N, device=dev)                         # R_arm_lower delta 계산용
+    s3_arm1_max_buf = torch.zeros(N, device=dev)                   # Phase B arm1 최대값 트래킹
     s3_step_counter = torch.zeros(N, dtype=torch.long, device=dev)  # S3 phase step counter
     carry_arm_start_buf = torch.zeros(N, 5, device=dev)  # Phase A arm override test용
     carry_grip_start_buf = torch.zeros(N, device=dev)
@@ -1031,7 +1032,7 @@ def main_combined():
 
         s3_scale_b = torch.zeros(S3_AD, device=dev)
         s3_scale_b[0:5] = 0.30     # arm: RL이 하강 동작 주도
-        s3_scale_b[5] = 1.50        # grip: RL이 열기 주도 (BC=-0.573 상쇄 필요)
+        s3_scale_b[5] = 1.20        # grip: RL=1.0→combined=+0.63(열림), RL=0.3→-0.21(닫힘유지)
         s3_scale_b[6:9] = 0.20      # base: Phase B 미세 접근
 
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
@@ -1275,6 +1276,7 @@ def main_combined():
                 s3_wedged_counter[t_ids] = 0
                 s3_phase_a_latch[t_ids] = True  # Phase A로 시작
                 s3_arm1_at_phase_b_entry[t_ids] = 0.0
+                s3_arm1_max_buf[t_ids] = 0.0
                 s3_objZ_at_phase_b_entry[t_ids] = 0.0
                 # S2→S3 전환 시 arm pose 캡처 (Phase A arm override + 36D obs)
                 carry_arm_start_buf[t_ids] = env.env.robot.data.joint_pos[t_ids][:, env.env.arm_idx[:5]]
@@ -1422,6 +1424,14 @@ def main_combined():
                     grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.25) / 0.30, 0.0, 1.0)
                     rew[release_ready] += grip_open_progress * proximity * 8.0
 
+                # ── R_grip_penalty: arm 안 내리고 grip 열면 벌칙 ──
+                premature_open = phase_b & (arm_joints[:, 1] < 1.5) & (grip_pos > 0.35)
+                rew[premature_open] += -0.5
+
+                # arm1 max tracking (Phase B)
+                if phase_b.any():
+                    s3_arm1_max_buf[phase_b] = torch.max(s3_arm1_max_buf[phase_b], arm_joints[phase_b, 1])
+
                 # Update prev distances
                 prev_base_dst_xy[s3m] = base_dst_xy[s3m]
                 prev_src_dst_xy[s3m] = src_dst_xy[s3m]
@@ -1434,22 +1444,18 @@ def main_combined():
                 dest_penalty = torch.where(phase_b, torch.tensor(-0.1, device=dev), torch.tensor(-1.0, device=dev))
                 rew[dest_touching] += dest_penalty[dest_touching]
 
-                # ── R3: Place success (+200) — contact 기반 (물체 바닥에 서있음 + dest 근처 + contact 없음) ──
+                # ── R3: Place success (+400) — arm이 실제로 내려간 이력 필요 ──
                 place_cond = (
                     s3m & ~ms_place
                     & (src_dst_xy < S3_PLACE_RADIUS)
                     & (~has_contact)
-                    & (src_h > 0.029) & (src_h < 0.05)  # 바닥에 서있는 상태
+                    & (src_h > 0.029) & (src_h < 0.05)
+                    & (s3_arm1_max_buf > 1.5)              # arm이 실제로 내려간 이력
                     & ~s3_fail
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
-                    rew[place_cond] += 300.0
-                    # REAL place 보너스: arm이 실제로 내려가서 place한 경우
-                    real_place = place_cond & (
-                        (arm_joints[:, 1] - s3_arm1_at_phase_b_entry) > 1.5
-                    ) & (s3_step_counter > 100)
-                    rew[real_place] += 100.0
+                    rew[place_cond] += 400.0
                     s3_place_total += place_cond.sum().item()
                     # Detailed PLACE log: arm1 trajectory, Phase B duration, quality
                     # (real/suspect counters updated after computation below)
@@ -1459,13 +1465,11 @@ def main_combined():
                     _p_objZ_entry = s3_objZ_at_phase_b_entry[place_cond]
                     _p_objZ_now = src_h[place_cond]
                     _p_s3step = s3_step_counter[place_cond]
-                    _p_real = ((_p_arm1_delta > 1.0) & (_p_s3step > 50)).sum().item()
-                    _p_suspect = place_cond.sum().item() - _p_real
-                    s3_place_real_total += _p_real
-                    s3_place_suspect_total += _p_suspect
-                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs (REAL={_p_real} SUSPECT={_p_suspect}) step={step} "
+                    _p_arm1_max = s3_arm1_max_buf[place_cond]
+                    s3_place_real_total += place_cond.sum().item()  # gate가 arm1_max>1.5이므로 전부 REAL
+                    print(f"    [S3] PLACE! {place_cond.sum().item()} envs step={step} "
                           f"s3_step={_p_s3step.tolist()} | "
-                          f"arm1: entry={_p_arm1_entry.tolist()}→now={_p_arm1_now.tolist()} Δ={_p_arm1_delta.tolist()} | "
+                          f"arm1: entry={_p_arm1_entry.tolist()}→now={_p_arm1_now.tolist()} max={_p_arm1_max.tolist()} | "
                           f"objZ: entry={_p_objZ_entry.tolist()}→now={_p_objZ_now.tolist()} | "
                           f"grip={grip_pos[place_cond].tolist()} src_dst={src_dst_xy[place_cond].tolist()}")
 
@@ -1532,6 +1536,7 @@ def main_combined():
                 s3_init_pose6[fail_ids] = 0.0
                 s3_phase_a_latch[fail_ids] = True
                 s3_arm1_at_phase_b_entry[fail_ids] = 0.0
+                s3_arm1_max_buf[fail_ids] = 0.0
                 s3_objZ_at_phase_b_entry[fail_ids] = 0.0
                 prev_base_dst_xy[fail_ids] = 0.0
                 prev_src_dst_xy[fail_ids] = 0.0
@@ -1556,6 +1561,7 @@ def main_combined():
                 s3_init_pose6[reset_mask] = 0.0
                 s3_phase_a_latch[reset_mask] = True
                 s3_arm1_at_phase_b_entry[reset_mask] = 0.0
+                s3_arm1_max_buf[reset_mask] = 0.0
                 s3_objZ_at_phase_b_entry[reset_mask] = 0.0
                 prev_base_dst_xy[reset_mask] = 0.0
                 prev_src_dst_xy[reset_mask] = 0.0
