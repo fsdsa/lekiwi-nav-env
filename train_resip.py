@@ -1391,9 +1391,12 @@ def main_combined():
                 r1_mask = phase_a & is_holding
                 rew[r1_mask] += r1[r1_mask]
 
-                # ── R_arm: Phase B — src↔dst XY delta (팔 뻗기 + base 접근, is_holding) ──
-                src_dst_delta = torch.clamp(prev_src_dst_xy - src_dst_xy, -0.05, 0.05)
-                r_arm = src_dst_delta * 80.0  # balanced with R_lower
+                # ── R_arm: Phase B — src↔dst → 0.12 수렴 (데모 place 시 src_dst=0.119) ──
+                S3_SRC_DST_TARGET = 0.12
+                prev_err = (prev_src_dst_xy - S3_SRC_DST_TARGET).abs()
+                curr_err = (src_dst_xy - S3_SRC_DST_TARGET).abs()
+                src_dst_delta = torch.clamp(prev_err - curr_err, -0.05, 0.05)
+                r_arm = src_dst_delta * 80.0
                 r_arm_mask = phase_b & is_holding_phb
                 rew[r_arm_mask] += r_arm[r_arm_mask]
 
@@ -1420,7 +1423,7 @@ def main_combined():
                 # 기존 src_h<0.10은 물체를 쥐고 있으면 불가능 (EP17: arm1=2.75 → objZ=0.135)
                 release_ready = phase_b & (arm_joints[:, 1] > 2.0) & (src_dst_xy < 0.20)
                 if release_ready.any():
-                    proximity = torch.exp(-0.5 * (src_dst_xy[release_ready] / 0.15) ** 2)
+                    proximity = torch.exp(-0.5 * ((src_dst_xy[release_ready] - 0.12) / 0.15) ** 2)  # center=0.12 (데모 기준)
                     grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.25) / 0.30, 0.0, 1.0)
                     rew[release_ready] += grip_open_progress * proximity * 8.0
 
