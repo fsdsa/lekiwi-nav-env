@@ -1425,7 +1425,7 @@ def main_combined():
                     rew[release_ready] += grip_open_progress * proximity * 8.0
 
                 # ── R_grip_penalty: arm 안 내리고 grip 열면 벌칙 ──
-                premature_open = phase_b & (arm_joints[:, 1] < 1.5) & (grip_pos > 0.35)
+                premature_open = phase_b & (arm_joints[:, 1] < 2.0) & (grip_pos > 0.35)
                 rew[premature_open] += -0.5
 
                 # arm1 max tracking (Phase B)
@@ -1450,7 +1450,7 @@ def main_combined():
                     & (src_dst_xy < S3_PLACE_RADIUS)
                     & (~has_contact)
                     & (src_h > 0.029) & (src_h < 0.05)
-                    & (s3_arm1_max_buf > 1.5)              # arm이 실제로 내려간 이력
+                    & (s3_arm1_max_buf > 2.0)              # arm이 충분히 내려간 이력 (R_release 시작점과 일치)
                     & ~s3_fail
                 )
                 if place_cond.any():
