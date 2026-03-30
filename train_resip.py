@@ -1026,8 +1026,8 @@ def main_combined():
 
         # Phase별 residual scale (Phase A: BC 보존, Phase B: RL 주도)
         s3_scale_a = torch.zeros(S3_AD, device=dev)
-        s3_scale_a[0:5] = 0.10    # arm: BC 보정 여지 확대 (early drop 보완)
-        s3_scale_a[5] = 0.10       # grip: BC 보정 여지 확대
+        s3_scale_a[0:5] = 0.05    # arm: BC 보존 (v2에서 검증됨)
+        s3_scale_a[5] = 0.05       # grip: BC 보존
         s3_scale_a[6:9] = 0.10     # base: 약간 보정
 
         s3_scale_b = torch.zeros(S3_AD, device=dev)
