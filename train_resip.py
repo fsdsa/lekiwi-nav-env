@@ -220,6 +220,9 @@ def make_env(skill, num_envs, args):
         raise ValueError(skill)
 
     cfg.sim.device = "cuda:0"
+    cfg.sim.physx.enable_ccd = True
+    cfg.object_contact_offset = 0.01
+    cfg.object_rest_offset = 0.004
     cfg.enable_domain_randomization = args.enable_domain_randomization
     cfg.arm_limit_write_to_sim = False
     cfg.grasp_contact_threshold = 0.55
