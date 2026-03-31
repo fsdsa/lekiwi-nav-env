@@ -990,6 +990,7 @@ def main_combined():
     carry_grip_start_buf = torch.zeros(N, device=dev)
     s3_init_pose6 = torch.zeros(N, 6, device=dev)  # S2→S3 전환 시 arm5+grip1 (36D obs용)
     s3_phase_a_latch = torch.ones(N, dtype=torch.bool, device=dev)  # Phase A latch: 한번 B면 복귀 안 함
+    s3_phb_elapsed = torch.zeros(N, dtype=torch.long, device=dev)  # Phase B elapsed steps
     s3_arm1_at_phase_b_entry = torch.zeros(N, device=dev)  # Phase B 진입 시 arm1 값
     s3_objZ_at_phase_b_entry = torch.zeros(N, device=dev)  # Phase B 진입 시 objZ
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check (Phase A only)
@@ -1030,10 +1031,7 @@ def main_combined():
         s3_scale_a[5] = 0.0        # grip: Phase A에서 RL 개입 완전 차단
         s3_scale_a[6:9] = 0.10     # base: 약간 보정
 
-        s3_scale_b = torch.zeros(S3_AD, device=dev)
-        s3_scale_b[0:5] = 0.30     # arm: RL이 하강 동작 주도
-        s3_scale_b[5] = 1.20        # grip: RL=1.0→combined=+0.63(열림), RL=0.3→-0.21(닫힘유지)
-        s3_scale_b[6:9] = 0.20      # base: Phase B 미세 접근
+        # s3_scale_b: 매 스텝 동적 계산 (수정 5: ramp + grip gate)
 
         # 전체 reset 안 함 — S3 env는 유지, S2 env는 자연스럽게 진행
         # 첫 iter이거나 모든 env가 S2일 때만 reset
@@ -1093,6 +1091,7 @@ def main_combined():
                     _src_h_local = env.env.object_pos_w[:, 2] - env.env.scene.env_origins[:, 2]
                     s3_objZ_at_phase_b_entry[entered_b] = _src_h_local[entered_b]
                 s3_phase_a_latch[entered_b] = False
+                s3_phb_elapsed[entered_b] = 0
                 phase_a_flag = s3_phase_a_latch.float().unsqueeze(-1)  # (N, 1)
                 s3_obs = torch.cat([s3_obs29, s3_init_pose6, phase_a_flag], dim=-1)  # 36D
 
@@ -1113,10 +1112,17 @@ def main_combined():
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
+            # Dynamic Phase B scale: ramp arm over 100 steps, grip only after arm1>2.0
+            arm_ramp = (s3_phb_elapsed.float() / 100.0).clamp(0.0, 1.0)
+            grip_gate = (env.env.robot.data.joint_pos[:, env.env.arm_idx[1]] > 2.0).float()
+            s3_scale_b_dynamic = torch.zeros(N, S3_AD, device=dev)
+            s3_scale_b_dynamic[:, 0:5] = 0.30 * arm_ramp.unsqueeze(-1)
+            s3_scale_b_dynamic[:, 5]   = 0.80 * grip_gate * arm_ramp
+            s3_scale_b_dynamic[:, 6:9] = 0.20
             s3_scale = torch.where(
                 s3_phase_a_latch.unsqueeze(-1),
                 s3_scale_a.unsqueeze(0).expand(N, -1),
-                s3_scale_b.unsqueeze(0).expand(N, -1),
+                s3_scale_b_dynamic,
             )
             combined = s3_ba + s3_ra * s3_scale
             combined[:, 5] = torch.clamp(combined[:, 5], -0.45, 1.0)  # gripper clamp: grip_pos >= ~0.26 (끼임 방지)
@@ -1275,6 +1281,7 @@ def main_combined():
                 s3_step_counter[t_ids] = 0
                 s3_wedged_counter[t_ids] = 0
                 s3_phase_a_latch[t_ids] = True  # Phase A로 시작
+                s3_phb_elapsed[t_ids] = 0
                 s3_arm1_at_phase_b_entry[t_ids] = 0.0
                 s3_arm1_max_buf[t_ids] = 0.0
                 s3_objZ_at_phase_b_entry[t_ids] = 0.0
@@ -1313,6 +1320,7 @@ def main_combined():
             if is_s3.any():
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
+                s3_phb_elapsed[(~s3_phase_a_latch) & s3m] += 1
                 # Source object & dest object positions
                 src_pos = env.env.object_pos_w       # (N, 3) source 약병
                 dst_pos = env.env.dest_object_pos_w  # (N, 3) dest 컵
@@ -1417,19 +1425,18 @@ def main_combined():
                 if near_dest.any():
                     arm1 = arm_joints[:, 1]
                     arm1_delta = torch.clamp(arm1 - prev_arm1, 0.0, 0.05)  # 상승만 보상, per-step max 0.05
-                    rew[near_dest] += (arm1_delta * 30.0)[near_dest]
+                    rew[near_dest] += (arm1_delta * 80.0)[near_dest]
 
-                # ── R_release: Phase B — grip 열기 (arm1 > 2.0 + dest 근처, Gaussian proximity) ──
-                # 기존 src_h<0.10은 물체를 쥐고 있으면 불가능 (EP17: arm1=2.75 → objZ=0.135)
-                release_ready = phase_b & (arm_joints[:, 1] > 2.0) & (src_dst_xy < 0.20)
+                # ── R_release: Phase B — grip 열기 (arm1 > 2.5 + dest 근처, Gaussian proximity) ──
+                release_ready = phase_b & (arm_joints[:, 1] > 2.5) & (src_dst_xy < 0.15)
                 if release_ready.any():
-                    proximity = torch.exp(-0.5 * ((src_dst_xy[release_ready] - 0.12) / 0.15) ** 2)  # center=0.12 (데모 기준)
-                    grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.25) / 0.30, 0.0, 1.0)
-                    rew[release_ready] += grip_open_progress * proximity * 8.0
+                    proximity = torch.exp(-0.5 * ((src_dst_xy[release_ready] - 0.12) / 0.12) ** 2)
+                    grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.30) / 0.35, 0.0, 1.0)
+                    rew[release_ready] += grip_open_progress * proximity * 3.0
 
                 # ── R_grip_penalty: arm 안 내리고 grip 열면 벌칙 ──
-                premature_open = phase_b & (arm_joints[:, 1] < 2.0) & (grip_pos > 0.35)
-                rew[premature_open] += -0.5
+                premature_open = phase_b & (arm_joints[:, 1] < 2.0) & (grip_pos > 0.50)
+                rew[premature_open] += -1.0
 
                 # arm1 max tracking (Phase B)
                 if phase_b.any():
@@ -1453,13 +1460,13 @@ def main_combined():
                     & (src_dst_xy < S3_PLACE_RADIUS)
                     & (~has_contact)
                     & (src_h > 0.029) & (src_h < 0.05)
-                    & (s3_arm1_max_buf > 2.0)              # arm이 충분히 내려간 이력 (R_release 시작점과 일치)
+                    & (s3_arm1_max_buf > 2.5)              # arm이 충분히 내려간 이력 (데모 최소 2.67)
                     & ~s3_fail
                 )
                 if place_cond.any():
                     ms_place[place_cond] = True
-                    arm1_quality = torch.clamp((s3_arm1_max_buf[place_cond] - 2.0) / 1.0, 0.0, 1.0)
-                    rew[place_cond] += 100.0 + 200.0 * arm1_quality  # arm1=2.0→100, 3.0→300
+                    arm1_quality = torch.clamp((s3_arm1_max_buf[place_cond] - 2.5) / 0.5, 0.0, 1.0)
+                    rew[place_cond] += 200.0 + 300.0 * arm1_quality  # arm1=2.5→200, 3.0→500
                     s3_place_total += place_cond.sum().item()
                     # Detailed PLACE log: arm1 trajectory, Phase B duration, quality
                     # (real/suspect counters updated after computation below)
@@ -1539,6 +1546,7 @@ def main_combined():
                 s3_wedged_counter[fail_ids] = 0
                 s3_init_pose6[fail_ids] = 0.0
                 s3_phase_a_latch[fail_ids] = True
+                s3_phb_elapsed[fail_ids] = 0
                 s3_arm1_at_phase_b_entry[fail_ids] = 0.0
                 s3_arm1_max_buf[fail_ids] = 0.0
                 s3_objZ_at_phase_b_entry[fail_ids] = 0.0
@@ -1564,6 +1572,7 @@ def main_combined():
                 s3_wedged_counter[reset_mask] = 0
                 s3_init_pose6[reset_mask] = 0.0
                 s3_phase_a_latch[reset_mask] = True
+                s3_phb_elapsed[reset_mask] = 0
                 s3_arm1_at_phase_b_entry[reset_mask] = 0.0
                 s3_arm1_max_buf[reset_mask] = 0.0
                 s3_objZ_at_phase_b_entry[reset_mask] = 0.0
