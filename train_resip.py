@@ -1419,7 +1419,7 @@ def main_combined():
 
                 # ── R_base_approach: Phase B — base → dest 미세 접근 ──
                 base_dst_delta = torch.clamp(prev_base_dst_xy - base_dst_xy, -0.02, 0.02)
-                r_base_approach = base_dst_delta * 15.0
+                r_base_approach = base_dst_delta * 30.0
                 rew[phase_b] += r_base_approach[phase_b]
 
                 # ── R_lower: Phase B — objZ 내리기 (src_dst < 0.30) ──
