@@ -1440,7 +1440,7 @@ def main_combined():
                     rew[near_dest] += (arm1_delta * 80.0)[near_dest]
 
                 # ── R_release: Phase B — grip 열기 (arm1 > 2.5 + dest 근처, Gaussian proximity) ──
-                release_ready = phase_b & (arm_joints[:, 1] > 2.5) & (src_dst_xy < 0.20)
+                release_ready = phase_b & (arm_joints[:, 1] > 2.5) & (src_dst_xy < 0.25)
                 if release_ready.any():
                     proximity = torch.exp(-0.5 * ((src_dst_xy[release_ready] - 0.12) / 0.12) ** 2)
                     grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.30) / 0.35, 0.0, 1.0)
@@ -1473,6 +1473,7 @@ def main_combined():
                     & (~has_contact)
                     & (src_h > 0.029) & (src_h < 0.05)
                     & (s3_arm1_max_buf > 2.5)              # arm이 충분히 내려간 이력 (데모 최소 2.67)
+                    & (grip_pos > 0.35)                    # grip이 실제로 열려야 place 인정
                     & ~s3_fail
                 )
                 if place_cond.any():
