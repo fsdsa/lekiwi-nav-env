@@ -995,7 +995,7 @@ def main_combined():
     s3_objZ_at_phase_b_entry = torch.zeros(N, device=dev)  # Phase B 진입 시 objZ
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check (Phase A only)
     s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
-    S3_PLACE_RADIUS = 0.14    # source↔dest XY distance for place success
+    S3_PLACE_RADIUS = 0.18    # source↔dest XY distance for place success
     S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.42   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
