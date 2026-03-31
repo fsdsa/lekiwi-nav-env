@@ -1119,8 +1119,8 @@ def main_combined():
             arm_ramp = (s3_phb_elapsed.float() / 100.0).clamp(0.0, 1.0)
             grip_gate = (env.env.robot.data.joint_pos[:, env.env.arm_idx[1]] > 2.0).float()
             s3_scale_b_dynamic = torch.zeros(N, S3_AD, device=dev)
-            s3_scale_b_dynamic[:, 0:5] = 0.30 * arm_ramp.unsqueeze(-1)
-            s3_scale_b_dynamic[:, 5]   = 0.80 * grip_gate * arm_ramp
+            s3_scale_b_dynamic[:, 0:5] = 0.20 * arm_ramp.unsqueeze(-1)
+            s3_scale_b_dynamic[:, 5]   = 0.50 * grip_gate * arm_ramp
             s3_scale_b_dynamic[:, 6:9] = 0.20
             s3_scale = torch.where(
                 s3_phase_a_latch.unsqueeze(-1),
