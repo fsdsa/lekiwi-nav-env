@@ -1347,7 +1347,12 @@ def main_combined():
 
                 # S3 hold = contact + gripper_closed (between_jaws는 carry 중 EE drift로 false drop 유발하므로 제외)
                 is_holding = has_contact & gripper_closed & (grip_pos >= 0.20)
-                is_holding_phb = has_contact_phb & gripper_closed & (grip_pos >= 0.15)
+                arm_deep = arm_joints[:, 1] > 2.0
+                is_holding_phb = torch.where(
+                    arm_deep,
+                    has_contact_phb & (grip_pos >= 0.15),                      # arm 충분히 내렸으면 grip 열어도 hold 인정
+                    has_contact_phb & gripper_closed & (grip_pos >= 0.15),      # 기존: grip closed 필수
+                )
 
                 # ── R0: Drop detection (topple + contact 기반) ──
                 # Phase A: 0.04 (carrying height), Phase B: 0.029 (topple)
@@ -1399,6 +1404,10 @@ def main_combined():
                 r1_mask = phase_a & is_holding
                 rew[r1_mask] += r1[r1_mask]
 
+                # ── R_hold_b: Phase B — contact 유지 보상 ──
+                hold_b = phase_b & is_holding_phb & (src_h > 0.04)
+                rew[hold_b] += 0.05
+
                 # ── R_arm: Phase B — src↔dst → 0.12 수렴 (데모 place 시 src_dst=0.119) ──
                 S3_SRC_DST_TARGET = 0.12
                 prev_err = (prev_src_dst_xy - S3_SRC_DST_TARGET).abs()
@@ -1428,7 +1437,7 @@ def main_combined():
                     rew[near_dest] += (arm1_delta * 80.0)[near_dest]
 
                 # ── R_release: Phase B — grip 열기 (arm1 > 2.5 + dest 근처, Gaussian proximity) ──
-                release_ready = phase_b & (arm_joints[:, 1] > 2.5) & (src_dst_xy < 0.15)
+                release_ready = phase_b & (arm_joints[:, 1] > 2.5) & (src_dst_xy < 0.20)
                 if release_ready.any():
                     proximity = torch.exp(-0.5 * ((src_dst_xy[release_ready] - 0.12) / 0.12) ** 2)
                     grip_open_progress = torch.clamp((grip_pos[release_ready] - 0.30) / 0.35, 0.0, 1.0)
@@ -1497,7 +1506,8 @@ def main_combined():
                 # ── R5: Time penalty ──
                 rew[s3m] += -0.01
 
-                # ── R0/timeout: drop 패널티 없음, reset만 ──
+                # ── R0/timeout/drop 패널티 ──
+                rew[s3_drop] = -5.0
                 rew[s3_timeout] = -5.0
 
             rew_b[step] = rew
