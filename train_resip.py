@@ -999,7 +999,6 @@ def main_combined():
     S3_NO_CONTACT_STEPS = 8   # consecutive steps without contact = drop check (Phase A only)
     s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
     S3_PLACE_RADIUS = 0.18    # source↔dest XY distance for place success
-    S3_DEST_CONTACT_PENALTY = -1.0   # dest 접촉 패널티 (place 시도 억제 방지)
     S3_PHASE_B_DIST = 0.42   # base→dest 이 거리 이하면 Phase B (팔 뻗기)
     S3_MAX_STEPS = 2000       # S3 phase timeout
     S3_REST_POSE = torch.tensor([-0.027, -0.207, 0.203, 0.123, 0.034], device=dev)
@@ -1128,8 +1127,23 @@ def main_combined():
                 s3_scale_b_dynamic,
             )
             combined = s3_ba + s3_ra * s3_scale
-            combined[:, 5] = torch.clamp(combined[:, 5], -0.45, 1.0)  # gripper clamp: grip_pos >= ~0.26 (끼임 방지)
+            # Phase B grip is the only dimension that must reverse BC behavior.
+            # Keep BC hold before release-ready, then let RL control grip directly.
+            # Important: do this after action denormalization so BC demo stats do not
+            # squash RL grip back toward the teleop mean/range.
+            src_dst_xy_pre = torch.norm(
+                env.env.object_pos_w[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1
+            )
+            phase_b_grip_direct = (
+                (~s3_phase_a_latch)
+                & (env.env.robot.data.joint_pos[:, env.env.arm_idx[1]] > 2.0)
+                & (src_dst_xy_pre < 0.25)
+            )
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
+            s3_bc_action = s3_dp.normalizer(s3_ba, "action", forward=False)
+            bc_hold_grip = torch.clamp(s3_bc_action[:, 5], -0.45, 1.0)
+            rl_direct_grip = torch.clamp(s3_ra[:, 5], -0.45, 1.0)
+            s3_action[:, 5] = torch.where(phase_b_grip_direct, rl_direct_grip, bc_hold_grip)
 
             # Merge action by phase
             is_s2 = (phase == 0)
@@ -1459,12 +1473,6 @@ def main_combined():
                 prev_src_dst_xy[s3m] = src_dst_xy[s3m]
                 prev_src_h[s3m] = src_h[s3m]
                 prev_arm1[s3m] = arm_joints[s3m, 1]
-
-                # ── R2: dest contact penalty (Phase B에서 완화) ──
-                dest_cf = env.env._dest_contact_force_per_env()
-                dest_touching = (dest_cf > 0.3) & s3m
-                dest_penalty = torch.where(phase_b, torch.tensor(-0.1, device=dev), torch.tensor(-1.0, device=dev))
-                rew[dest_touching] += dest_penalty[dest_touching]
 
                 # ── R3: Place success (+400) — arm이 실제로 내려간 이력 필요 ──
                 place_cond = (
@@ -2655,4 +2663,3 @@ def main_navigate():
 
 if __name__ == "__main__":
     main()
-
