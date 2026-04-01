@@ -1142,7 +1142,15 @@ def main_combined():
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
             s3_bc_action = s3_dp.normalizer(s3_ba, "action", forward=False)
             bc_hold_grip = torch.clamp(s3_bc_action[:, 5], -0.45, 1.0)
-            rl_direct_grip = torch.clamp(s3_ra[:, 5], -0.45, 1.0)
+            # Keep the BC closed grip as the default at zero residual, and let
+            # positive RL output interpolate toward a demo-like open action.
+            t = torch.clamp(s3_ra[:, 5], 0.0, 1.0)
+            GRIP_OPEN_ACTION = 0.0
+            rl_direct_grip = torch.clamp(
+                bc_hold_grip * (1.0 - t) + GRIP_OPEN_ACTION * t,
+                -0.45,
+                1.0,
+            )
             s3_action[:, 5] = torch.where(phase_b_grip_direct, rl_direct_grip, bc_hold_grip)
 
             # Merge action by phase
