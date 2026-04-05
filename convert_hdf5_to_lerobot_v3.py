@@ -91,6 +91,8 @@ def parse_args() -> argparse.Namespace:
         help="When videos are enabled, skip episodes missing required image streams",
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from existing dataset (skip already converted episodes)")
     parser.add_argument(
         "--vcodec",
         type=str,
@@ -255,12 +257,22 @@ def main() -> None:
     input_paths = expand_inputs(args.input)
     output_root = Path(args.output_root).expanduser().resolve()
 
-    if output_root.exists() and not args.overwrite:
-        raise FileExistsError(f"{output_root} already exists. Use --overwrite to replace.")
-    if output_root.exists() and args.overwrite:
-        # avoid destructive shell calls; use Python stdlib
+    _resume_from = 0
+    if args.resume and output_root.exists():
+        # Resume: 기존 데이터셋에서 이미 변환된 에피소드 수 파악
+        _info_path = output_root / "meta" / "info.json"
+        if _info_path.exists():
+            import json as _json
+            with open(_info_path) as _f:
+                _info = _json.load(_f)
+            _resume_from = int(_info.get("total_episodes", 0))
+            print(f"[Resume] 기존 {_resume_from}개 에피소드에서 이어서 변환")
+        else:
+            print("[Resume] info.json 없음, 처음부터 시작")
+    elif output_root.exists() and not args.overwrite:
+        raise FileExistsError(f"{output_root} already exists. Use --overwrite or --resume.")
+    elif output_root.exists() and args.overwrite:
         import shutil
-
         shutil.rmtree(output_root)
 
     episodes: list[EpisodeInfo] = []
@@ -363,15 +375,23 @@ def main() -> None:
     print(f"features: {list(features.keys())}")
     print("=" * 72)
 
-    dataset = LeRobotDataset.create(
-        repo_id=args.repo_id,
-        fps=args.fps,
-        features=features,
-        root=output_root,
-        robot_type=args.robot_type,
-        use_videos=use_videos,
-        vcodec=args.vcodec,
-    )
+    if _resume_from > 0:
+        # Resume: 기존 데이터셋 로드
+        dataset = LeRobotDataset(
+            repo_id=args.repo_id,
+            root=output_root,
+        )
+        print(f"[Resume] Loaded existing dataset: {_resume_from} episodes")
+    else:
+        dataset = LeRobotDataset.create(
+            repo_id=args.repo_id,
+            fps=args.fps,
+            features=features,
+            root=output_root,
+            robot_type=args.robot_type,
+            use_videos=use_videos,
+            vcodec=args.vcodec,
+        )
 
     # Pre-register known task strings for stable ordering when possible
     ordered_subtask_ids = sorted(subtask_id_to_text.keys())
@@ -385,7 +405,10 @@ def main() -> None:
     converted = 0
     skipped = 0
 
-    for ep in episodes:
+    for ep_idx, ep in enumerate(episodes):
+        # Resume: 이미 변환된 에피소드 건너뜀
+        if ep_idx < _resume_from:
+            continue
         with h5py.File(ep.h5_path, "r") as h5f:
             grp = h5f[ep.episode_key]
             file_subtask_map = read_subtask_mapping(h5f)
@@ -414,6 +437,18 @@ def main() -> None:
 
             if robot_state.shape[0] != n_steps:
                 print(f"[SKIP] {ep.h5_path.name}:{ep.episode_key} - length mismatch robot_state/actions")
+                skipped += 1
+                continue
+
+            # NaN 검증: state/action에 NaN이 있으면 에피소드 스킵
+            if np.any(np.isnan(robot_state)):
+                nan_rows = np.sum(np.any(np.isnan(robot_state), axis=1))
+                print(f"[SKIP] {ep.h5_path.name}:{ep.episode_key} - robot_state NaN ({nan_rows}/{n_steps} rows)")
+                skipped += 1
+                continue
+            if np.any(np.isnan(actions)):
+                nan_rows = np.sum(np.any(np.isnan(actions), axis=1))
+                print(f"[SKIP] {ep.h5_path.name}:{ep.episode_key} - actions NaN ({nan_rows}/{n_steps} rows)")
                 skipped += 1
                 continue
 
@@ -512,9 +547,31 @@ def main() -> None:
     tasks_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     tasks_df = dataset.meta.tasks.sort_values("task_index")
     with open(tasks_jsonl_path, "w", encoding="utf-8") as f:
-        for _, row in tasks_df.iterrows():
-            record = {"task_index": int(row["task_index"]), "task": str(row["task"])}
+        for task_text, row in tasks_df.iterrows():
+            # LeRobot v3: task text is the DataFrame index, not a column
+            record = {"task_index": int(row["task_index"]), "task": str(task_text)}
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # ── 최종 stats.json NaN/inf 검증 ──
+    stats_path = output_root / "meta" / "stats.json"
+    if stats_path.exists():
+        with open(stats_path) as f:
+            stats = json.load(f)
+        n_problems = 0
+        for key in stats:
+            for sname, vals in stats[key].items():
+                if isinstance(vals, list):
+                    for i, v in enumerate(vals):
+                        if v is None:
+                            print(f"[WARN] stats.json {key}.{sname}[{i}] = None")
+                            n_problems += 1
+                        elif isinstance(v, float) and (v != v or abs(v) == float("inf")):
+                            print(f"[WARN] stats.json {key}.{sname}[{i}] = {v}")
+                            n_problems += 1
+        if n_problems > 0:
+            print(f"[ERROR] stats.json에 NaN/None/inf {n_problems}개 발견!")
+        else:
+            print("[OK] stats.json 검증 통과 (NaN/None/inf 없음)")
 
     print("=" * 72)
     print("Conversion done")
