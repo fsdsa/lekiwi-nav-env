@@ -4,9 +4,9 @@
 
 ```
 [A100 서버 — 항상 실행]
-  vLLM (port 8000)  ─ Qwen2.5-VL-7B-Instruct, ~19.8GB VRAM
-  VLA  (port 8002)  ─ Pi0-FAST 2.9B via LeRobot 0.5.0, ~7.7GB VRAM
-                      합계 ~27.5GB / 40GB
+  vLLM (port 8000)  ─ Qwen3-VL-8B-Instruct, ~29.8GB VRAM
+  VLA  (port 8002)  ─ Pi0-FAST 2.9B via LeRobot 0.5.0, ~8.1GB VRAM
+                      합계 ~37.9GB / 40GB
 
 [3090 로컬 — 유저가 실행]
   run_full_task.py  ─ Isaac Sim + 카메라 + 제어 루프
@@ -97,6 +97,19 @@ S2/S4에서 depth < 0.3m 감지 → VLM 호출 → "OBSTACLE" / "CONTINUE":
 | `launch_vlm_server.sh` | 서버 | vLLM 시작 스크립트 |
 | `test_roundtrip.py` | 로컬 | 레이턴시 측정용 (Hz 벤치마크) |
 | `run_vlm_navigate.py` | 로컬 | Navigate 전용 (BC+VLM, 전체 파이프라인과 별개) |
+| `record_teleop_scene.py` | 로컬 | ProcTHOR scene 데이터 수집 (expert/teleop) |
+| `eval_viva_pipeline.py` | 로컬 | VIVA 파이프라인 평가 (키보드 S1/S3 + RL expert S2) |
+| `procthor_scene.py` | 로컬 | ProcTHOR scene 로딩/스폰 유틸 |
+| `train_pi0fast.sh` | 서버 | Pi0-FAST 변환/학습/서빙 통합 스크립트 |
+
+## VLA 학습 데이터 (lekiwi_viva_v2)
+
+| Skill | Episodes | Steps/ep | Instructions |
+|-------|---------|---------|--------------|
+| Approach & Lift | 100 | ~700 | "approach and lift the medicine bottle" |
+| Navigate | 446 | 150 | navigate forward/backward/turn left/turn right/strafe left/strafe right |
+| Carry | 432 | 150 | carry forward/backward/left/right/turn left/turn right |
+| **Total** | **978** | — | **18 tasks** |
 
 ## 실행 모드
 
@@ -170,16 +183,16 @@ PYTHONUNBUFFERED=1 python vllm/run_full_task.py \
 
 | 구간 | 평균 | 비고 |
 |------|------|------|
-| VLM (vLLM Qwen2.5-VL) | 191ms | 비동기, ~86회/200step |
+| VLM (vLLM Qwen3-VL) | 191ms | 비동기, ~86회/200step |
 | VLA (Pi0-FAST) | 27-58ms | 동기 |
 | 전체 루프 | ~156ms | **6.4 Hz** |
 
 ### GPU 메모리 (A100 40GB)
 
 ```
-VLM (vLLM Qwen2.5-VL-7B): ~19.8GB  (--gpu-memory-utilization 0.50)
-VLA (Pi0-FAST 2.9B):       ~7.7GB
-합계:                      ~27.5GB / 40GB
+VLM (vLLM Qwen3-VL-8B): ~29.8GB  (--gpu-memory-utilization 0.75)
+VLA (Pi0-FAST 2.9B):     ~8.1GB
+합계:                    ~37.9GB / 40GB
 ```
 
 ## 서버 환경 (lerobotpi0v2)
