@@ -2,9 +2,9 @@
 # VLM + VLA 서버 동시 실행 (A100 서버)
 #
 # GPU 메모리 분배 (A100 40GB):
-#   VLM (vLLM, Qwen 7B bf16): ~18GB (gpu-memory-utilization 0.45)
-#   VLA (Pi0-FAST):            ~6-8GB
-#   합계: ~24-26GB
+#   VLM (vLLM, Qwen3-VL-8B bf16): ~29.8GB (gpu-memory-utilization 0.75)
+#   VLA (Pi0-FAST):                ~8.1GB
+#   합계: ~37.9GB
 #
 # 사용법:
 #   bash launch_servers.sh                           # 둘 다
@@ -71,11 +71,11 @@ start_vlm() {
     conda activate vllm
 
     nohup python -m vllm.entrypoints.openai.api_server \
-        --model Qwen/Qwen2.5-VL-7B-Instruct \
+        --model Qwen/Qwen3-VL-8B-Instruct \
         --dtype bfloat16 \
         --port ${VLM_PORT} \
         --max-model-len 4096 \
-        --gpu-memory-utilization 0.45 \
+        --gpu-memory-utilization 0.75 \
         --trust-remote-code \
         > "${LOG_DIR}/vlm_server.log" 2>&1 &
 
@@ -99,13 +99,14 @@ start_vla() {
         return
     fi
 
-    source "${CONDA_DIR}/etc/profile.d/conda.sh"
-    conda activate lerobotpi0
+    # lerobotpi0v2 env (lerobot 0.5.0)
+    source /home/jovyan/yes/etc/profile.d/conda.sh
+    conda activate lerobotpi0v2
 
-    nohup python "${SCRIPT_DIR}/vla_inference_server.py" \
-        --checkpoint "${VLA_CHECKPOINT}" \
+    nohup python "${SCRIPT_DIR}/vllm/vla_inference_server.py" \
+        --model "${VLA_CHECKPOINT}" \
         --port ${VLA_PORT} \
-        --device cuda \
+        --host 0.0.0.0 \
         > "${LOG_DIR}/vla_server.log" 2>&1 &
 
     VLA_PID=$!

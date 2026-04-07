@@ -1070,7 +1070,7 @@ Phase 4까지는 VLA를 skill별로 독립 학습한다. 그러나 실제 배포
 
 ### 7-2. 인프라 구성
 
-VLM(~19.8GB) + VLA(~5.9GB) = ~25.9GB VRAM이 필요하므로, 3090 Desktop(24GB)에서 sim 렌더링과 VLM+VLA 추론을 동시에 할 수 없다. Phase 5(실배포)와 동일한 분산 구조를 사용한다:
+VLM(Qwen3-VL-8B, ~29.8GB) + VLA(Pi0-FAST, ~8.1GB) = ~37.9GB VRAM이 필요하므로, 3090 Desktop(24GB)에서 sim 렌더링과 VLM+VLA 추론을 동시에 할 수 없다. Phase 5(실배포)와 동일한 분산 구조를 사용한다:
 
 **3090 Desktop (sim 환경):**
 - Isaac Sim (num_envs=1), base_cam(1280×720) + wrist_cam(640×480) 렌더링
@@ -1079,9 +1079,9 @@ VLM(~19.8GB) + VLA(~5.9GB) = ~25.9GB VRAM이 필요하므로, 3090 Desktop(24GB)
 - 역할: Phase 5에서 Jetson Orin Nano Super가 하는 것과 동일
 
 **A100 Server (추론, 검증 완료 2026-03-10):**
-- conda vllm: vLLM 0.17.0 + Qwen2.5-VL-7B (VLM, `--gpu-memory-utilization 0.50` → ~19.8GB)
-- conda lerobotpi0: π0-FAST 2.9B via lerobot 0.4.4 (VLA, ~5.9GB). transformers==4.53.3 필수. HF login 필수. 패치: `_prepare_attention_masks_4d .bool()`, `validate_action_token_prefix=False`
-- 동시 추론 합계: ~25.9GB / A100 40GB
+- conda vllm: vLLM 0.17.0 + Qwen3-VL-8B (VLM, `--gpu-memory-utilization 0.75` → ~29.8GB)
+- conda lerobotpi0v2: π0-FAST 2.9B via lerobot 0.5.0 (VLA, ~8.1GB). HF login 필수. 패치: attention_mask `.bool()`, `validate_action_token_prefix=False`
+- 동시 추론 합계: ~37.9GB / A100 40GB
 - 시작: `bash launch_servers.sh all --checkpoint <pi0_path>` (port 8000 VLM + port 8002 VLA)
 - 3090에서 이미지 + state를 수신, instruction + action chunk를 반환
 
@@ -1186,8 +1186,8 @@ Phase 3: 포맷 변환
 
 Phase 4.5: Sim Full-System Evaluation (3090 Desktop + A100 서버)
   [⬜] eval_full_system.py 구현
-  [✅] A100: VLM 추론 API (conda vllm, vLLM 0.17.0, port 8000, gpu_util=0.50, ~19.8GB) — 검증 완료
-  [✅] A100: VLA 추론 API (conda lerobotpi0, Pi0-FAST 2.9B, lerobot 0.4.4, port 8002, ~5.9GB) — 검증 완료 (패치 적용, transformers==4.53.3, HF login)
+  [✅] A100: VLM 추론 API (conda vllm, vLLM 0.17.0, port 8000, gpu_util=0.75, Qwen3-VL-8B-Instruct, ~29.8GB) — 검증 완료
+  [✅] A100: VLA 추론 API (conda lerobotpi0v2, Pi0-FAST 2.9B, lerobot 0.5.0, port 8002, ~8.1GB) — 검증 완료 (패치 적용, transformers==5.3.0, HF login)
   [⬜] 3090↔A100 통신 레이어 구축 및 검증
   [⬜] Skill별 단독 sim 평가 (Navigate/Skill-2/Skill-3, 각 50회+)
   [⬜] VLM + VLA 통합 sim 평가 (전체 task, 각 조건 30회+)

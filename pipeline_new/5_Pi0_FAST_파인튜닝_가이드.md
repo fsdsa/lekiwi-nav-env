@@ -452,8 +452,6 @@ python vllm/vla_inference_server.py \
 - VRAM: VLM ~29.8GB + VLA ~8.1GB = ~37.9GB / 40GB
 - **SSH 터널 필수**: `ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 -i ~/.ssh/private.pem -p 30179 jovyan@218.148.55.186`
 
-**VRAM**: VLM ~19.8GB + VLA ~7.7GB = ~27.5GB / 40GB
-
 ---
 
 ## 9. One-shot 파이프라인 (변환 + 학습)
