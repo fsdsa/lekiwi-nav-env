@@ -1421,8 +1421,9 @@ def main_combined():
                 s3_ra_s, _, _, s3_val, s3_ra_m = rpol.get_action_and_value(s3_ro)
             s3_ra = s3_ra_m if ev else s3_ra_s
             s3_ra = torch.clamp(s3_ra, -1.0, 1.0)
-            S3_BC_WARMUP_ITERS = 60  # skill2 패턴: 60 iter에 걸쳐 residual 서서히 증가
-            residual_alpha = 1.0 if s3_enable_carry else min(1.0, gi / S3_BC_WARMUP_ITERS)
+            # v17b: warmup 제거. init_logstd=-2.0이 자연 warmup 제공.
+            # BC 과적합 궤적에 시간 낭비하지 않고 RL이 처음부터 보정.
+            residual_alpha = 1.0
             s3_ra = s3_ra * residual_alpha
             with torch.no_grad():
                 _, s3_lp, _, _, _ = rpol.get_action_and_value(s3_ro, s3_ra)
@@ -1755,9 +1756,10 @@ def main_combined():
                 #  핵심: lower_q per-step 제거 (exploit 방지)
                 #  1. ★ PLACED STATE ×200/step (DOMINANT, Skill2 R4)
                 #  2. REST POSE ×30/step (placed 후, Skill2 R4b)
-                #  3. APPROACH ×5 delta + hold +0.10
+                #  3. APPROACH ×5 delta + HEIGHT ×10 delta (near_dest)
                 #  4. MILESTONES (one-time) + TIERED SUSTAIN
                 #  5. PENALTIES: time -0.01, drop -5, timeout -2
+                #  v17b: hold bonus 제거, height delta 추가, warmup 제거
                 # ═══════════════════════════════════════════════════════
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
@@ -1828,18 +1830,21 @@ def main_combined():
                 rew[placed] += (30.0 * rest_q)[placed]
 
                 # ═════════════════════════════════════════
-                # 3. APPROACH ×5 delta + hold bonus
+                # 3. APPROACH ×5 delta + HEIGHT ×10 delta
                 # ═════════════════════════════════════════
                 active_h = active & holding
                 dst_delta = torch.clamp(v15_prev_dst_body_dist - dst_body_dist, -0.05, 0.05)
                 rew[active_h] += (5.0 * dst_delta)[active_h]
-                rew[active_h] += 0.10  # hold bonus
+
+                # Height delta: near_dest에서 병을 내릴수록 보상 (delta만, 유지 보상 아님)
+                near_dest = dst_body_dist < 0.15
+                near_h = active_h & near_dest
+                height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
+                rew[near_h] += (10.0 * height_delta)[near_h]
 
                 # ═════════════════════════════════════════
-                # 4. TIERED SUSTAIN (Skill2 R5) + Milestones (logging)
+                # 4. TIERED SUSTAIN (Skill2 R5) + Milestones
                 # ═════════════════════════════════════════
-                # Sustained lowered (with grace period)
-                near_dest = dst_body_dist < 0.15
                 in_lowered = active_h & near_dest & (lower_dist < V15_LOWER_TOL) & (src_h < 0.10)
                 v15_lower_sustain[in_lowered] += 1
                 _dec = s3m & ~in_lowered & (v15_lower_sustain > 0)
