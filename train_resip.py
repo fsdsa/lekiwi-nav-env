@@ -1460,7 +1460,7 @@ def main_combined():
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
                 # v17c: grip gate = 병이 바닥 근처일 때만 (arm1>2.0 → src_h<0.04)
                 # 내림 중 조기 grip 개방 방지: 병이 실제로 놓일 준비됐을 때만 RL grip 허용
-                _bottle_near_ground = src_h_pre < 0.04
+                _bottle_near_ground = src_h_pre < 0.03  # v17d: 더 보수적 (0.04→0.03)
                 s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: BC 보정
                 s3_scale_b_dynamic[:, 5] = torch.where(
                     _bottle_near_ground,
@@ -1761,6 +1761,7 @@ def main_combined():
                 #  5. PENALTIES: time -0.01, drop -5, timeout -2
                 #  v17b: hold bonus 제거, height delta 추가, warmup 제거
                 #  v17c: grip gate arm1>2.0 → src_h<0.04 (조기 grip 개방 방지)
+                #  v17d: upright ×3 + smoothness -1.0 (전도 방지) + grip gate 0.03
                 # ═══════════════════════════════════════════════════════
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
@@ -1842,6 +1843,18 @@ def main_combined():
                 near_h = active_h & near_dest
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (10.0 * height_delta)[near_h]
+
+                # v17d: 내림 중 직립 유지 보상 (전도 방지)
+                # near_dest + holding + 내리는 중 → 병이 서있을수록 보상
+                near_low = active_h & near_dest & (src_h < 0.10)
+                rew[near_low] += (3.0 * src_upright)[near_low]
+
+                # v17d: dest 근처 arm smoothness (급격 움직임 = 병 건드림)
+                _arm_delta = torch.nan_to_num(
+                    env.env.actions[:, 0:5] - env.env.prev_actions[:, 0:5], nan=0.0
+                )
+                _smooth_pen = (_arm_delta ** 2).sum(dim=-1)
+                rew[active & near_dest] += (-1.0 * _smooth_pen)[active & near_dest]
 
                 # ═════════════════════════════════════════
                 # 4. TIERED SUSTAIN (Skill2 R5) + Milestones
