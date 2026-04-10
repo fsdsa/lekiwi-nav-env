@@ -1458,14 +1458,14 @@ def main_combined():
                 # v16 Phase B: arm/base 적극적 (BC 과적합 극복), grip은 BC 의존
                 # arm 0.30: BC arm 과적합 궤적을 dest별로 적극 보정 (skill2 0.20보다 높음)
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
-                # grip: BC가 잘 하니까 작게. lowered 후에만 약간 보정
-                _arm1_now = env.env.robot.data.joint_pos[:, env.env.arm_idx[1]]
-                _arm_lowered_enough = _arm1_now > 2.0
-                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: BC 보정 (lower_q 없으므로 적당히)
+                # v17c: grip gate = 병이 바닥 근처일 때만 (arm1>2.0 → src_h<0.04)
+                # 내림 중 조기 grip 개방 방지: 병이 실제로 놓일 준비됐을 때만 RL grip 허용
+                _bottle_near_ground = src_h_pre < 0.04
+                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: BC 보정
                 s3_scale_b_dynamic[:, 5] = torch.where(
-                    _arm_lowered_enough,
-                    torch.tensor(0.15, device=dev),   # lowered → 약간 grip 보정
-                    torch.tensor(0.0, device=dev),    # lowering 중 → grip BC만
+                    _bottle_near_ground,
+                    torch.tensor(0.15, device=dev),   # 병 바닥 → grip RL 허용
+                    torch.tensor(0.0, device=dev),    # 내림 중 → grip BC만
                 )
                 s3_scale_b_dynamic[:, 6:9] = 0.30   # base: heading + position 보정
             elif s3_enable_release:
@@ -1760,6 +1760,7 @@ def main_combined():
                 #  4. MILESTONES (one-time) + TIERED SUSTAIN
                 #  5. PENALTIES: time -0.01, drop -5, timeout -2
                 #  v17b: hold bonus 제거, height delta 추가, warmup 제거
+                #  v17c: grip gate arm1>2.0 → src_h<0.04 (조기 grip 개방 방지)
                 # ═══════════════════════════════════════════════════════
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
