@@ -1266,7 +1266,7 @@ def main_combined():
             # grip만 보호 (carry 중 우발적 open 방지)
             s3_scale_a[0:5] = 0.20    # arm: RL이 carry 중 pre-positioning 학습 가능
             s3_scale_a[5]   = 0.0     # grip: carry 보호 (BC 유지)
-            s3_scale_a[6:9] = 0.30    # base: 접근 + heading 맞추기
+            s3_scale_a[6:9] = 0.40    # base: 0.6-0.9m dest 접근 + heading
         else:
             s3_scale_a[0:5] = 0.0
             s3_phase_a_grip_residual = s3_enable_carry
@@ -1841,7 +1841,7 @@ def main_combined():
                 near_dest = dst_body_dist < 0.15
                 near_h = active_h & near_dest
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
-                rew[near_h] += (10.0 * height_delta)[near_h]
+                rew[near_h] += (30.0 * height_delta)[near_h]
 
                 # ═════════════════════════════════════════
                 # 4. TIERED SUSTAIN (Skill2 R5) + Milestones
