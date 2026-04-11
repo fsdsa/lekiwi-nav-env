@@ -1458,20 +1458,16 @@ def main_combined():
                 # v16 Phase B: arm/base 적극적 (BC 과적합 극복), grip은 BC 의존
                 # arm 0.30: BC arm 과적합 궤적을 dest별로 적극 보정 (skill2 0.20보다 높음)
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
-                # Release zone: src_h<0.05 (데모 기준 release는 obj_z=0.002에서 발생)
-                # RL이 release 타이밍 학습: upright 높을 때 열면 PLACED ×200 보상
-                _in_release_zone = src_h_pre < 0.05
-                s3_scale_b_dynamic[:, 0:5] = torch.where(
-                    _in_release_zone.unsqueeze(-1).expand(-1, 5),
-                    torch.tensor(0.05, device=dev),    # release zone: 최소 arm (BC 정밀)
-                    torch.tensor(0.20, device=dev),    # 위: 내림 보정
-                )
+                # v2 구조 복귀 + upright 조건
+                # arm: 0.20 상수 (v2), grip: src_h<0.04 AND upright>0.85일 때만 RL
+                _safe_release = (src_h_pre < 0.04) & (src_upright_pre > 0.85)
+                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 상수 (v2와 동일)
                 s3_scale_b_dynamic[:, 5] = torch.where(
-                    _in_release_zone,
-                    torch.tensor(0.50, device=dev),    # release zone: RL이 grip 결정
-                    torch.tensor(0.0, device=dev),     # 위: grip 닫힘 유지
+                    _safe_release,
+                    torch.tensor(0.15, device=dev),   # 안전할 때만 grip RL
+                    torch.tensor(0.0, device=dev),    # 나머지: BC만
                 )
-                s3_scale_b_dynamic[:, 6:9] = 0.30   # base: heading + position 보정
+                s3_scale_b_dynamic[:, 6:9] = 0.30   # base
             elif s3_enable_release:
                 s3_scale_b_dynamic[:, 0:5] = 0.05 * release_takeover_scale * arm_ramp.unsqueeze(-1)
                 s3_scale_b_dynamic[:, 5]   = 0.35 * grip_gate * arm_ramp
@@ -1511,10 +1507,16 @@ def main_combined():
             # Phase A에서는 carry_stabilize에서 배운 grip actor를 그대로 쓰고,
             # Phase B에서만 release 로직(BC hold -> RL direct open)을 적용한다.
             if s3_v15:
-                # v15: RL이 release zone에서 grip 직접 제어.
-                # PLACED ×200 (upright>0.70) + release_zone upright ×5가
-                # "upright일 때만 열어라" 자연 학습 유도.
-                pass
+                # Upright 안전장치: 병이 기울어진 상태에서 BC의 premature release 차단
+                # 데모 기준: release는 upright>0.93에서만 발생 (81/81 episodes)
+                _block_release = (
+                    (~s3_phase_a_latch)
+                    & (src_h_pre < 0.05)
+                    & (src_upright_pre < 0.85)
+                )
+                s3_action[_block_release, 5] = torch.clamp(
+                    s3_action[_block_release, 5], max=-0.30
+                )
             elif s3_phase_a_grip_residual:
                 s3_action[:, 5] = torch.where(
                     s3_phase_a_latch,
@@ -1843,15 +1845,15 @@ def main_combined():
                 dst_delta = torch.clamp(v15_prev_dst_body_dist - dst_body_dist, -0.05, 0.05)
                 rew[active_h] += (5.0 * dst_delta)[active_h]
 
-                # Height delta: src_h>0.05에서만 (0.05 이하 = release zone)
+                # Height delta ×30 (v2와 동일, src_h>0.05에서)
                 near_dest = dst_body_dist < 0.15
                 near_h = active_h & near_dest & (src_h > 0.05)
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (30.0 * height_delta)[near_h]
 
-                # Release zone (src_h<0.05): upright 보상 — 바닥에서 세울수록 보상
-                release_zone = active & near_dest & (src_h < 0.05)
-                rew[release_zone] += (5.0 * src_upright)[release_zone]
+                # Upright 보상: 바닥 근처(src_h<0.05)에서 세울수록 보상
+                near_ground = active & near_dest & (src_h < 0.05)
+                rew[near_ground] += (5.0 * src_upright)[near_ground]
 
                 # ═════════════════════════════════════════
                 # 4. TIERED SUSTAIN (Skill2 R5) + Milestones
