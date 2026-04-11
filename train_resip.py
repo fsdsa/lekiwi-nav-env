@@ -1839,9 +1839,12 @@ def main_combined():
                 # ═════════════════════════════════════════
                 rew[placed] += (30.0 * rest_q)[placed]
 
-                # Retract delta: release 후 REST_POSE 방향으로 이동할수록 보상
-                # rest_q가 멀면 ~0이라 REST ×30만으로는 gradient 없음 → delta 필요
+                # Retract: release 후 REST_POSE 복귀 (2가지 신호)
                 retract_active = active & v15_ms_released
+                # 1) Wide-sigma quality: 거리 4에서도 신호 (sigma=2.0 vs REST의 0.4)
+                retract_q = torch.nan_to_num(torch.exp(-0.5 * (rest_dist / 2.0) ** 2), nan=0.0)
+                rew[retract_active] += (10.0 * retract_q)[retract_active]
+                # 2) Delta: REST_POSE 방향 이동 보상
                 rest_delta = torch.clamp(v15_prev_rest_dist - rest_dist, -0.05, 0.05)
                 rew[retract_active] += (15.0 * rest_delta)[retract_active]
 
