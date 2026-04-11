@@ -1461,13 +1461,7 @@ def main_combined():
                 # v17c: grip gate = 병이 바닥 근처일 때만 (arm1>2.0 → src_h<0.04)
                 # 내림 중 조기 grip 개방 방지: 병이 실제로 놓일 준비됐을 때만 RL grip 허용
                 _bottle_near_ground = src_h_pre < 0.04
-                # v17e: 바닥 근처(src_h<0.10) arm scale 축소 → BC 정밀 내림 보존
-                _near_ground_arm = (src_h_pre < 0.10).unsqueeze(-1).expand(-1, 5)
-                s3_scale_b_dynamic[:, 0:5] = torch.where(
-                    _near_ground_arm,
-                    torch.tensor(0.05, device=dev),   # 바닥 근처 → BC 주도 (전도 방지)
-                    torch.tensor(0.20, device=dev),    # 높은 곳 → RL 보정
-                )
+                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: BC 보정
                 s3_scale_b_dynamic[:, 5] = torch.where(
                     _bottle_near_ground,
                     torch.tensor(0.15, device=dev),   # 병 바닥 → grip RL 허용
