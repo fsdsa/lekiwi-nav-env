@@ -1839,6 +1839,12 @@ def main_combined():
                 # ═════════════════════════════════════════
                 rew[placed] += (30.0 * rest_q)[placed]
 
+                # Retract delta: release 후 REST_POSE 방향으로 이동할수록 보상
+                # rest_q가 멀면 ~0이라 REST ×30만으로는 gradient 없음 → delta 필요
+                retract_active = active & v15_ms_released
+                rest_delta = torch.clamp(v15_prev_rest_dist - rest_dist, -0.05, 0.05)
+                rew[retract_active] += (15.0 * rest_delta)[retract_active]
+
                 # ═════════════════════════════════════════
                 # 3. APPROACH ×5 delta + HEIGHT ×10 delta
                 # ═════════════════════════════════════════
