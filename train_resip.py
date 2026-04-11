@@ -1837,9 +1837,10 @@ def main_combined():
                 dst_delta = torch.clamp(v15_prev_dst_body_dist - dst_body_dist, -0.05, 0.05)
                 rew[active_h] += (5.0 * dst_delta)[active_h]
 
-                # Height delta: near_dest에서 병을 내릴수록 보상 (delta만, 유지 보상 아님)
+                # Height delta: near_dest + src_h>0.10에서만 (release zone 진입 금지)
+                # RL은 0.18→0.10까지만 내림. 0.10 이하는 BC가 release 타이밍 결정.
                 near_dest = dst_body_dist < 0.15
-                near_h = active_h & near_dest
+                near_h = active_h & near_dest & (src_h > 0.10)
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (30.0 * height_delta)[near_h]
 
