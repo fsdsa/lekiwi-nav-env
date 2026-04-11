@@ -1131,7 +1131,7 @@ def main_combined():
     s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
     S3_PLACE_RADIUS = 0.18    # source↔dest XY distance for place success
     S3_PHASE_B_DIST = args.s3_phase_b_dist
-    S3_MAX_STEPS = 2000       # S3 phase timeout
+    S3_MAX_STEPS = 1000       # S3 phase timeout (release까지만, retract 별도)
     S3_REST_POSE = torch.tensor([-0.027, -0.207, 0.203, 0.123, 0.034], device=dev)
 
     # ── v15_dense constants (measured from teleop demos) ──
@@ -1458,16 +1458,23 @@ def main_combined():
                 # v16 Phase B: arm/base 적극적 (BC 과적합 극복), grip은 BC 의존
                 # arm 0.30: BC arm 과적합 궤적을 dest별로 적극 보정 (skill2 0.20보다 높음)
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
-                # v2 구조 복귀 + upright 조건
-                # arm: 0.20 상수 (v2), grip: src_h<0.04 AND upright>0.85일 때만 RL
+                # Stage 1: 접근+내림+place+grip open
+                # Stage 2: ms_released 후 retract (arm REST_POSE 복귀)
                 _safe_release = (src_h_pre < 0.04) & (src_upright_pre > 0.85)
-                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 상수 (v2와 동일)
+                _retract_mode = v15_ms_released  # release 성공 후 → retract phase
+                # Stage 1 scales
+                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 내림 보정
                 s3_scale_b_dynamic[:, 5] = torch.where(
                     _safe_release,
-                    torch.tensor(0.15, device=dev),   # 안전할 때만 grip RL
-                    torch.tensor(0.0, device=dev),    # 나머지: BC만
+                    torch.tensor(0.30, device=dev),   # 바닥+upright → grip RL (BC 부족 보완)
+                    torch.tensor(0.0, device=dev),    # 나머지: grip BC만
                 )
                 s3_scale_b_dynamic[:, 6:9] = 0.30   # base
+                # Stage 2: retract mode override (release 완료 후)
+                if _retract_mode.any():
+                    s3_scale_b_dynamic[_retract_mode, 0:5] = 0.50  # arm: REST_POSE로 큰 이동
+                    s3_scale_b_dynamic[_retract_mode, 5] = 0.30    # grip: 열린 상태 유지
+                    s3_scale_b_dynamic[_retract_mode, 6:9] = 0.05  # base: 정지
             elif s3_enable_release:
                 s3_scale_b_dynamic[:, 0:5] = 0.05 * release_takeover_scale * arm_ramp.unsqueeze(-1)
                 s3_scale_b_dynamic[:, 5]   = 0.35 * grip_gate * arm_ramp
@@ -1767,8 +1774,10 @@ def main_combined():
                 #  3. APPROACH ×5 delta + HEIGHT ×10 delta (near_dest)
                 #  4. MILESTONES (one-time) + TIERED SUSTAIN
                 #  5. PENALTIES: time -0.01, drop -5, timeout -2
-                #  v17b: hold bonus 제거, height delta 추가, warmup 제거
-                #  v17c: grip gate arm1>2.0 → src_h<0.04 (조기 grip 개방 방지)
+                #  v17h: release-only BC + 2-stage RL
+                #  Stage 1: approach+lower+place+grip open (arm 0.20, grip gate 0.30)
+                #  Stage 2: retract (ms_released 후 arm 0.50, grip 0.30, base 0.05)
+                #  S3_MAX_STEPS=1000, grip open ×3, upright ×5, height delta ×30
                 # ═══════════════════════════════════════════════════════
                 s3m = is_s3
                 s3_step_counter[s3m] += 1
@@ -1854,6 +1863,11 @@ def main_combined():
                 # Upright 보상: 바닥 근처(src_h<0.05)에서 세울수록 보상
                 near_ground = active & near_dest & (src_h < 0.05)
                 rew[near_ground] += (5.0 * src_upright)[near_ground]
+
+                # Grip open 보상: 바닥+upright일 때 grip 열수록 보상 (BC 부족 보완)
+                safe_open = near_ground & (src_upright > 0.85)
+                grip_open_q = torch.clamp((grip_pos - 0.30) / 0.7, 0.0, 1.0)
+                rew[safe_open] += (3.0 * grip_open_q)[safe_open]
 
                 # ═════════════════════════════════════════
                 # 4. TIERED SUSTAIN (Skill2 R5) + Milestones
