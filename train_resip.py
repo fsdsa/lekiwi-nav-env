@@ -1131,7 +1131,7 @@ def main_combined():
     s3_topple_counter = torch.zeros(N, dtype=torch.long, device=dev)  # objZ < 0.029 연속 카운터
     S3_PLACE_RADIUS = 0.18    # source↔dest XY distance for place success
     S3_PHASE_B_DIST = args.s3_phase_b_dist
-    S3_MAX_STEPS = 1000       # S3 phase timeout (release까지만, retract 별도)
+    S3_MAX_STEPS = 3000       # S3 phase timeout (release + retract 포함)
     S3_REST_POSE = torch.tensor([-0.027, -0.207, 0.203, 0.123, 0.034], device=dev)
 
     # ── v15_dense constants (measured from teleop demos) ──
@@ -1466,7 +1466,7 @@ def main_combined():
                 s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 내림 보정
                 s3_scale_b_dynamic[:, 5] = torch.where(
                     _safe_release,
-                    torch.tensor(0.30, device=dev),   # 바닥+upright → grip RL (BC 부족 보완)
+                    torch.tensor(0.50, device=dev),   # 바닥+upright → grip RL 0.50 (BC가 grip 못 여니까)
                     torch.tensor(0.0, device=dev),    # 나머지: grip BC만
                 )
                 s3_scale_b_dynamic[:, 6:9] = 0.30   # base
@@ -1514,16 +1514,8 @@ def main_combined():
             # Phase A에서는 carry_stabilize에서 배운 grip actor를 그대로 쓰고,
             # Phase B에서만 release 로직(BC hold -> RL direct open)을 적용한다.
             if s3_v15:
-                # Upright 안전장치: 병이 기울어진 상태에서 BC의 premature release 차단
-                # 데모 기준: release는 upright>0.93에서만 발생 (81/81 episodes)
-                _block_release = (
-                    (~s3_phase_a_latch)
-                    & (src_h_pre < 0.05)
-                    & (src_upright_pre < 0.85)
-                )
-                s3_action[_block_release, 5] = torch.clamp(
-                    s3_action[_block_release, 5], max=-0.30
-                )
+                # grip clamp 없음 — RL이 PLACED ×200 + grip open ×3으로 자연 학습
+                pass
             elif s3_phase_a_grip_residual:
                 s3_action[:, 5] = torch.where(
                     s3_phase_a_latch,
