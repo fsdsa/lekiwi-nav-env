@@ -74,16 +74,26 @@ S4: approach & place  — 정밀 접근 + 배치 + rest pose 복귀 (arm + gripp
 
 ### 장애물 회피
 
-S2/S4에서 depth < 0.3m 감지 → VLM 호출 → "OBSTACLE" / "CONTINUE":
+S2/S4에서 depth < 0.3m 감지 → VLM 비동기 호출 → "OBSTACLE" / "CONTINUE":
 - S2 + OBSTACLE + contact 없음 → S1(navigate)로 복귀
-- S2 + OBSTACLE + contact 있음 → S3(carry)로 ��귀 (물체 들고 회피)
+- S2 + OBSTACLE + contact + lifted pose → S3(carry)로 전환 (정상 파지)
+- S2 + OBSTACLE + contact + lifted 아님 → S1(navigate)로 복귀 (false positive contact)
 - S4 + OBSTACLE → S3(carry)로 복귀 (항상 물체 들고 있음)
+- VLM이 OBSTACLE/CONTINUE 외 자연어 응답 시 → CONTINUE 처리 (fallback)
+
+**회피 후 재시도 제한**: S2/S4 각각 최대 3회 진입. 초과 시 trial timeout.
+
+**회피 중 NAVIGATE/CARRY 프롬프트**: `_interrupted_skill` 설정 시 "같은 방향으로 직진하지 말고 우회하라"는 힌트가 VLM 프롬프트에 추가됨.
+
+**VLM 응답 대기 중 안전**: S2/S4에서 VLM obstacle check pending 시 전진 감속 (depth < 0.2m → 완전 정지, 0.2~0.3m → 0.1× 감속).
+
+**obstacle_cleared depth 리셋**: CONTINUE 응답 후 depth가 0.5m 이상으로 멀어졌다가 다시 0.3m 미만이 되면 새 장애물로 간주하여 obstacle_cleared 리셋.
 
 ### VLM 호출 빈도
 
 | 스킬 | 호출 빈도 | 역할 |
 |------|-----------|------|
-| S1/S3 | 50스텝마다 (~7.8초) | 방향 선택 (6개 고정 커맨드 + TARGET_FOUND) |
+| S1/S3 | 50스텝마다 + depth warning 시 즉시 | 방향 선택 (6개 고정 커맨드 + TARGET_FOUND) |
 | S2/S4 | depth warning 시에만 | 장애물 판별 (CONTINUE / OBSTACLE) |
 
 ## 파일 구조
@@ -174,6 +184,8 @@ PYTHONUNBUFFERED=1 python vllm/run_full_task.py \
 | `--approach_lift_timeout` | 1000 | S2 approach & lift timeout |
 | `--carry_timeout` | 2000 | S3 carry timeout |
 | `--approach_place_timeout` | 1000 | S4 approach & place timeout |
+| `--s2_max_attempts` | 3 | S2 최대 진입 횟수 (첫 진입 포함, 회귀 2회) |
+| `--s4_max_attempts` | 3 | S4 최대 진입 횟수 (첫 진입 포함) |
 | `--max_total_steps` | 6000 | 전체 최대 스텝 (~10분) |
 | `--safety_dist` | 0.3 | depth 긴급정지 거리 (m) |
 
@@ -213,3 +225,7 @@ fastapi 0.135.1, uvicorn 0.41.0
 5. **스킬 전환 시 VLA buffer 리셋**: 특히 S2→S3 (arm action chunk 잔류 → 물체 낙하 위험)
 6. **S2/S4 safety layer 비활성화**: depth_warning을 VLM 텍스트로 전달 (안 끄면 물체 앞에서 멈춤)
 7. **`get_contact_detected()`**: 환경의 contact sensor API에 의존 (jaw/wrist force > 1.0N)
+8. **S2/S4 재시도 제한**: `_s2_max_attempts=3`, `_s4_max_attempts=3`. 첫 진입 포함이므로 실제 회귀는 2회까지
+9. **Multi-trial**: `reset_for_new_trial()` 호출 필수 (attempt 카운터, 상태 머신, generation 리셋). `run_full_task.py` trial 루프에서 자동 호출
+10. **VLM 키워드 매칭**: OBSTACLE/TARGET_FOUND/CONTINUE 모두 대소문자 무시. 미인식 응답은 CONTINUE fallback
+11. **비동기 VLM generation 카운터**: trial 리셋 시 `_generation` 증가하여 이전 trial의 stale VLM 응답이 새 trial에 영향을 주지 않음

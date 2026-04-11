@@ -1,367 +1,614 @@
 #!/usr/bin/env python3
 """
-Navigate (Skill-1) 학습 결과 GUI 시각화 검증 스크립트.
+ResiP (Frozen DP + Residual PPO) 체크포인트를 Isaac Sim에서 GUI로 돌려보는 평가 스크립트.
 
-학습된 best_agent.pt를 로드하여 Isaac Sim GUI에서 로봇 동작을 시각적으로 확인.
-카메라/HDF5 저장 없이 순수 시각화만 수행.
+eval_dp_bc.py와 동일한 환경 설정 + train_resip.py의 rollout 로직 결합.
 
-사용법:
-    python eval_navigate.py
-    python eval_navigate.py --num_envs 8
-    python eval_navigate.py --checkpoint <path_to_checkpoint>
+Usage:
+    # 랜덤 리셋
+    python eval_resip.py --skill approach_and_grasp \
+        --dp_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt \
+        --resip_checkpoint checkpoints/resip/resip_iter660.pt
+
+    # HDF5 초기 상태 복원
+    python eval_resip.py --skill approach_and_grasp \
+        --dp_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt \
+        --resip_checkpoint checkpoints/resip/resip_iter660.pt \
+        --demo demos/combined_skill2_20260227_091123.hdf5
+
+    # DP BC만 (residual 없이) — resip_checkpoint 생략 시 base policy만 실행
+    python eval_resip.py --skill approach_and_grasp \
+        --dp_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt
 """
 from __future__ import annotations
 
 import argparse
-import datetime
-import math
 import os
-import sys
 
-# Isaac Sim 엔진 초기화 전 OS 레벨에서 로그 강제 차단
-os.environ["CARB_LOG_LEVEL"] = "fatal"
-os.environ["OMNI_LOG_LEVEL"] = "fatal"
-os.environ["PHYSX_LOG_LEVEL"] = "fatal"
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ── Args (AppLauncher args 포함) ──
+parser = argparse.ArgumentParser(description="ResiP Eval in Isaac Sim (GUI)")
+parser.add_argument("--skill", type=str, required=True,
+                    choices=["approach_and_grasp", "carry_and_place", "navigate"])
+parser.add_argument("--dp_checkpoint", type=str, required=True,
+                    help="Path to dp_bc.pt (frozen base policy)")
+parser.add_argument("--resip_checkpoint", type=str, default="",
+                    help="Path to resip_*.pt (residual policy). 생략 시 base DP만 실행")
+parser.add_argument("--num_episodes", type=int, default=10)
+parser.add_argument("--num_envs", type=int, default=1, help="병렬 환경 수")
+parser.add_argument("--demo", type=str, default="",
+                    help="HDF5 파일 경로 — 지정 시 에피소드 초기 상태를 복원하여 평가")
+parser.add_argument("--inference_steps", type=int, default=4,
+                    help="DDIM inference steps (default=4 for RL speed, 16 for quality)")
+parser.add_argument("--object_usd", type=str, default="")
+parser.add_argument("--multi_object_json", type=str, default="")
+parser.add_argument("--dest_object_usd", type=str, default="")
+parser.add_argument("--gripper_contact_prim_path", type=str,
+                    default="/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1")
+parser.add_argument("--arm_limit_json", type=str,
+                    default="calibration/arm_limits_measured.json")
+parser.add_argument("--handoff_buffer", type=str, default="")
+parser.add_argument("--grip_override", action="store_true", default=False,
+                    help="Rule-based gripper override: GT grip curve based on EE distance")
 
 from isaaclab.app import AppLauncher
-
-parser = argparse.ArgumentParser(description="Navigate Skill-1 GUI 평가")
-parser.add_argument(
-    "--checkpoint",
-    type=str,
-    default="logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt",
-    help="학습된 체크포인트 경로",
-)
-parser.add_argument("--num_envs", type=int, default=1, help="병렬 환경 수 (검증: 1 권장)")
-parser.add_argument("--dynamics_json", type=str, default=None, help="dynamics calibration JSON")
-parser.add_argument("--arm_limit_json", type=str, default=None, help="arm joint limit JSON")
-parser.add_argument("--max_steps", type=int, default=0, help="최대 step 수 (0=무한)")
-parser.add_argument("--no_masking", action="store_true", help="inference-time masking 비활성화")
-parser.add_argument("--print_interval", type=int, default=200, help="메트릭 출력 간격 (steps)")
-parser.add_argument("--sequential", action="store_true", default=True,
-                    help="6방향을 순서대로 평가 (fwd→bwd→left→right→turnL→turnR, 기본값)")
-parser.add_argument("--random", action="store_true",
-                    help="방향을 랜덤으로 평가 (기본 sequential 해제)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+app_launcher = AppLauncher(args)
+simulation_app = app_launcher.app
 
-launcher = AppLauncher(args)
-sim_app = launcher.app
-
+import sys
+import h5py
 import torch
+import numpy as np
 
-# AppLauncher 로드 이후 Omniverse 내부 로거 채널 무효화
-try:
-    import omni.log
-    log_iface = omni.log.get_log()
-    log_iface.set_channel_enabled("omni.physx.tensors.plugin", False)
-    log_iface.set_channel_enabled("omni.physx.plugin", False)
-    log_iface.set_channel_enabled("usdrt.hydra.fabric_scene_delegate.plugin", False)
-    log_iface.set_channel_enabled("omni.fabric.plugin", False)
-except Exception:
-    pass
+from isaaclab.utils.math import quat_apply
 
-from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
-from models import PolicyNet, CriticNet
+from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
+if args.skill != "navigate":
+    from lekiwi_skill2_env import EE_LOCAL_OFFSET
 
-# AAC (Asymmetric Actor-Critic)
-from aac_wrapper import wrap_env_aac
-from aac_ppo import AAC_PPO
 
-from skrl.agents.torch.ppo import PPO_DEFAULT_CONFIG
-from skrl.memories.torch import RandomMemory
-from skrl.resources.preprocessors.torch import RunningStandardScaler
+# ── 모델 로드 ──
+def load_frozen_dp(ckpt_path, device, inference_steps=4):
+    """Load DP BC checkpoint and freeze."""
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    cfg = ckpt["config"]
 
-# Direction command labels
-CMD_LABELS = ["forward", "backward", "strafe_left", "strafe_right", "turn_left", "turn_right"]
-CMD_VECTORS = [
-    (0.0, 1.0, 0.0),     # forward
-    (0.0, -1.0, 0.0),    # backward
-    (-1.0, 0.0, 0.0),    # strafe left
-    (1.0, 0.0, 0.0),     # strafe right
-    (0.0, 0.0, 0.33),    # turn left CCW
-    (0.0, 0.0, -0.33),   # turn right CW
-]
+    agent = DiffusionPolicyAgent(
+        obs_dim=cfg["obs_dim"],
+        act_dim=cfg["act_dim"],
+        pred_horizon=cfg["pred_horizon"],
+        action_horizon=cfg["action_horizon"],
+        num_diffusion_iters=cfg["num_diffusion_iters"],
+        inference_steps=inference_steps,
+        down_dims=cfg.get("down_dims", [256, 512, 1024]),
+    ).to(device)
 
-def cmd_to_label(cmd_vec: torch.Tensor) -> str:
-    for i, (vx, vy, wz) in enumerate(CMD_VECTORS):
-        ref = torch.tensor([vx, vy, wz], device=cmd_vec.device)
-        if torch.allclose(cmd_vec, ref, atol=0.1):
-            return CMD_LABELS[i]
-    return f"({cmd_vec[0]:.2f},{cmd_vec[1]:.2f},{cmd_vec[2]:.2f})"
+    state_dict = ckpt["model_state_dict"]
+    model_state = {k[len("model."):]: v for k, v in state_dict.items() if k.startswith("model.")}
+    norm_state = {k[len("normalizer."):]: v for k, v in state_dict.items() if k.startswith("normalizer.")}
+    agent.model.load_state_dict(model_state)
+    agent.normalizer.load_state_dict(norm_state, device=device)
 
-class SuppressCLogs:
-    """C/C++ 엔진 레벨에서 발생하는 모든 콘솔 출력을 OS 단에서 물리적으로 차단하는 컨텍스트 매니저"""
-    def __enter__(self):
-        sys.stdout.flush()
-        sys.stderr.flush()
-        self.null_fd = os.open(os.devnull, os.O_RDWR)
-        self.save_stdout = os.dup(1)
-        self.save_stderr = os.dup(2)
-        os.dup2(self.null_fd, 1)
-        os.dup2(self.null_fd, 2)
+    for param in agent.parameters():
+        param.requires_grad = False
+    agent.eval()
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.dup2(self.save_stdout, 1)
-        os.dup2(self.save_stderr, 2)
-        os.close(self.null_fd)
-        os.close(self.save_stdout)
-        os.close(self.save_stderr)
+    print(f"Loaded frozen DP: {ckpt_path}")
+    print(f"  obs_dim={cfg['obs_dim']}, act_dim={cfg['act_dim']}, "
+          f"pred_horizon={cfg['pred_horizon']}, action_horizon={cfg['action_horizon']}")
+    print(f"  down_dims={cfg.get('down_dims')}, inference_steps={inference_steps}")
+    return agent, cfg
 
-def main():
-    ckpt = os.path.expanduser(args.checkpoint)
-    if not os.path.isfile(ckpt):
-        raise FileNotFoundError(f"체크포인트를 찾을 수 없습니다: {ckpt}")
 
-    env_cfg = Skill1EnvCfg()
+def load_residual_policy(ckpt_path, obs_dim, act_dim, device):
+    """Load trained ResidualPolicy from ResiP checkpoint."""
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    saved_args = ckpt.get("args", {})
+
+    residual = ResidualPolicy(
+        obs_dim=obs_dim,  # ResidualPolicy internally uses obs_dim + action_dim
+        action_dim=act_dim,
+        actor_hidden_size=saved_args.get("actor_hidden_size", 256),
+        actor_num_layers=saved_args.get("actor_num_layers", 2),
+        critic_hidden_size=saved_args.get("critic_hidden_size", 256),
+        critic_num_layers=saved_args.get("critic_num_layers", 2),
+        action_scale=saved_args.get("action_scale", 0.1),
+        init_logstd=saved_args.get("init_logstd", -1.0),
+        action_head_std=saved_args.get("action_head_std", 0.0),
+        learn_std=False,
+    ).to(device)
+
+    residual.load_state_dict(ckpt["residual_policy_state_dict"])
+    residual.eval()
+
+    n_params = sum(p.numel() for p in residual.parameters())
+    print(f"Loaded ResidualPolicy: {ckpt_path}")
+    print(f"  params={n_params:,}, action_scale={residual.action_scale}")
+    print(f"  iteration={ckpt.get('iteration', '?')}, "
+          f"success_rate={ckpt.get('success_rate', '?')}")
+    return residual
+
+
+# ── HDF5 데모 로드 (선택) ──
+demo_episodes = []
+demo_file = None
+if args.demo and os.path.isfile(args.demo):
+    demo_file = h5py.File(args.demo, "r")
+    ep_keys = sorted([k for k in demo_file.keys() if k.startswith("episode")],
+                     key=lambda k: int(k.split("_")[1]))
+    for ek in ep_keys:
+        grp = demo_file[ek]
+        demo_episodes.append({
+            "obs": grp["obs"][:],
+            "actions": grp["actions"][:],
+            "ep_attrs": dict(grp.attrs),
+            "object_pos_w": grp["object_pos_w"][:] if "object_pos_w" in grp else None,
+        })
+    print(f"\n  Demo loaded: {args.demo} ({len(demo_episodes)} episodes)")
+    if args.num_episodes > len(demo_episodes):
+        args.num_episodes = len(demo_episodes)
+        print(f"  num_episodes clamped to {args.num_episodes}")
+
+is_navigate = (args.skill == "navigate")
+
+# ── Env 생성 ──
+if args.skill == "navigate":
+    from lekiwi_skill2_eval import Skill2Env as NavEnv, Skill2EnvCfg as NavEnvCfg
+    env_cfg = NavEnvCfg()
     env_cfg.scene.num_envs = args.num_envs
+    env_cfg.enable_domain_randomization = False
     env_cfg.arm_limit_write_to_sim = False
-    if args.dynamics_json:
-        env_cfg.dynamics_json = os.path.expanduser(args.dynamics_json)
-    if args.arm_limit_json:
-        env_cfg.arm_limit_json = os.path.expanduser(args.arm_limit_json)
-    
-    env_cfg.eval_cardinal_yaw = True
-    
+    env_cfg.episode_length_s = 8.0
+    env_cfg.max_dist_from_origin = 50.0
+    env_cfg.dr_action_delay_steps = 0
+elif args.skill == "approach_and_grasp":
+    from lekiwi_skill2_env import Skill2Env, Skill2EnvCfg
+    env_cfg = Skill2EnvCfg()
+    env_cfg.scene.num_envs = 1
+elif args.skill == "carry_and_place":
+    from lekiwi_skill3_env import Skill3Env, Skill3EnvCfg
+    env_cfg = Skill3EnvCfg()
+    env_cfg.scene.num_envs = 1
+    if args.handoff_buffer:
+        env_cfg.handoff_buffer_path = args.handoff_buffer
 
-    # 환경 초기화 중 발생하는 C++ 에러도 차단
-    with SuppressCLogs():
-        raw_env = Skill1Env(cfg=env_cfg)
+if not is_navigate:
+    # 평가 설정 — training과 동일한 grasp 파라미터
+    env_cfg.enable_domain_randomization = False
+    env_cfg.arm_limit_write_to_sim = False
+    env_cfg.grasp_contact_threshold = 0.55
+    env_cfg.grasp_require_contact = True
+    env_cfg.grasp_gripper_threshold = 0.65
+    env_cfg.grasp_max_object_dist = 0.25
+    env_cfg.grasp_success_height = 100.0  # navigate에서 task_success 비활성화
+    env_cfg.grasp_ee_max_dist = 0.10
 
-    env = wrap_env_aac(raw_env)
-    device = env.device
+    # HDF5 attrs에서 config 복원 (있으면)
+    if demo_file is not None:
+        hdf5_attrs = dict(demo_file.attrs)
+        env_cfg.object_mass = float(hdf5_attrs.get("object_mass", env_cfg.object_mass))
+        env_cfg.arm_action_scale = float(hdf5_attrs.get("arm_action_scale", env_cfg.arm_action_scale))
+        env_cfg.max_lin_vel = float(hdf5_attrs.get("max_lin_vel", env_cfg.max_lin_vel))
+        env_cfg.max_ang_vel = float(hdf5_attrs.get("max_ang_vel", env_cfg.max_ang_vel))
+        if not args.object_usd and "object_usd" in hdf5_attrs:
+            env_cfg.object_usd = str(hdf5_attrs["object_usd"])
+        print(f"  [Config from HDF5] mass={env_cfg.object_mass}, "
+              f"arm_action_scale={env_cfg.arm_action_scale}")
 
-    critic_obs_dim = env._aac_state_space.shape[0]
-    models = {
-        "policy": PolicyNet(env.observation_space, env.action_space, device),
-        "value": CriticNet(
-            env.observation_space, env.action_space, device,
-            critic_obs_dim=critic_obs_dim,
-        ),
-    }
-    memory = RandomMemory(memory_size=24, num_envs=args.num_envs, device=device)
+    env_cfg.episode_length_s = 240.0
 
-    cfg_ppo = PPO_DEFAULT_CONFIG.copy()
-    cfg_ppo["state_preprocessor"] = RunningStandardScaler
-    cfg_ppo["state_preprocessor_kwargs"] = {"size": env.observation_space, "device": device}
-    cfg_ppo["value_preprocessor"] = RunningStandardScaler
-    cfg_ppo["value_preprocessor_kwargs"] = {"size": 1, "device": device}
-    cfg_ppo["critic_state_preprocessor"] = RunningStandardScaler
-    cfg_ppo["critic_state_preprocessor_kwargs"] = {"size": env._aac_state_space, "device": device}
+    # 공통 설정
+    if args.object_usd:
+        env_cfg.object_usd = os.path.expanduser(args.object_usd)
+    if args.multi_object_json:
+        env_cfg.multi_object_json = os.path.expanduser(args.multi_object_json)
+    if args.dest_object_usd:
+        env_cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
+    env_cfg.gripper_contact_prim_path = args.gripper_contact_prim_path
+    if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
+        env_cfg.arm_limit_json = args.arm_limit_json
 
-    agent = AAC_PPO(
-        models=models,
-        memory=memory,
-        cfg=cfg_ppo,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=device,
-        critic_observation_space=env._aac_state_space,
-    )
-    agent.load(ckpt)
-    agent.set_running_mode("eval")
+if args.skill == "navigate":
+    env = NavEnv(cfg=env_cfg)
+    # env 기본 _apply_action 사용 (arm_action_to_limits 매핑 포함)
+    # navigate에서도 approach_lift와 동일한 [-1,1] action space
+    # terminate만 비활성화 (timeout은 유지 → episode 전환)
+    _orig_dones = env._get_dones
+    def _no_terminate_dones():
+        t, tr = _orig_dones()
+        t[:] = False  # out_of_bounds, fell 비활성화
+        return t, tr
+    env._get_dones = _no_terminate_dones
+    # direction_cmd 버퍼 (Skill2Env에 없음)
+    env._direction_cmd = torch.zeros(env.num_envs, 3, device=env.device)
+elif args.skill == "approach_and_grasp":
+    env = Skill2Env(cfg=env_cfg)
+else:
+    env = Skill3Env(cfg=env_cfg)
 
-    pre = getattr(agent, "_state_preprocessor", None) or getattr(agent, "state_preprocessor", None)
-    policy_model = models["policy"]
+# ── 모델 로드 ──
+device = env.device
+dp_agent, dp_cfg = load_frozen_dp(args.dp_checkpoint, device, args.inference_steps)
+obs_dim = dp_cfg["obs_dim"]
+act_dim = dp_cfg["act_dim"]
 
-    pre_mean = pre.running_mean if hasattr(pre, "running_mean") else None
-    pre_ok = pre_mean is not None and pre_mean.abs().sum().item() > 0
-    print("\n" + "=" * 60)
-    print("  Navigate (Skill-1) GUI 평가 — Pure Velocity Tracker (v6e)")
-    print(f"  Checkpoint : {ckpt}")
-    print(f"  Num envs   : {args.num_envs}")
-    print(f"  Obs dim    : {env.observation_space.shape[0]}D (actor) / {critic_obs_dim}D (critic)")
-    print(f"  Preprocessor: {'LOADED (count={})'.format(int(pre.current_count.item())) if pre_ok else 'NOT LOADED!'}")
-    if pre_ok:
-        m = pre.running_mean.float()
-        print(f"  Pre mean[6:12]: vx={m[6]:.4f} vy={m[7]:.4f} wz={m[8]:.4f} cx={m[9]:.4f} cy={m[10]:.4f} cz={m[11]:.4f}")
-    print(f"  Max steps  : {'무한' if args.max_steps == 0 else args.max_steps}")
-    print("  종료: Ctrl+C 또는 창 닫기")
-    print("=" * 60 + "\n")
+residual_policy = None
+if args.resip_checkpoint and os.path.isfile(args.resip_checkpoint):
+    residual_policy = load_residual_policy(args.resip_checkpoint, obs_dim, act_dim, device)
 
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_navigate_log.txt")
-    log_f = open(log_path, "w", encoding="utf-8")
+# Per-dim action scale — must match training exactly
+per_dim_action_scale = torch.zeros(act_dim, device=device)
+if is_navigate:
+    # Navigate: arm/gripper=0, base only
+    per_dim_action_scale[6:9] = 0.25  # base
+else:
+    per_dim_action_scale[0:5] = 0.20   # arm
+    per_dim_action_scale[5]   = 0.25   # gripper (v7c 학습값)
+    per_dim_action_scale[6:9] = 0.35   # base
 
-    def log(msg: str):
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        line = f"[{ts}] {msg}"
-        print(line, flush=True)
-        log_f.write(line + "\n")
-        log_f.flush()
+if args.grip_override:
+    mode_str = "DP + Grip Override (GT curve)"
+elif residual_policy:
+    mode_str = "ResiP (DP + Residual)"
+else:
+    mode_str = "DP BC only"
+demo_str = "HDF5 초기 상태 복원" if demo_episodes else "랜덤 리셋"
+print(f"\n{'='*60}")
+print(f"  {mode_str} Eval — {args.skill} ({demo_str})")
+print(f"  DP: {args.dp_checkpoint}")
+if residual_policy:
+    print(f"  Residual: {args.resip_checkpoint}")
+print(f"  Episodes: {args.num_episodes}")
+print(f"{'='*60}\n")
 
-    # Sequential mode: 6방향 순서대로 평가
-    seq_idx = 0  # 현재 방향 인덱스
-    per_cmd_metrics = {label: {"compliance": 0.0, "speed": 0.0, "lin_err": 0.0, "ang_err": 0.0, "steps": 0}
-                       for label in CMD_LABELS}
 
-    # 로봇 yaw를 +Y world 방향으로 고정하는 헬퍼
-    _FIXED_YAW = math.pi / 2  # yaw=π/2 → robot forward(+Y body) = +Y world
-    def _fix_yaw():
-        """Reset 직후 모든 env의 yaw를 +Y world로 덮어쓴다."""
-        root = raw_env.robot.data.default_root_state[:raw_env.num_envs].clone()
-        cur = raw_env.robot.data.root_state_w[:raw_env.num_envs].clone()
-        # xy/z 위치는 현재값 유지, orientation만 고정
-        half = _FIXED_YAW * 0.5
-        cur[:, 3] = math.cos(half)   # qw
-        cur[:, 4] = 0.0              # qx
-        cur[:, 5] = 0.0              # qy
-        cur[:, 6] = math.sin(half)   # qz
-        cur[:, 7:] = 0.0             # 속도 초기화
-        env_ids = torch.arange(raw_env.num_envs, device=device)
-        raw_env.robot.write_root_state_to_sim(cur, env_ids)
+# ── 환경 초기 상태 복원 헬퍼 ──
+def _restore_init_state(ep_data):
+    env_id = torch.tensor([0], device=device)
+    ea = ep_data["ep_attrs"]
 
-    with SuppressCLogs():
-        obs, _ = raw_env.reset()
-    _fix_yaw()
-    # reset 후 obs 갱신 (고정 yaw 반영)
-    with SuppressCLogs():
-        raw_env.scene.update(dt=raw_env.physics_dt)
-        obs = raw_env._get_observations()
+    if "robot_init_pos" in ea and "robot_init_quat" in ea:
+        rs = env.robot.data.root_state_w.clone()
+        rs[0, 0:3] = torch.tensor(ea["robot_init_pos"], dtype=torch.float32, device=device)
+        rs[0, 3:7] = torch.tensor(ea["robot_init_quat"], dtype=torch.float32, device=device)
+        rs[0, 7:] = 0.0
+        env.robot.write_root_state_to_sim(rs, env_id)
+        env.home_pos_w[0] = rs[0, :3]
 
-    if args.random:
-        args.sequential = False
+    init_joints = torch.tensor(ep_data["obs"][0, 0:6], dtype=torch.float32, device=device)
+    jp = env.robot.data.default_joint_pos[0:1].clone()
+    jp[0, env.arm_idx] = init_joints
+    jv = torch.zeros_like(jp)
+    env.robot.write_joint_state_to_sim(jp, jv, env_ids=env_id)
 
-    if args.sequential:
-        # 첫 번째 방향으로 강제 설정
-        cmd_vec = torch.tensor(CMD_VECTORS[seq_idx], device=device)
-        raw_env._direction_cmd[:] = cmd_vec
-        log(f"[Sequential] 방향 {seq_idx+1}/6: {CMD_LABELS[seq_idx]}")
+    obj_state = env.object_rigid.data.root_state_w.clone()
+    if ep_data["object_pos_w"] is not None:
+        obj_state[0, 0:3] = torch.tensor(ep_data["object_pos_w"][0], dtype=torch.float32, device=device)
+    elif "object_init_pos" in ea:
+        obj_state[0, 0:3] = torch.tensor(ea["object_init_pos"], dtype=torch.float32, device=device)
+    if "object_init_quat" in ea:
+        obj_state[0, 3:7] = torch.tensor(ea["object_init_quat"], dtype=torch.float32, device=device)
+    obj_state[0, 7:] = 0.0
+    env.object_rigid.write_root_state_to_sim(obj_state, env_id)
+    env.object_pos_w[0] = obj_state[0, :3]
 
-    step = 0
-    episode_count = 0
-    cumulative_compliance = 0.0
-    cumulative_speed = 0.0
-    cumulative_lin_err = 0.0
-    cumulative_ang_err = 0.0
-    metric_steps = 0
+    for _ in range(10):
+        env.sim.step()
+    env.robot.update(env.sim.cfg.dt)
+    env.object_rigid.update(env.sim.cfg.dt)
 
-    log("=== Direction commands ===")
-    for i in range(min(args.num_envs, 8)):
-        label = cmd_to_label(raw_env._direction_cmd[i])
-        log(f"  env {i}: {label}")
 
-    try:
-        while True:
-            if args.max_steps > 0 and step >= args.max_steps:
-                break
+# Navigate: ordered direction schedule
+_NAV_DIR_SCHEDULE = [
+    ([0, 1, 0],  "FORWARD"),
+    ([0, -1, 0], "BACKWARD"),
+    ([-1, 0, 0], "STRAFE LEFT"),
+    ([1, 0, 0],  "STRAFE RIGHT"),
+    ([0, 0, 1],  "TURN LEFT (CCW)"),
+    ([0, 0, -1], "TURN RIGHT (CW)"),
+]
+_NAV_DIR_LABELS = {
+    (0, 1, 0): "FORWARD", (0, -1, 0): "BACKWARD",
+    (-1, 0, 0): "STRAFE LEFT", (1, 0, 0): "STRAFE RIGHT",
+    (0, 0, 1): "TURN LEFT (CCW)", (0, 0, -1): "TURN RIGHT (CW)",
+}
+_nav_schedule_idx = 0
 
-            with torch.no_grad():
-                proc = pre(obs["policy"], train=False) if callable(pre) else obs["policy"]
-                feat = policy_model.net(proc)
-                action = policy_model.mean_layer(feat).clamp(-1.0, 1.0).contiguous()
+# ── 실행 루프 ──
+episode = 0
+successes = 0
+step_count = 0
+# init_arm_pose: 에피소드 시작 시점 캡처 (26D obs용)
+_init_arm_pose = torch.zeros(env.num_envs, 6, device=device)
+obs, _ = env.reset()
 
-                # Inference-time masking: zero out cross-axis residuals
-                if not args.no_masking:
-                    _cmd = raw_env._direction_cmd
-                    fwd_bwd = (_cmd[:, 1].abs() > 0.5)
-                    strafe  = (_cmd[:, 0].abs() > 0.5)
-                    action[fwd_bwd, 6] = 0.0; action[fwd_bwd, 8] = 0.0
-                    action[strafe, 7] = 0.0;  action[strafe, 8] = 0.0
+# Navigate: force first direction from schedule + capture init arm pose
+if is_navigate:
+    cmd_vec, cmd_label = _NAV_DIR_SCHEDULE[_nav_schedule_idx % len(_NAV_DIR_SCHEDULE)]
+    env._direction_cmd[:] = torch.tensor(cmd_vec, dtype=torch.float32, device=device)
+    print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx})")
+    # init_arm_pose 캡처
+    _jp0 = env.robot.data.joint_pos
+    _init_arm_pose[:, :5] = _jp0[:, env.arm_idx[:5]]
+    _init_arm_pose[:, 5:] = _jp0[:, env.arm_idx[5:6]]
 
-            # 엔진 스텝이 실행되는 동안 발생하는 모든 에러 출력을 하드웨어 수준에서 버림
-            with SuppressCLogs():
-                obs, reward, terminated, truncated, _ = raw_env.step(action)
-                
-            step += 1
+if demo_episodes:
+    _restore_init_state(demo_episodes[0])
+    for _ in range(5):
+        env.sim.step()
+    env.robot.update(env.sim.cfg.dt)
+    env.object_rigid.update(env.sim.cfg.dt)
 
-            if step % 10 == 1:
-                a = action[0]
-                bv = raw_env._read_base_body_vel()[0]
-                cmd = raw_env._direction_cmd[0]
-                cmd_label = cmd_to_label(cmd)
-                log(
-                    f"[DBG] step={step:4d}  cmd={cmd_label:13s}  "
-                    f"act=[{a[6]:+.3f},{a[7]:+.3f},{a[8]:+.3f}]  "
-                    f"body_vel=[{bv[0]:+.3f},{bv[1]:+.3f},{bv[2]:+.3f}]  "
-                    f"reward={reward[0]:.3f}"
-                )
+dp_agent.reset()
+def _nav_dir_label(cmd_tensor):
+    c = cmd_tensor.cpu().tolist()
+    best_label, best_dot = "UNKNOWN", -1.0
+    for key, label in _NAV_DIR_LABELS.items():
+        dot = sum(a * b for a, b in zip(c, key))
+        if dot > best_dot:
+            best_dot, best_label = dot, label
+    return best_label
 
-            extras_log = raw_env.extras.get("log", {})
-            if extras_log:
-                cumulative_compliance += float(extras_log.get("direction_compliance", 0))
-                cumulative_speed += float(extras_log.get("avg_speed", 0))
-                cumulative_lin_err += float(extras_log.get("lin_vel_error", 0))
-                cumulative_ang_err += float(extras_log.get("ang_vel_error", 0))
-                metric_steps += 1
+if not is_navigate:
+    # EE body index + local offset
+    fixed_jaw_idx, _ = env.robot.find_bodies(["Wrist_Roll_08c_v1"])
+    ee_local_offset = torch.tensor(EE_LOCAL_OFFSET, device=device).unsqueeze(0)  # (1, 3)
+    print(f"  EE body: fixed_jaw={fixed_jaw_idx[0]}, offset={EE_LOCAL_OFFSET}")
 
-            # 방향별 메트릭 집계
-            if extras_log:
-                cur_label = cmd_to_label(raw_env._direction_cmd[0])
-                if cur_label in per_cmd_metrics:
-                    m = per_cmd_metrics[cur_label]
-                    m["compliance"] += float(extras_log.get("direction_compliance", 0))
-                    m["speed"] += float(extras_log.get("avg_speed", 0))
-                    m["lin_err"] += float(extras_log.get("lin_vel_error", 0))
-                    m["ang_err"] += float(extras_log.get("ang_vel_error", 0))
-                    m["steps"] += 1
+    def get_distances():
+        wrist_pos = env.robot.data.body_pos_w[:, fixed_jaw_idx[0], :]
+        wrist_quat = env.robot.data.body_quat_w[:, fixed_jaw_idx[0], :]
+        ee_pos = wrist_pos + quat_apply(wrist_quat, ee_local_offset)
+        obj_pos = env.object_pos_w
+        ee_dist = torch.norm(ee_pos - obj_pos, dim=-1).item()
+        base_pos = env.robot.data.root_pos_w[:, :2]
+        obj_pos_xy = env.object_pos_w[:, :2]
+        base_dist = torch.norm(base_pos - obj_pos_xy, dim=-1).item()
+        gripper_pos = env.robot.data.joint_pos[:, env.gripper_idx].item()
+        obj_z = env.object_pos_w[:, 2].item()
+        env_z = env.scene.env_origins[:, 2].item() if hasattr(env.scene, "env_origins") else 0.0
+        ee_z = ee_pos[0, 2].item() - env_z
+        return ee_dist, base_dist, gripper_pos, obj_z - env_z, ee_z
 
-            done = terminated | truncated
-            num_done = done.sum().item()
-            if num_done > 0:
-                episode_count += num_done
-                _fix_yaw()
+    def get_grasp_debug():
+        """Grasp 판정에 쓰이는 모든 값 반환."""
+        grip = env.robot.data.joint_pos[:, env.gripper_idx].item()
+        grip_closed = grip < float(env.cfg.grasp_gripper_threshold)
+        contact = 0.0
+        if env.contact_sensor is not None:
+            contact = env._contact_force_per_env().item()
+        has_contact = contact > float(env.cfg.grasp_contact_threshold)
+        wrist_pos = env.robot.data.body_pos_w[:, fixed_jaw_idx[0], :]
+        wrist_quat = env.robot.data.body_quat_w[:, fixed_jaw_idx[0], :]
+        ee_pos = wrist_pos + quat_apply(wrist_quat, ee_local_offset)
+        ee_to_obj = torch.norm(ee_pos - env.object_pos_w, dim=-1).item()
+        between = ee_to_obj < float(env.cfg.grasp_ee_max_dist)
+        grasped = env.object_grasped[0].item()
+        gcf = 0.0
+        if hasattr(env, 'ground_contact_sensor') and env.ground_contact_sensor is not None:
+            gcf = env._ground_contact_force_per_env().item()
+        grip_on_ground = gcf > 1.0 and not grasped
+        return {
+            "grip": grip, "grip_closed": grip_closed,
+            "contact": contact, "has_contact": has_contact,
+            "ee_to_obj": ee_to_obj, "between_jaws": between,
+            "grasped": grasped,
+            "grip_on_ground": grip_on_ground, "gcf": gcf,
+        }
 
-                if args.sequential:
-                    seq_idx = (seq_idx + 1) % len(CMD_LABELS)
-                    cmd_vec = torch.tensor(CMD_VECTORS[seq_idx], device=device)
-                    raw_env._direction_cmd[:] = cmd_vec
-                    log(f"[Sequential] 방향 {seq_idx+1}/6: {CMD_LABELS[seq_idx]}")
-                else:
-                    reset_ids = done.nonzero(as_tuple=False).squeeze(-1)
-                    for idx in reset_ids:
-                        i = idx.item()
-                        if i < 8:
-                            label = cmd_to_label(raw_env._direction_cmd[i])
-                            log(f"[Reset] env {i} -> cmd: {label}")
+ep_min_ee = 999.0
+ep_min_base = 999.0
+ep_min_ee_z = 999.0
+window_min_ee_z = 999.0
+prev_grasped = False
+ep_grasped = False
+ep_lifted = False
+lift_sustain = 0
 
-            if step % args.print_interval == 0 and metric_steps > 0:
-                avg_comp = cumulative_compliance / metric_steps
-                avg_spd = cumulative_speed / metric_steps
-                avg_lin_err = cumulative_lin_err / metric_steps
-                avg_ang_err = cumulative_ang_err / metric_steps
-                cur_label = cmd_to_label(raw_env._direction_cmd[0])
-                log(
-                    f"step={step:5d}  cmd={cur_label:13s}  "
-                    f"compliance={avg_comp:.3f}  speed={avg_spd:.3f}m/s  "
-                    f"lin_err={avg_lin_err:.4f}  ang_err={avg_ang_err:.4f}  "
-                    f"ep={episode_count}"
-                )
+# Navigate tracking metrics
+nav_lin_errors = []
+nav_ang_errors = []
 
-    except KeyboardInterrupt:
-        log("사용자 중단 (Ctrl+C)")
+_OBS_ARM = torch.tensor([-0.02966, -0.213839, 0.09066, 0.120177, 0.058418], device=device)
+_OBS_GRIP = torch.tensor([-0.201554], device=device)
 
-    if metric_steps > 0:
-        log(
-            f"FINAL: {step} steps, {episode_count} ep | "
-            f"compliance={cumulative_compliance / metric_steps:.4f}  "
-            f"speed={cumulative_speed / metric_steps:.3f}m/s  "
-            f"lin_err={cumulative_lin_err / metric_steps:.4f}  "
-            f"ang_err={cumulative_ang_err / metric_steps:.4f}"
-        )
+while episode < args.num_episodes and simulation_app.is_running():
+    if is_navigate:
+        # Skill2Env 30D obs → Navigate 26D obs 수동 구성
+        _jp = env.robot.data.joint_pos
+        _arm = _jp[:, env.arm_idx[:5]]       # (N, 5) 실제 관절 위치
+        _grip = _jp[:, env.arm_idx[5:6]]     # (N, 1)
+        _bv = env.robot.data.root_lin_vel_b[:, :2]  # (N, 2)
+        _wz = env.robot.data.root_ang_vel_b[:, 2:3]  # (N, 1)
+        _base_vel = torch.cat([_bv, _wz], dim=-1)  # (N, 3)
+        _dir = env._direction_cmd  # (N, 3)
+        _lidar = torch.ones(env.num_envs, 8, device=device)
+        obs_t = torch.cat([
+            _arm, _grip, _base_vel, _dir, _lidar, _init_arm_pose,
+        ], dim=-1)  # (N, 26)
+    else:
+        obs_t = obs["policy"].to(device) if isinstance(obs, dict) else obs.to(device)
 
-    # 방향별 메트릭 출력
-    has_per_cmd = any(m["steps"] > 0 for m in per_cmd_metrics.values())
-    if has_per_cmd:
-        log("")
-        log(f"{'direction':>13s}  {'compliance':>10s}  {'speed':>8s}  {'lin_err':>8s}  {'ang_err':>8s}  {'steps':>6s}")
-        log("-" * 65)
-        for label in CMD_LABELS:
-            m = per_cmd_metrics[label]
-            if m["steps"] > 0:
-                n = m["steps"]
-                log(f"{label:>13s}  {m['compliance']/n:>10.4f}  {m['speed']/n:>7.3f}  {m['lin_err']/n:>8.4f}  {m['ang_err']/n:>8.4f}  {n:>6d}")
-            else:
-                log(f"{label:>13s}  {'—':>10s}  {'—':>8s}  {'—':>8s}  {'—':>8s}  {'0':>6s}")
+    with torch.no_grad():
+        # 1. Base action from frozen DP (handles action chunking internally)
+        base_naction = dp_agent.base_action_normalized(obs_t)
 
-    log_f.close()
-    print(f"\n  로그 저장: {log_path}")
-    
-    with SuppressCLogs():
-        sim_app.close()
+        if residual_policy is not None:
+            # 2. Normalize obs
+            nobs = dp_agent.normalizer(obs_t, "obs", forward=True)
+            nobs = torch.clamp(nobs, -3, 3)
+            nobs = torch.nan_to_num(nobs, nan=0.0)
 
-if __name__ == "__main__":
-    main()
+            # 3. Residual input: [nobs, base_naction]
+            residual_nobs = torch.cat([nobs, base_naction], dim=-1)
+
+            # 4. Deterministic residual (raw actor mean, clamped)
+            residual_naction = residual_policy.actor_mean(residual_nobs)
+            residual_naction = torch.clamp(residual_naction, -1.0, 1.0)
+
+            # 5. Per-dim scale (v26: no post-grasp scale)
+            naction = base_naction + residual_naction * per_dim_action_scale
+        else:
+            naction = base_naction
+
+        # 6. Denormalize → env action
+        action = dp_agent.normalizer(naction, "action", forward=False)
+
+    # ── Rule-based gripper override (GT grip curve) ──
+    if args.grip_override:
+        ee_d_now = get_distances()[0]
+        if ee_d_now < 0.05:
+            grip_target = 0.30   # tight close for secure grasp
+        elif ee_d_now < 0.20:
+            t = (ee_d_now - 0.05) / 0.15
+            grip_target = 0.30 + t * 1.18  # 0.30→1.48 smooth
+        else:
+            grip_target = None  # keep DP's gripper
+        if grip_target is not None:
+            # Blend: 80% override, 20% DP (smooth transition)
+            dp_grip = action[0, 5].item()
+            action[0, 5] = 0.8 * grip_target + 0.2 * dp_grip
+
+    # 디버그 (처음 5스텝만)
+    if step_count < 5:
+        a = action[0].cpu().tolist()
+        print(f"  [t={step_count}] action={[f'{x:.3f}' for x in a]}", flush=True)
+
+    obs, reward, terminated, truncated, info = env.step(action)
+    step_count += 1
+
+    if is_navigate:
+        # Navigate: 속도 추종 메트릭
+        cmd = env._direction_cmd[0]  # (3,)
+        actual_lin = env.robot.data.root_lin_vel_b[0, :2]
+        actual_wz = env.robot.data.root_ang_vel_b[0, 2]
+        target_lin = cmd[:2] * env.cfg.max_lin_vel
+        target_wz = cmd[2] * env.cfg.max_ang_vel
+        lin_err = (target_lin - actual_lin).pow(2).sum().sqrt().item()
+        ang_err = abs(target_wz.item() - actual_wz.item())
+        nav_lin_errors.append(lin_err)
+        nav_ang_errors.append(ang_err)
+
+        if step_count % 50 == 0:
+            dir_label = _nav_dir_label(cmd)
+            vx = env.robot.data.root_lin_vel_b[0, 0].item()
+            vy = env.robot.data.root_lin_vel_b[0, 1].item()
+            wz = actual_wz.item()
+            pos = env.robot.data.root_pos_w[0, :2].cpu().numpy()
+            avg_lin = sum(nav_lin_errors[-50:]) / len(nav_lin_errors[-50:])
+            avg_ang = sum(nav_ang_errors[-50:]) / len(nav_ang_errors[-50:])
+            jp = env.robot.data.joint_pos[0]
+            arm_jp = jp[env.arm_idx[:5]].cpu().tolist()
+            grip_jp = jp[env.arm_idx[5]].item()
+            arm_str = ",".join(f"{v:+.3f}" for v in arm_jp)
+            print(f"    [t={step_count:4d}] dir={dir_label} | "
+                  f"vel=(vx={vx:+.2f},vy={vy:+.2f},wz={wz:+.2f}) | "
+                  f"pos=({pos[0]:+.2f},{pos[1]:+.2f}) | "
+                  f"lin_err={avg_lin:.3f} ang_err={avg_ang:.3f} | "
+                  f"arm=[{arm_str}] grip={grip_jp:+.3f}", flush=True)
+
+        done = terminated.any() or truncated.any()
+        if done:
+            episode += 1
+            avg_lin = sum(nav_lin_errors) / max(len(nav_lin_errors), 1)
+            avg_ang = sum(nav_ang_errors) / max(len(nav_ang_errors), 1)
+            dir_label = _nav_dir_label(env._direction_cmd[0])
+            print(f"  Episode {episode}/{args.num_episodes}: {dir_label} | "
+                  f"{step_count} steps | avg_lin_err={avg_lin:.4f} avg_ang_err={avg_ang:.4f}",
+                  flush=True)
+            step_count = 0
+            nav_lin_errors.clear()
+            nav_ang_errors.clear()
+            dp_agent.reset()
+            obs, _ = env.reset()
+            # init_arm_pose 재캡처
+            _jp0 = env.robot.data.joint_pos
+            _init_arm_pose[:, :5] = _jp0[:, env.arm_idx[:5]]
+            _init_arm_pose[:, 5:] = _jp0[:, env.arm_idx[5:6]]
+            if episode < args.num_episodes:
+                _nav_schedule_idx += 1
+                cmd_vec, cmd_label = _NAV_DIR_SCHEDULE[_nav_schedule_idx % len(_NAV_DIR_SCHEDULE)]
+                env._direction_cmd[:] = torch.tensor(cmd_vec, dtype=torch.float32, device=device)
+                print(f"  [Navigate] direction_cmd: {cmd_label} (schedule {_nav_schedule_idx})")
+    else:
+        ee_d, base_d, grip, obj_z, ee_z = get_distances()
+        ep_min_ee = min(ep_min_ee, ee_d)
+        ep_min_base = min(ep_min_base, base_d)
+        ep_min_ee_z = min(ep_min_ee_z, ee_z)
+        window_min_ee_z = min(window_min_ee_z, ee_z)
+
+        # Grasp 이벤트 감지 + 상세 출력
+        g = get_grasp_debug()
+        if g["grasped"] and not prev_grasped:
+            ep_grasped = True
+            print(f"    ★ GRASP at t={step_count} | "
+                  f"grip={g['grip']:.3f}({'✓' if g['grip_closed'] else '✗'}) "
+                  f"contact={g['contact']:.3f}({'✓' if g['has_contact'] else '✗'}) "
+                  f"ee_to_obj={g['ee_to_obj']:.3f}({'✓' if g['between_jaws'] else '✗'}<{env.cfg.grasp_ee_max_dist})",
+                  flush=True)
+        prev_grasped = g["grasped"]
+
+        held_now = (obj_z > 0.05 and g["grasped"] and g["grip_closed"] and g["ee_to_obj"] < 0.20)
+        if held_now:
+            lift_sustain += 1
+        else:
+            lift_sustain = 0
+        if lift_sustain >= 50 and not ep_lifted:
+            ep_lifted = True
+            print(f"    ★ LIFT at t={step_count} | objZ={obj_z:.3f} ee={g['ee_to_obj']:.3f} grip={g['grip']:.3f} sustain={lift_sustain}", flush=True)
+
+        if step_count % 50 == 0:
+            status = ""
+            if ep_lifted:
+                status = " [LIFTED]"
+            elif g["grasped"]:
+                status = f" [GRASPED sustain={lift_sustain}]"
+            ground_str = " **GROUND**" if g["grip_on_ground"] else ""
+            print(f"    [t={step_count:4d}] EE={ee_d:.3f} Base={base_d:.3f} grip={grip:.3f} objZ={obj_z:.3f} "
+                  f"eeZ={ee_z:.4f}(min={window_min_ee_z:.4f}) contact={g['contact']:.2f} ee2obj={g['ee_to_obj']:.3f}"
+                  f" gcf={g['gcf']:.2f}{ground_str}{status}", flush=True)
+            window_min_ee_z = 999.0
+
+        done = terminated.any() or truncated.any()
+        if done:
+            episode += 1
+            success = info.get("task_success", torch.zeros(1)).any().item()
+            if success:
+                successes += 1
+            status = "SUCCESS" if success else "FAIL"
+            grasp_lift = f"grasp={'Y' if ep_grasped else 'N'} lift={'Y' if ep_lifted else 'N'}"
+            print(f"  Episode {episode}/{args.num_episodes}: {status} "
+                  f"({step_count} steps, {grasp_lift}, "
+                  f"min_EE={ep_min_ee:.3f} min_Base={ep_min_base:.3f} min_eeZ={ep_min_ee_z:.4f} | "
+                  f"cumulative: {successes}/{episode} = {successes/episode*100:.0f}%)",
+                  flush=True)
+            step_count = 0
+            ep_min_ee = 999.0
+            ep_min_base = 999.0
+            ep_min_ee_z = 999.0
+            window_min_ee_z = 999.0
+            prev_grasped = False
+            ep_grasped = False
+            ep_lifted = False
+            lift_sustain = 0
+            dp_agent.reset()
+            obs, _ = env.reset()
+
+            if demo_episodes and episode < len(demo_episodes):
+                _restore_init_state(demo_episodes[episode])
+                for _ in range(5):
+                    env.sim.step()
+                env.robot.update(env.sim.cfg.dt)
+                env.object_rigid.update(env.sim.cfg.dt)
+
+if is_navigate:
+    print(f"\n  === Navigate eval 완료: {episode} episodes ===\n")
+else:
+    print(f"\n  === 결과: {successes}/{args.num_episodes} 성공 "
+          f"({successes/max(episode,1)*100:.0f}%) ===\n")
+
+if demo_file is not None:
+    demo_file.close()
+env.close()
+simulation_app.close()

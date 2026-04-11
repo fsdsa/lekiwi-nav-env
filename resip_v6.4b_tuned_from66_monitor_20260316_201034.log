@@ -1,0 +1,29 @@
+=== 2026-03-16 20:10:34 KST ===
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+STATUS:
+1734842 /home/jovyan/miniconda3/envs/rl_train/bin/python -u train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 1024 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 8 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip /home/jovyan/data/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --gripper_open_threshold 1.2 --r8_penalty -2.0 --save_dir checkpoints/resip_v6.4b_tuned_from66 --headless
+1735240 bash -c cd /home/jovyan/IsaacLab/scripts/lekiwi_nav_env && echo STATUS: && (pgrep -af "/home/jovyan/miniconda3/envs/rl_train/bin/python -u train_resip.py --skill approach_and_grasp" || true) && echo LOG: && tail -n 200 logs/resip_v6.4b_tuned_from66.log | grep -a -E "Iter [0-9]+/|  SR=|  Best:|KL stop" | tail -n 12 && echo GPU: && nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+1735241 bash -c cd /home/jovyan/IsaacLab/scripts/lekiwi_nav_env && echo STATUS: && (pgrep -af "/home/jovyan/miniconda3/envs/rl_train/bin/python -u train_resip.py --skill approach_and_grasp" || true) && echo LOG: && tail -n 200 logs/resip_v6.4b_tuned_from66.log | grep -a -E "Iter [0-9]+/|  SR=|  Best:|KL stop" | tail -n 12 && echo GPU: && nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+LOG:
+Iter 62/348 | TRAIN | step=34406400 | wu=0 | EE: 0.839/0.628
+  SR=5.27% | G=119(env:282) | VL=39 | PR=0 | L=54 | SL=36 | EE=0.012(0.160) | Base=0.003(0.421) | Grip=-0.01/0.52/1.49 | R=-368.1 | FPS=10454 | ObjZ:0.727/0.187 n=267 | GSus:5 LSus:87 n15+=54 | CF:2396/74 n=995 cf@g=5.724 | GAG:0.302(n=119) B@G:0.417 B@L:0.431 | R2avg=0.006 Opens=1032 ClipR=0.035 R4b=0.000 R8=(35612)
+    KL stop ep2: 0.0322>0.03
+Iter 63/348 | TRAIN | step=35123200 | wu=0 | EE: 0.832/0.629
+  SR=4.30% | G=117(env:317) | VL=31 | PR=0 | L=45 | SL=28 | EE=0.014(0.153) | Base=0.014(0.428) | Grip=-0.01/0.51/1.49 | R=2.9 | FPS=10130 | ObjZ:0.667/0.149 n=290 | GSus:5 LSus:85 n15+=44 | CF:4397/64 n=1005 cf@g=4.420 | GAG:0.294(n=117) B@G:0.419 B@L:0.430 | R2avg=0.006 Opens=1031 ClipR=0.040 R4b=0.000 R8=(35539)
+Iter 64/348 | TRAIN | step=35840000 | wu=0 | EE: 0.834/0.627
+GPU:
+0, 5969 MiB, 40960 MiB, 76 %
+

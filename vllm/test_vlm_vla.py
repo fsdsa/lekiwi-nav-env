@@ -11,7 +11,7 @@ b64 = base64.b64encode(buf.getvalue()).decode()
 # VLM
 t0 = time.perf_counter()
 r = requests.post("http://localhost:8000/v1/chat/completions", json={
-    "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "model": "Qwen/Qwen3-VL-8B-Instruct",
     "messages": [{"role": "user", "content": "Say hi"}],
     "max_tokens": 10,
 })

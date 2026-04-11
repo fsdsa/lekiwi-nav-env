@@ -3,7 +3,7 @@
 VLM Client — vLLM OpenAI-compatible API로 Navigate direction command 요청.
 
 D455 base_cam 이미지를 640×400으로 다운스케일하여 전송.
-vLLM 서버(A100)에서 Qwen2.5-VL-7B-Instruct로 추론 후 direction command 반환.
+vLLM 서버(A100)에서 Qwen3-VL-8B-Instruct로 추론 후 direction command 반환.
 
 Usage:
     from vlm_client import VLMClient
@@ -44,7 +44,7 @@ class VLMClient:
     def __init__(
         self,
         server_url: str = "http://218.148.55.186:8000",
-        model: str = "Qwen/Qwen2.5-VL-7B-Instruct",
+        model: str = "Qwen/Qwen3-VL-8B-Instruct",
         timeout: float = 5.0,
     ):
         self.server_url = server_url.rstrip("/")

@@ -1,0 +1,268 @@
+[
+  {
+    "name": "SpiderMan",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/SpiderMan_Titan_Hero_12Inch_Action_Figure_oo1qph4wwiW/model_clean.usd",
+    "bbox": [
+      0.094259,
+      0.074468,
+      0.288126
+    ],
+    "volume_m3": 0.00202244,
+    "mass": 0.7079,
+    "scale": 0.7,
+    "category": 0,
+    "category_name": "mixed"
+  },
+  {
+    "name": "SCHOOL_BUS",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/SCHOOL_BUS/model_clean.usd",
+    "bbox": [
+      0.031831,
+      0.097799,
+      0.038286
+    ],
+    "volume_m3": 0.00011919,
+    "mass": 0.05,
+    "scale": 1.6,
+    "category": 1,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Phillips",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Phillips_Milk_of_Magnesia_Saline_Laxative_Liquid_Original/model_clean.usd",
+    "bbox": [
+      0.072736,
+      0.05685,
+      0.174141
+    ],
+    "volume_m3": 0.00072008,
+    "mass": 0.252,
+    "scale": 0.9,
+    "category": 2,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Butterfinger",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Nestle_Candy_19_oz_Butterfinger_Singles_116567/model_clean.usd",
+    "bbox": [
+      0.168226,
+      0.041945,
+      0.018642
+    ],
+    "volume_m3": 0.00013154,
+    "mass": 0.05,
+    "scale": 1.5,
+    "category": 3,
+    "category_name": "mixed"
+  },
+  {
+    "name": "SIT_N_WALK_PUPPY",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/SIT_N_WALK_PUPPY/model_clean.usd",
+    "bbox": [
+      0.12308,
+      0.186628,
+      0.089885
+    ],
+    "volume_m3": 0.00206467,
+    "mass": 0.7226,
+    "scale": 0.7,
+    "category": 4,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Schleich_Lion",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Schleich_Lion_Action_Figure/model_clean.usd",
+    "bbox": [
+      0.115018,
+      0.041679,
+      0.070442
+    ],
+    "volume_m3": 0.00033769,
+    "mass": 0.1182,
+    "scale": 1.2,
+    "category": 5,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Air_Hogs_Airplane",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Air_Hogs_Wind_Flyers_Set_Airplane_Red/model_clean.usd",
+    "bbox": [
+      0.268346,
+      0.272032,
+      0.050255
+    ],
+    "volume_m3": 0.00366855,
+    "mass": 1.284,
+    "scale": 1.0,
+    "category": 6,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Flashlight",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/HeavyDuty_Flashlight/model_clean.usd",
+    "bbox": [
+      0.077597,
+      0.077885,
+      0.229205
+    ],
+    "volume_m3": 0.00138523,
+    "mass": 0.4848,
+    "scale": 0.8,
+    "category": 7,
+    "category_name": "mixed"
+  },
+  {
+    "name": "3M_Antislip",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/3M_Antislip_Surfacing_Light_Duty_White/model_clean.usd",
+    "bbox": [
+      0.154701,
+      0.153533,
+      0.02866
+    ],
+    "volume_m3": 0.00068072,
+    "mass": 0.2383,
+    "scale": 1.0,
+    "category": 8,
+    "category_name": "mixed"
+  },
+  {
+    "name": "45oz_Ramekin",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/45oz_RAMEKIN_ASST_DEEP_COLORS/model_clean.usd",
+    "bbox": [
+      0.089707,
+      0.089988,
+      0.043958
+    ],
+    "volume_m3": 0.00035485,
+    "mass": 0.1242,
+    "scale": 1.0,
+    "category": 9,
+    "category_name": "mixed"
+  },
+  {
+    "name": "5_HTP",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd",
+    "bbox": [
+      0.053116,
+      0.052494,
+      0.088823
+    ],
+    "volume_m3": 0.00024766,
+    "mass": 0.0867,
+    "scale": 1.0,
+    "category": 10,
+    "category_name": "mixed"
+  },
+  {
+    "name": "ACE_Coffee_Mug",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd",
+    "bbox": [
+      0.126322,
+      0.090624,
+      0.134936
+    ],
+    "volume_m3": 0.00154472,
+    "mass": 0.5407,
+    "scale": 0.8,
+    "category": 11,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Adrenaline_GTS_13",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Adrenaline_GTS_13_Color_DrkDenimWhtBachlorBttnSlvr_Size_50_yfK40TNjq0V/model_clean.usd",
+    "bbox": [
+      0.111792,
+      0.288056,
+      0.124334
+    ],
+    "volume_m3": 0.00400385,
+    "mass": 1.4013,
+    "scale": 0.85,
+    "category": 12,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Big_Dot_Pink_Pencil_Case",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Big_Dot_Pink_Pencil_Case/model_clean.usd",
+    "bbox": [
+      0.21375,
+      0.097,
+      0.100127
+    ],
+    "volume_m3": 0.00207601,
+    "mass": 0.7266,
+    "scale": 0.9,
+    "category": 13,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Brother_Ink_Cartridge",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Brother_LC_1053PKS_Ink_Cartridge_CyanMagentaYellow_1pack/model_clean.usd",
+    "bbox": [
+      0.098872,
+      0.055321,
+      0.14492
+    ],
+    "volume_m3": 0.00079267,
+    "mass": 0.2774,
+    "scale": 1.0,
+    "category": 14,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Cole_Electric_Pot",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Cole_Hardware_Electric_Pot_Assortment_55/model_clean.usd",
+    "bbox": [
+      0.142984,
+      0.140571,
+      0.127985
+    ],
+    "volume_m3": 0.00257242,
+    "mass": 0.9003,
+    "scale": 1.0,
+    "category": 15,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Cole_Hammer",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Cole_Hardware_Hammer_Black/model_clean.usd",
+    "bbox": [
+      0.291707,
+      0.060032,
+      0.096066
+    ],
+    "volume_m3": 0.00168228,
+    "mass": 0.5888,
+    "scale": 1.0,
+    "category": 16,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Marc_Anthony_Conditioner",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Marc_Anthony_Skip_Professional_Oil_of_Morocco_Conditioner_with_Argan_Oil/model_clean.usd",
+    "bbox": [
+      0.0744,
+      0.048417,
+      0.192133
+    ],
+    "volume_m3": 0.00069211,
+    "mass": 0.2422,
+    "scale": 0.8,
+    "category": 17,
+    "category_name": "mixed"
+  },
+  {
+    "name": "Mens_Santa_Cruz_Thong",
+    "usd": "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/Mens_Santa_Cruz_Thong_in_Tan_r59C69daRPh/model_clean.usd",
+    "bbox": [
+      0.11997,
+      0.2936,
+      0.080136
+    ],
+    "volume_m3": 0.00282265,
+    "mass": 0.9879,
+    "scale": 1.0,
+    "category": 18,
+    "category_name": "mixed"
+  }
+]

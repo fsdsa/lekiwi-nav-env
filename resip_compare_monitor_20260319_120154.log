@@ -1,0 +1,18 @@
+===== 2026-03-19 12:01:54 KST =====
+[LOCAL]
+713:Iter 91/697 | EVAL | step=43008000 | wu=0 | EE: 0.843/0.631
+728:  Best: SR=33.98% SL=92 G=205
+803:Iter 96/697 | EVAL | step=44441600 | wu=0 | EE: 0.832/0.629
+827:  Best: SR=33.98% SL=105 G=205
+904:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.839/0.628
+934:  Best: SR=33.98% SL=105 G=205
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=243/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=248/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=250/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=252/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=258/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=275/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=281/7500
+  [LIFT] n=44 cf=0.0~34.6 grip=-0.11~0.58 ee3d=0.005 held=29 mg=31
+
+[SERVER]

@@ -2,13 +2,13 @@
 """
 VLM + BC Navigate — Isaac Sim ProcTHOR 가정집 환경
 
-VLM (Qwen2.5-VL-7B, A100 서버)이 2-4Hz로 방향 판단,
+VLM (Qwen3-VL-8B, A100 서버)이 2-4Hz로 방향 판단,
 BC policy (3090 로컬)가 10Hz로 base velocity 실행.
 
 구조:
     [3090 로컬]                              [A100 서버]
     Isaac Sim + D455 카메라                    vLLM serve
-    BC policy (10Hz)                          Qwen2.5-VL-7B
+    BC policy (10Hz)                          Qwen3-VL-8B
          │                                        │
          │── RGB 640×400 JPEG ──→ HTTP POST ──→   │
          │←── "FORWARD" / "TURN_LEFT" ←─────────  │
@@ -46,7 +46,7 @@ parser = argparse.ArgumentParser(description="VLM + BC Navigate in ProcTHOR")
 # VLM 서버
 parser.add_argument("--vlm_server", type=str, required=True,
                     help="vLLM 서버 URL (예: http://123.456.78.90:8000)")
-parser.add_argument("--vlm_model", type=str, default="Qwen/Qwen2.5-VL-7B-Instruct",
+parser.add_argument("--vlm_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct",
                     help="vLLM에 로드된 모델 이름")
 
 # BC Policy

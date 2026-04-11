@@ -1,0 +1,340 @@
+[17:56:41] [Sequential] 방향 1/6: forward
+[17:56:41] === Direction commands ===
+[17:56:41]   env 0: forward
+[17:56:41] [DBG] step=   1  cmd=forward        act=[+0.000,+0.015,+0.000]  body_vel=[-0.000,-0.000,+0.000]  reward=1.517
+[17:56:41] [DBG] step=  11  cmd=forward        act=[+0.000,+0.979,+0.000]  body_vel=[+0.026,+0.327,-0.128]  reward=2.063
+[17:56:41] [DBG] step=  21  cmd=forward        act=[+0.000,+0.992,+0.000]  body_vel=[-0.005,+0.427,-0.007]  reward=2.865
+[17:56:41] [DBG] step=  31  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.005,+0.449,+0.066]  reward=2.829
+[17:56:41] [DBG] step=  41  cmd=forward        act=[+0.000,+0.979,+0.000]  body_vel=[+0.004,+0.454,-0.093]  reward=2.746
+[17:56:41] [DBG] step=  51  cmd=forward        act=[+0.000,+0.989,+0.000]  body_vel=[-0.005,+0.453,+0.008]  reward=2.936
+[17:56:41] [DBG] step=  61  cmd=forward        act=[+0.000,+0.990,+0.000]  body_vel=[-0.006,+0.443,+0.136]  reward=2.531
+[17:56:41] [DBG] step=  71  cmd=forward        act=[+0.000,+0.975,+0.000]  body_vel=[-0.008,+0.448,+0.013]  reward=2.920
+[17:56:42] [DBG] step=  81  cmd=forward        act=[+0.000,+0.965,+0.000]  body_vel=[-0.007,+0.430,+0.008]  reward=2.875
+[17:56:42] [DBG] step=  91  cmd=forward        act=[+0.000,+0.976,+0.000]  body_vel=[+0.001,+0.441,+0.147]  reward=2.469
+[17:56:42] [DBG] step= 101  cmd=forward        act=[+0.000,+0.979,+0.000]  body_vel=[-0.001,+0.434,+0.047]  reward=2.836
+[17:56:42] [DBG] step= 111  cmd=forward        act=[+0.000,+0.973,+0.000]  body_vel=[-0.004,+0.449,+0.070]  reward=2.814
+[17:56:42] [DBG] step= 121  cmd=forward        act=[+0.000,+0.980,+0.000]  body_vel=[+0.001,+0.440,+0.037]  reward=2.874
+[17:56:42] [DBG] step= 131  cmd=forward        act=[+0.000,+0.962,+0.000]  body_vel=[+0.001,+0.454,+0.074]  reward=2.812
+[17:56:42] [DBG] step= 141  cmd=forward        act=[+0.000,+0.984,+0.000]  body_vel=[-0.008,+0.444,+0.034]  reward=2.887
+[17:56:42] [DBG] step= 151  cmd=forward        act=[+0.000,+0.990,+0.000]  body_vel=[+0.008,+0.454,+0.110]  reward=2.675
+[17:56:42] [DBG] step= 161  cmd=forward        act=[+0.000,+0.990,+0.000]  body_vel=[-0.007,+0.443,+0.031]  reward=2.891
+[17:56:43] [DBG] step= 171  cmd=forward        act=[+0.000,+0.965,+0.000]  body_vel=[-0.002,+0.457,+0.025]  reward=2.931
+[17:56:43] [DBG] step= 181  cmd=forward        act=[+0.000,+0.978,+0.000]  body_vel=[+0.001,+0.441,+0.120]  reward=2.602
+[17:56:43] [DBG] step= 191  cmd=forward        act=[+0.000,+0.976,+0.000]  body_vel=[+0.003,+0.440,+0.084]  reward=2.746
+[17:56:43] step=  200  cmd=forward        compliance=0.858  speed=0.429m/s  lin_err=0.0093  ang_err=0.0110  ep=0
+[17:56:43] [DBG] step= 201  cmd=forward        act=[+0.000,+0.986,+0.000]  body_vel=[-0.006,+0.449,+0.025]  reward=2.914
+[17:56:43] [DBG] step= 211  cmd=forward        act=[+0.000,+0.993,+0.000]  body_vel=[+0.003,+0.455,-0.004]  reward=2.942
+[17:56:43] [DBG] step= 221  cmd=forward        act=[+0.000,+0.996,+0.000]  body_vel=[-0.005,+0.450,+0.014]  reward=2.925
+[17:56:43] [DBG] step= 231  cmd=forward        act=[+0.000,+0.988,+0.000]  body_vel=[+0.004,+0.449,+0.072]  reward=2.809
+[17:56:43] [DBG] step= 241  cmd=forward        act=[+0.000,+0.988,+0.000]  body_vel=[-0.001,+0.455,+0.128]  reward=2.597
+[17:56:43] [Sequential] 방향 2/6: backward
+[17:56:44] [DBG] step= 251  cmd=backward       act=[+0.000,-0.881,+0.000]  body_vel=[-0.011,+0.006,-0.010]  reward=1.512
+[17:56:44] [DBG] step= 261  cmd=backward       act=[+0.000,-0.991,+0.000]  body_vel=[-0.026,-0.377,+0.207]  reward=1.913
+[17:56:44] [DBG] step= 271  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.004,-0.443,+0.175]  reward=2.334
+[17:56:44] [DBG] step= 281  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.012,-0.456,+0.038]  reward=2.908
+[17:56:44] [DBG] step= 291  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.007,-0.463,+0.016]  reward=2.951
+[17:56:44] [DBG] step= 301  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.008,-0.456,+0.041]  reward=2.903
+[17:56:44] [DBG] step= 311  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.005,-0.449,-0.178]  reward=2.329
+[17:56:44] [DBG] step= 321  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.005,-0.456,-0.011]  reward=2.941
+[17:56:44] [DBG] step= 331  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.020,-0.449,-0.015]  reward=2.915
+[17:56:45] [DBG] step= 341  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.000,-0.454,-0.061]  reward=2.853
+[17:56:45] [DBG] step= 351  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.014,-0.460,+0.047]  reward=2.896
+[17:56:45] [DBG] step= 361  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.004,-0.459,-0.106]  reward=2.701
+[17:56:45] [DBG] step= 371  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.016,-0.460,+0.006]  reward=2.945
+[17:56:45] [DBG] step= 381  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.005,-0.459,-0.079]  reward=2.806
+[17:56:45] [DBG] step= 391  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.013,-0.455,-0.048]  reward=2.882
+[17:56:45] step=  400  cmd=backward       compliance=0.868  speed=0.434m/s  lin_err=0.0085  ang_err=0.0102  ep=1
+[17:56:45] [DBG] step= 401  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.010,-0.447,+0.006]  reward=2.922
+[17:56:45] [DBG] step= 411  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.454,-0.053]  reward=2.872
+[17:56:45] [DBG] step= 421  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.007,-0.452,-0.023]  reward=2.922
+[17:56:46] [DBG] step= 431  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.010,-0.458,+0.051]  reward=2.883
+[17:56:46] [DBG] step= 441  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.005,-0.448,-0.056]  reward=2.854
+[17:56:46] [DBG] step= 451  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.011,-0.460,+0.073]  reward=2.828
+[17:56:46] [DBG] step= 461  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.013,-0.451,-0.163]  reward=2.409
+[17:56:46] [DBG] step= 471  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.006,-0.460,+0.020]  reward=2.942
+[17:56:46] [DBG] step= 481  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.015,-0.455,-0.052]  reward=2.874
+[17:56:46] [DBG] step= 491  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.004,-0.457,+0.004]  reward=2.945
+[17:56:46] [Sequential] 방향 3/6: strafe_left
+[17:56:46] [DBG] step= 501  cmd=strafe_left    act=[-0.396,+0.000,+0.000]  body_vel=[-0.158,-0.008,+0.138]  reward=1.325
+[17:56:46] [DBG] step= 511  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.205,+0.002,-0.064]  reward=1.766
+[17:56:47] [DBG] step= 521  cmd=strafe_left    act=[-0.425,+0.000,+0.000]  body_vel=[-0.198,-0.003,+0.059]  reward=1.757
+[17:56:47] [DBG] step= 531  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.202,-0.003,-0.025]  reward=1.838
+[17:56:47] [DBG] step= 541  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.209,+0.008,-0.036]  reward=1.845
+[17:56:47] [DBG] step= 551  cmd=strafe_left    act=[-0.429,+0.000,+0.000]  body_vel=[-0.206,+0.006,+0.103]  reward=1.629
+[17:56:47] [DBG] step= 561  cmd=strafe_left    act=[-0.421,+0.000,+0.000]  body_vel=[-0.208,+0.005,+0.041]  reward=1.834
+[17:56:47] [DBG] step= 571  cmd=strafe_left    act=[-0.419,+0.000,+0.000]  body_vel=[-0.196,-0.003,-0.042]  reward=1.789
+[17:56:47] [DBG] step= 581  cmd=strafe_left    act=[-0.415,+0.000,+0.000]  body_vel=[-0.189,+0.015,-0.107]  reward=1.560
+[17:56:47] [DBG] step= 591  cmd=strafe_left    act=[-0.418,+0.000,+0.000]  body_vel=[-0.203,+0.011,-0.103]  reward=1.621
+[17:56:47] step=  600  cmd=strafe_left    compliance=0.794  speed=0.397m/s  lin_err=0.0218  ang_err=0.0091  ep=2
+[17:56:47] [DBG] step= 601  cmd=strafe_left    act=[-0.420,+0.000,+0.000]  body_vel=[-0.199,+0.005,-0.126]  reward=1.507
+[17:56:48] [DBG] step= 611  cmd=strafe_left    act=[-0.422,+0.000,+0.000]  body_vel=[-0.216,+0.000,+0.005]  reward=1.901
+[17:56:48] [DBG] step= 621  cmd=strafe_left    act=[-0.423,+0.000,+0.000]  body_vel=[-0.197,+0.010,-0.027]  reward=1.819
+[17:56:48] [DBG] step= 631  cmd=strafe_left    act=[-0.420,+0.000,+0.000]  body_vel=[-0.203,+0.007,+0.072]  reward=1.737
+[17:56:48] [DBG] step= 641  cmd=strafe_left    act=[-0.422,+0.000,+0.000]  body_vel=[-0.208,-0.000,+0.021]  reward=1.863
+[17:56:48] [DBG] step= 651  cmd=strafe_left    act=[-0.419,+0.000,+0.000]  body_vel=[-0.229,+0.001,-0.020]  reward=1.944
+[17:56:48] [DBG] step= 661  cmd=strafe_left    act=[-0.422,+0.000,+0.000]  body_vel=[-0.198,+0.015,-0.040]  reward=1.801
+[17:56:48] [DBG] step= 671  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.203,+0.000,-0.029]  reward=1.837
+[17:56:48] [DBG] step= 681  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.192,-0.006,-0.024]  reward=1.804
+[17:56:48] [DBG] step= 691  cmd=strafe_left    act=[-0.422,+0.000,+0.000]  body_vel=[-0.195,+0.006,+0.173]  reward=1.257
+[17:56:49] [DBG] step= 701  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.216,+0.004,-0.027]  reward=1.883
+[17:56:49] [DBG] step= 711  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.210,+0.003,-0.124]  reward=1.555
+[17:56:49] [DBG] step= 721  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.204,-0.002,-0.038]  reward=1.825
+[17:56:49] [DBG] step= 731  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.179,+0.027,-0.131]  reward=1.416
+[17:56:49] [DBG] step= 741  cmd=strafe_left    act=[-0.426,+0.000,+0.000]  body_vel=[-0.201,-0.001,+0.041]  reward=1.809
+[17:56:49] [Sequential] 방향 4/6: strafe_right
+[17:56:49] [DBG] step= 751  cmd=strafe_right   act=[+0.452,+0.000,+0.000]  body_vel=[+0.136,-0.011,+0.081]  reward=1.521
+[17:56:49] [DBG] step= 761  cmd=strafe_right   act=[+0.479,+0.000,+0.000]  body_vel=[+0.215,-0.014,-0.017]  reward=1.889
+[17:56:49] [DBG] step= 771  cmd=strafe_right   act=[+0.474,+0.000,+0.000]  body_vel=[+0.235,+0.005,+0.109]  reward=1.720
+[17:56:50] [DBG] step= 781  cmd=strafe_right   act=[+0.479,+0.000,+0.000]  body_vel=[+0.235,-0.009,+0.064]  reward=1.881
+[17:56:50] [DBG] step= 791  cmd=strafe_right   act=[+0.480,+0.000,+0.000]  body_vel=[+0.228,+0.002,+0.045]  reward=1.900
+[17:56:50] step=  800  cmd=strafe_right   compliance=0.697  speed=0.349m/s  lin_err=0.0386  ang_err=0.0087  ep=3
+[17:56:50] [DBG] step= 801  cmd=strafe_right   act=[+0.473,+0.000,+0.000]  body_vel=[+0.226,-0.003,+0.082]  reward=1.788
+[17:56:50] [DBG] step= 811  cmd=strafe_right   act=[+0.469,+0.000,+0.000]  body_vel=[+0.212,-0.021,+0.157]  reward=1.395
+[17:56:50] [DBG] step= 821  cmd=strafe_right   act=[+0.469,+0.000,+0.000]  body_vel=[+0.221,+0.014,-0.022]  reward=1.908
+[17:56:50] [DBG] step= 831  cmd=strafe_right   act=[+0.467,+0.000,+0.000]  body_vel=[+0.216,-0.013,+0.053]  reward=1.836
+[17:56:50] [DBG] step= 841  cmd=strafe_right   act=[+0.469,+0.000,+0.000]  body_vel=[+0.233,+0.003,+0.078]  reward=1.828
+[17:56:50] [DBG] step= 851  cmd=strafe_right   act=[+0.467,+0.000,+0.000]  body_vel=[+0.228,-0.007,+0.049]  reward=1.894
+[17:56:50] [DBG] step= 861  cmd=strafe_right   act=[+0.476,+0.000,+0.000]  body_vel=[+0.230,+0.003,+0.066]  reward=1.855
+[17:56:51] [DBG] step= 871  cmd=strafe_right   act=[+0.476,+0.000,+0.000]  body_vel=[+0.229,-0.002,+0.076]  reward=1.824
+[17:56:51] [DBG] step= 881  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.237,+0.002,+0.080]  reward=1.839
+[17:56:51] [DBG] step= 891  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.211,-0.018,+0.181]  reward=1.269
+[17:56:51] [DBG] step= 901  cmd=strafe_right   act=[+0.478,+0.000,+0.000]  body_vel=[+0.222,-0.001,-0.006]  reward=1.923
+[17:56:51] [DBG] step= 911  cmd=strafe_right   act=[+0.491,+0.000,+0.000]  body_vel=[+0.235,-0.002,+0.137]  reward=1.589
+[17:56:51] [DBG] step= 921  cmd=strafe_right   act=[+0.491,+0.000,+0.000]  body_vel=[+0.234,+0.003,-0.042]  reward=1.933
+[17:56:51] [DBG] step= 931  cmd=strafe_right   act=[+0.491,+0.000,+0.000]  body_vel=[+0.233,+0.002,+0.129]  reward=1.618
+[17:56:51] [DBG] step= 941  cmd=strafe_right   act=[+0.465,+0.000,+0.000]  body_vel=[+0.232,+0.007,+0.036]  reward=1.934
+[17:56:51] [DBG] step= 951  cmd=strafe_right   act=[+0.463,+0.000,+0.000]  body_vel=[+0.211,-0.014,+0.166]  reward=1.347
+[17:56:51] [DBG] step= 961  cmd=strafe_right   act=[+0.473,+0.000,+0.000]  body_vel=[+0.230,+0.003,+0.061]  reward=1.873
+[17:56:52] [DBG] step= 971  cmd=strafe_right   act=[+0.468,+0.000,+0.000]  body_vel=[+0.226,+0.000,+0.181]  reward=1.330
+[17:56:52] [DBG] step= 981  cmd=strafe_right   act=[+0.467,+0.000,+0.000]  body_vel=[+0.226,-0.001,+0.057]  reward=1.864
+[17:56:52] [DBG] step= 991  cmd=strafe_right   act=[+0.462,+0.000,+0.000]  body_vel=[+0.226,-0.000,+0.111]  reward=1.674
+[17:56:52] [Sequential] 방향 5/6: turn_left
+[17:56:52] step= 1000  cmd=turn_left      compliance=0.646  speed=0.323m/s  lin_err=0.0458  ang_err=0.0126  ep=4
+[17:56:52] [DBG] step=1001  cmd=turn_left      act=[+0.026,-0.028,-0.460]  body_vel=[+0.003,+0.000,+1.134]  reward=2.566
+[17:56:52] [DBG] step=1011  cmd=turn_left      act=[-0.009,-0.008,-0.448]  body_vel=[+0.011,+0.008,+1.004]  reward=2.981
+[17:56:52] [DBG] step=1021  cmd=turn_left      act=[-0.009,-0.007,-0.443]  body_vel=[-0.008,-0.007,+1.165]  reward=2.405
+[17:56:52] [DBG] step=1031  cmd=turn_left      act=[-0.016,-0.016,-0.456]  body_vel=[-0.015,-0.026,+1.032]  reward=2.927
+[17:56:52] [DBG] step=1041  cmd=turn_left      act=[-0.010,-0.007,-0.442]  body_vel=[-0.001,+0.004,+0.933]  reward=2.915
+[17:56:52] [DBG] step=1051  cmd=turn_left      act=[-0.011,-0.012,-0.438]  body_vel=[-0.012,-0.010,+1.042]  reward=2.922
+[17:56:53] [DBG] step=1061  cmd=turn_left      act=[-0.010,-0.003,-0.448]  body_vel=[-0.015,-0.009,+1.016]  reward=2.967
+[17:56:53] [DBG] step=1071  cmd=turn_left      act=[-0.010,-0.011,-0.451]  body_vel=[-0.007,-0.007,+0.956]  reward=2.960
+[17:56:53] [DBG] step=1081  cmd=turn_left      act=[-0.007,-0.017,-0.445]  body_vel=[+0.013,-0.032,+0.805]  reward=2.331
+[17:56:53] [DBG] step=1091  cmd=turn_left      act=[-0.006,-0.017,-0.433]  body_vel=[-0.010,-0.006,+0.963]  reward=2.969
+[17:56:53] [DBG] step=1101  cmd=turn_left      act=[-0.012,-0.012,-0.436]  body_vel=[-0.027,-0.021,+1.102]  reward=2.690
+[17:56:53] [DBG] step=1111  cmd=turn_left      act=[-0.005,-0.002,-0.445]  body_vel=[+0.009,-0.010,+1.007]  reward=2.979
+[17:56:53] [DBG] step=1121  cmd=turn_left      act=[-0.010,-0.001,-0.449]  body_vel=[-0.002,+0.016,+1.003]  reward=2.980
+[17:56:53] [DBG] step=1131  cmd=turn_left      act=[+0.003,-0.007,-0.454]  body_vel=[-0.013,+0.016,+0.935]  reward=2.910
+[17:56:54] [DBG] step=1141  cmd=turn_left      act=[-0.009,-0.004,-0.440]  body_vel=[-0.018,+0.009,+1.018]  reward=2.962
+[17:56:54] [DBG] step=1151  cmd=turn_left      act=[-0.011,+0.003,-0.446]  body_vel=[-0.008,-0.011,+0.877]  reward=2.709
+[17:56:54] [DBG] step=1161  cmd=turn_left      act=[-0.011,+0.008,-0.444]  body_vel=[-0.001,-0.014,+1.102]  reward=2.713
+[17:56:54] [DBG] step=1171  cmd=turn_left      act=[-0.006,+0.001,-0.452]  body_vel=[-0.011,+0.005,+1.001]  reward=2.984
+[17:56:54] [DBG] step=1181  cmd=turn_left      act=[-0.009,-0.000,-0.453]  body_vel=[-0.015,-0.005,+1.000]  reward=2.982
+[17:56:54] [DBG] step=1191  cmd=turn_left      act=[-0.007,-0.017,-0.439]  body_vel=[-0.007,-0.009,+1.016]  reward=2.970
+[17:56:54] step= 1200  cmd=turn_left      compliance=0.557  speed=0.273m/s  lin_err=0.0383  ang_err=0.0123  ep=4
+[17:56:54] [DBG] step=1201  cmd=turn_left      act=[-0.006,-0.010,-0.441]  body_vel=[-0.033,-0.006,+0.913]  reward=2.827
+[17:56:54] [DBG] step=1211  cmd=turn_left      act=[-0.010,-0.007,-0.435]  body_vel=[-0.030,-0.010,+0.962]  reward=2.947
+[17:56:54] [DBG] step=1221  cmd=turn_left      act=[-0.026,-0.018,-0.451]  body_vel=[-0.021,+0.034,+0.874]  reward=2.662
+[17:56:55] [DBG] step=1231  cmd=turn_left      act=[-0.013,-0.017,-0.440]  body_vel=[-0.040,-0.013,+1.106]  reward=2.659
+[17:56:55] [DBG] step=1241  cmd=turn_left      act=[-0.019,-0.006,-0.447]  body_vel=[-0.005,-0.019,+1.019]  reward=2.961
+[17:56:55] [Sequential] 방향 6/6: turn_right
+[17:56:55] [DBG] step=1251  cmd=turn_right     act=[-0.015,-0.098,+0.402]  body_vel=[-0.031,-0.039,-0.617]  reward=1.592
+[17:56:55] [DBG] step=1261  cmd=turn_right     act=[-0.018,-0.068,+0.402]  body_vel=[-0.015,-0.044,-0.813]  reward=2.345
+[17:56:55] [DBG] step=1271  cmd=turn_right     act=[-0.021,-0.062,+0.397]  body_vel=[+0.002,-0.029,-0.814]  reward=2.382
+[17:56:55] [DBG] step=1281  cmd=turn_right     act=[-0.005,-0.057,+0.415]  body_vel=[+0.016,-0.029,-0.747]  reward=2.049
+[17:56:55] [DBG] step=1291  cmd=turn_right     act=[-0.009,-0.067,+0.398]  body_vel=[+0.009,-0.022,-0.959]  reward=2.953
+[17:56:55] [DBG] step=1301  cmd=turn_right     act=[-0.012,-0.066,+0.396]  body_vel=[+0.006,-0.031,-0.680]  reward=1.789
+[17:56:55] [DBG] step=1311  cmd=turn_right     act=[-0.006,-0.052,+0.410]  body_vel=[+0.014,-0.037,-0.875]  reward=2.669
+[17:56:56] [DBG] step=1321  cmd=turn_right     act=[+0.005,-0.045,+0.416]  body_vel=[-0.027,-0.031,-0.804]  reward=2.312
+[17:56:56] [DBG] step=1331  cmd=turn_right     act=[-0.014,-0.065,+0.403]  body_vel=[+0.002,-0.028,-0.906]  reward=2.811
+[17:56:56] [DBG] step=1341  cmd=turn_right     act=[-0.014,-0.063,+0.404]  body_vel=[+0.020,-0.031,-0.856]  reward=2.581
+[17:56:56] [DBG] step=1351  cmd=turn_right     act=[-0.014,-0.064,+0.407]  body_vel=[+0.004,-0.036,-0.819]  reward=2.400
+[17:56:56] [DBG] step=1361  cmd=turn_right     act=[-0.009,-0.057,+0.411]  body_vel=[+0.006,-0.029,-0.730]  reward=1.978
+[17:56:56] [DBG] step=1371  cmd=turn_right     act=[-0.011,-0.065,+0.404]  body_vel=[+0.011,-0.028,-0.782]  reward=2.221
+[17:56:56] [DBG] step=1381  cmd=turn_right     act=[-0.014,-0.067,+0.401]  body_vel=[+0.022,-0.034,-0.896]  reward=2.755
+[17:56:56] [DBG] step=1391  cmd=turn_right     act=[-0.014,-0.067,+0.401]  body_vel=[+0.020,-0.022,-0.811]  reward=2.368
+[17:56:57] step= 1400  cmd=turn_right     compliance=0.491  speed=0.238m/s  lin_err=0.0329  ang_err=0.0153  ep=5
+[17:56:57] [DBG] step=1401  cmd=turn_right     act=[-0.022,-0.079,+0.398]  body_vel=[+0.014,-0.027,-0.828]  reward=2.454
+[17:56:57] [DBG] step=1411  cmd=turn_right     act=[-0.022,-0.070,+0.410]  body_vel=[+0.001,-0.050,-0.710]  reward=1.857
+[17:56:57] [DBG] step=1421  cmd=turn_right     act=[-0.023,-0.094,+0.391]  body_vel=[-0.000,-0.014,-0.906]  reward=2.825
+[17:56:57] [DBG] step=1431  cmd=turn_right     act=[-0.019,-0.072,+0.403]  body_vel=[+0.018,-0.042,-0.734]  reward=1.967
+[17:56:57] [DBG] step=1441  cmd=turn_right     act=[-0.017,-0.062,+0.405]  body_vel=[+0.010,-0.032,-0.837]  reward=2.493
+[17:56:57] [DBG] step=1451  cmd=turn_right     act=[-0.016,-0.056,+0.398]  body_vel=[-0.013,-0.003,-0.910]  reward=2.838
+[17:56:57] [DBG] step=1461  cmd=turn_right     act=[-0.013,-0.066,+0.389]  body_vel=[+0.006,-0.010,-0.719]  reward=1.948
+[17:56:57] [DBG] step=1471  cmd=turn_right     act=[-0.006,-0.064,+0.407]  body_vel=[-0.007,-0.028,-0.848]  reward=2.555
+[17:56:57] [DBG] step=1481  cmd=turn_right     act=[-0.002,-0.059,+0.404]  body_vel=[+0.026,-0.039,-0.915]  reward=2.811
+[17:56:58] [DBG] step=1491  cmd=turn_right     act=[-0.009,-0.065,+0.396]  body_vel=[+0.028,-0.045,-0.874]  reward=2.635
+[17:56:58] [Sequential] 방향 1/6: forward
+[17:56:58] [DBG] step=1501  cmd=forward        act=[+0.000,+0.906,+0.000]  body_vel=[+0.039,+0.234,-0.280]  reward=0.892
+[17:56:58] [DBG] step=1511  cmd=forward        act=[+0.000,+0.988,+0.000]  body_vel=[+0.006,+0.401,+0.057]  reward=2.696
+[17:56:58] [DBG] step=1521  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.019,+0.446,-0.018]  reward=2.907
+[17:56:58] [DBG] step=1531  cmd=forward        act=[+0.000,+0.998,+0.000]  body_vel=[-0.001,+0.463,+0.041]  reward=2.918
+[17:56:58] [DBG] step=1541  cmd=forward        act=[+0.000,+0.997,+0.000]  body_vel=[+0.007,+0.458,+0.148]  reward=2.504
+[17:56:58] [DBG] step=1551  cmd=forward        act=[+0.000,+0.980,+0.000]  body_vel=[+0.002,+0.457,+0.003]  reward=2.946
+[17:56:58] [DBG] step=1561  cmd=forward        act=[+0.000,+0.987,+0.000]  body_vel=[-0.004,+0.450,+0.043]  reward=2.886
+[17:56:58] [DBG] step=1571  cmd=forward        act=[+0.000,+0.994,+0.000]  body_vel=[+0.009,+0.461,+0.143]  reward=2.534
+[17:56:59] [DBG] step=1581  cmd=forward        act=[+0.000,+0.987,+0.000]  body_vel=[-0.003,+0.459,+0.001]  reward=2.951
+[17:56:59] [DBG] step=1591  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.012,+0.463,+0.110]  reward=2.689
+[17:56:59] step= 1600  cmd=forward        compliance=0.491  speed=0.238m/s  lin_err=0.0300  ang_err=0.0161  ep=6
+[17:56:59] [DBG] step=1601  cmd=forward        act=[+0.000,+0.993,+0.000]  body_vel=[-0.006,+0.457,+0.002]  reward=2.946
+[17:56:59] [DBG] step=1611  cmd=forward        act=[+0.000,+0.991,+0.000]  body_vel=[+0.003,+0.452,+0.160]  reward=2.432
+[17:56:59] [DBG] step=1621  cmd=forward        act=[+0.000,+0.991,+0.000]  body_vel=[-0.010,+0.463,-0.047]  reward=2.901
+[17:56:59] [DBG] step=1631  cmd=forward        act=[+0.000,+0.989,+0.000]  body_vel=[+0.004,+0.456,+0.048]  reward=2.889
+[17:56:59] [DBG] step=1641  cmd=forward        act=[+0.000,+0.990,+0.000]  body_vel=[+0.000,+0.463,+0.011]  reward=2.955
+[17:56:59] [DBG] step=1651  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.002,+0.460,-0.046]  reward=2.903
+[17:57:00] [DBG] step=1661  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[-0.013,+0.453,+0.133]  reward=2.565
+[17:57:00] [DBG] step=1671  cmd=forward        act=[+0.000,+0.995,+0.000]  body_vel=[-0.000,+0.457,-0.020]  reward=2.938
+[17:57:00] [DBG] step=1681  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.010,+0.465,+0.144]  reward=2.536
+[17:57:00] [DBG] step=1691  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[-0.003,+0.463,-0.012]  reward=2.954
+[17:57:00] [DBG] step=1701  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.007,+0.461,+0.091]  reward=2.768
+[17:57:00] [DBG] step=1711  cmd=forward        act=[+0.000,+0.999,+0.000]  body_vel=[-0.008,+0.464,+0.042]  reward=2.915
+[17:57:00] [DBG] step=1721  cmd=forward        act=[+0.000,+0.999,+0.000]  body_vel=[+0.007,+0.452,+0.186]  reward=2.296
+[17:57:01] [DBG] step=1731  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[-0.009,+0.461,-0.041]  reward=2.912
+[17:57:01] [DBG] step=1741  cmd=forward        act=[+0.000,+1.000,+0.000]  body_vel=[+0.006,+0.456,+0.122]  reward=2.625
+[17:57:01] [Sequential] 방향 2/6: backward
+[17:57:01] [DBG] step=1751  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.001,-0.299,+0.019]  reward=2.269
+[17:57:01] [DBG] step=1761  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.005,-0.431,+0.024]  reward=2.867
+[17:57:01] [DBG] step=1771  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.006,-0.453,-0.038]  reward=2.904
+[17:57:01] [DBG] step=1781  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[-0.011,-0.460,-0.044]  reward=2.903
+[17:57:01] [DBG] step=1791  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.007,-0.458,-0.006]  reward=2.946
+[17:57:01] step= 1800  cmd=backward       compliance=0.535  speed=0.261m/s  lin_err=0.0274  ang_err=0.0153  ep=7
+[17:57:01] [DBG] step=1801  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.015,-0.451,+0.063]  reward=2.837
+[17:57:01] [DBG] step=1811  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.460,+0.019]  reward=2.944
+[17:57:02] [DBG] step=1821  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.005,-0.470,-0.004]  reward=2.967
+[17:57:02] [DBG] step=1831  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.003,-0.462,-0.016]  reward=2.949
+[17:57:02] [DBG] step=1841  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.019,-0.457,+0.031]  reward=2.915
+[17:57:02] [DBG] step=1851  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.003,-0.460,-0.072]  reward=2.833
+[17:57:02] [DBG] step=1861  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.467,-0.074]  reward=2.837
+[17:57:02] [DBG] step=1871  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.003,-0.464,+0.016]  reward=2.953
+[17:57:02] [DBG] step=1881  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.009,-0.455,-0.089]  reward=2.759
+[17:57:02] [DBG] step=1891  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.007,-0.461,+0.078]  reward=2.815
+[17:57:03] [DBG] step=1901  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.465,-0.039]  reward=2.924
+[17:57:03] [DBG] step=1911  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.013,-0.452,+0.006]  reward=2.931
+[17:57:03] [DBG] step=1921  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.460,-0.044]  reward=2.906
+[17:57:03] [DBG] step=1931  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.005,-0.453,-0.030]  reward=2.915
+[17:57:03] [DBG] step=1941  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.012,-0.460,+0.089]  reward=2.771
+[17:57:03] [DBG] step=1951  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.004,-0.452,-0.099]  reward=2.717
+[17:57:03] [DBG] step=1961  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.011,-0.460,+0.081]  reward=2.799
+[17:57:03] [DBG] step=1971  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.007,-0.455,-0.143]  reward=2.525
+[17:57:03] [DBG] step=1981  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.006,-0.458,+0.036]  reward=2.917
+[17:57:04] [DBG] step=1991  cmd=backward       act=[+0.000,-1.000,+0.000]  body_vel=[+0.014,-0.453,-0.015]  reward=2.929
+[17:57:04] [Sequential] 방향 3/6: strafe_left
+[17:57:04] step= 2000  cmd=strafe_left    compliance=0.570  speed=0.279m/s  lin_err=0.0255  ang_err=0.0142  ep=8
+[17:57:04] [DBG] step=2001  cmd=strafe_left    act=[-0.424,+0.000,+0.000]  body_vel=[-0.181,+0.009,-0.099]  reward=1.566
+[17:57:04] [DBG] step=2011  cmd=strafe_left    act=[-0.430,+0.000,+0.000]  body_vel=[-0.225,-0.003,+0.044]  reward=1.890
+[17:57:04] [DBG] step=2021  cmd=strafe_left    act=[-0.425,+0.000,+0.000]  body_vel=[-0.204,-0.008,-0.098]  reward=1.646
+[17:57:04] [DBG] step=2031  cmd=strafe_left    act=[-0.433,+0.000,+0.000]  body_vel=[-0.205,+0.007,+0.015]  reward=1.856
+[17:57:04] [DBG] step=2041  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.214,+0.007,-0.047]  reward=1.842
+[17:57:04] [DBG] step=2051  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.217,-0.003,-0.053]  reward=1.841
+[17:57:04] [DBG] step=2061  cmd=strafe_left    act=[-0.430,+0.000,+0.000]  body_vel=[-0.209,+0.010,-0.057]  reward=1.798
+[17:57:04] [DBG] step=2071  cmd=strafe_left    act=[-0.425,+0.000,+0.000]  body_vel=[-0.207,+0.015,-0.175]  reward=1.288
+[17:57:05] [DBG] step=2081  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.207,+0.006,-0.091]  reward=1.682
+[17:57:05] [DBG] step=2091  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.195,+0.022,-0.083]  reward=1.668
+[17:57:05] [DBG] step=2101  cmd=strafe_left    act=[-0.431,+0.000,+0.000]  body_vel=[-0.206,+0.002,+0.004]  reward=1.864
+[17:57:05] [DBG] step=2111  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.202,+0.005,+0.145]  reward=1.422
+[17:57:05] [DBG] step=2121  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.214,+0.003,-0.068]  reward=1.787
+[17:57:05] [DBG] step=2131  cmd=strafe_left    act=[-0.425,+0.000,+0.000]  body_vel=[-0.205,+0.007,-0.074]  reward=1.737
+[17:57:05] [DBG] step=2141  cmd=strafe_left    act=[-0.430,+0.000,+0.000]  body_vel=[-0.198,+0.010,+0.141]  reward=1.428
+[17:57:06] [DBG] step=2151  cmd=strafe_left    act=[-0.425,+0.000,+0.000]  body_vel=[-0.202,-0.005,-0.092]  reward=1.661
+[17:57:06] [DBG] step=2161  cmd=strafe_left    act=[-0.428,+0.000,+0.000]  body_vel=[-0.194,+0.009,-0.083]  reward=1.669
+[17:57:06] [DBG] step=2171  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.188,+0.003,+0.125]  reward=1.476
+[17:57:06] [DBG] step=2181  cmd=strafe_left    act=[-0.427,+0.000,+0.000]  body_vel=[-0.212,+0.002,-0.009]  reward=1.885
+[17:57:06] [DBG] step=2191  cmd=strafe_left    act=[-0.422,+0.000,+0.000]  body_vel=[-0.201,+0.012,+0.002]  reward=1.847
+[17:57:06] step= 2200  cmd=strafe_left    compliance=0.556  speed=0.273m/s  lin_err=0.0310  ang_err=0.0134  ep=8
+[17:57:06] [DBG] step=2201  cmd=strafe_left    act=[-0.416,+0.000,+0.000]  body_vel=[-0.191,+0.003,+0.098]  reward=1.601
+[17:57:06] [DBG] step=2211  cmd=strafe_left    act=[-0.416,+0.000,+0.000]  body_vel=[-0.203,+0.000,-0.092]  reward=1.666
+[17:57:07] [DBG] step=2221  cmd=strafe_left    act=[-0.424,+0.000,+0.000]  body_vel=[-0.220,+0.002,+0.013]  reward=1.913
+[17:57:07] [DBG] step=2231  cmd=strafe_left    act=[-0.419,+0.000,+0.000]  body_vel=[-0.198,+0.007,-0.134]  reward=1.465
+[17:57:07] [DBG] step=2241  cmd=turn_right     act=[-0.420,+0.000,+0.000]  body_vel=[+0.000,+0.000,+0.000]  reward=1.689
+[17:57:07] [Sequential] 방향 4/6: strafe_right
+[17:57:07] [DBG] step=2251  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.204,-0.019,+0.180]  reward=1.252
+[17:57:07] [DBG] step=2261  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.226,-0.003,+0.071]  reward=1.824
+[17:57:07] [DBG] step=2271  cmd=strafe_right   act=[+0.467,+0.000,+0.000]  body_vel=[+0.228,+0.002,+0.115]  reward=1.663
+[17:57:07] [DBG] step=2281  cmd=strafe_right   act=[+0.465,+0.000,+0.000]  body_vel=[+0.222,-0.004,+0.071]  reward=1.807
+[17:57:08] [DBG] step=2291  cmd=strafe_right   act=[+0.470,+0.000,+0.000]  body_vel=[+0.217,+0.006,+0.047]  reward=1.854
+[17:57:08] [DBG] step=2301  cmd=strafe_right   act=[+0.464,+0.000,+0.000]  body_vel=[+0.216,+0.009,+0.174]  reward=1.326
+[17:57:08] [DBG] step=2311  cmd=strafe_right   act=[+0.473,+0.000,+0.000]  body_vel=[+0.212,-0.008,+0.019]  reward=1.879
+[17:57:08] [DBG] step=2321  cmd=strafe_right   act=[+0.480,+0.000,+0.000]  body_vel=[+0.201,-0.023,+0.049]  reward=1.789
+[17:57:08] [DBG] step=2331  cmd=strafe_right   act=[+0.479,+0.000,+0.000]  body_vel=[+0.224,-0.003,+0.015]  reward=1.927
+[17:57:08] [DBG] step=2341  cmd=strafe_right   act=[+0.487,+0.000,+0.000]  body_vel=[+0.235,+0.008,+0.185]  reward=1.342
+[17:57:08] [DBG] step=2351  cmd=strafe_right   act=[+0.477,+0.000,+0.000]  body_vel=[+0.216,-0.002,+0.015]  reward=1.897
+[17:57:08] [DBG] step=2361  cmd=strafe_right   act=[+0.482,+0.000,+0.000]  body_vel=[+0.214,+0.012,-0.054]  reward=1.824
+[17:57:09] [DBG] step=2371  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.221,+0.004,+0.031]  reward=1.898
+[17:57:09] [DBG] step=2381  cmd=strafe_right   act=[+0.471,+0.000,+0.000]  body_vel=[+0.222,-0.000,-0.042]  reward=1.886
+[17:57:09] [DBG] step=2391  cmd=strafe_right   act=[+0.476,+0.000,+0.000]  body_vel=[+0.201,-0.020,+0.040]  reward=1.809
+[17:57:09] step= 2400  cmd=strafe_right   compliance=0.545  speed=0.268m/s  lin_err=0.0354  ang_err=0.0131  ep=9
+[17:57:09] [DBG] step=2401  cmd=strafe_right   act=[+0.476,+0.000,+0.000]  body_vel=[+0.234,-0.003,-0.066]  reward=1.871
+[17:57:09] [DBG] step=2411  cmd=strafe_right   act=[+0.475,+0.000,+0.000]  body_vel=[+0.213,+0.004,-0.032]  reward=1.865
+[17:57:09] [DBG] step=2421  cmd=strafe_right   act=[+0.488,+0.000,+0.000]  body_vel=[+0.214,-0.003,-0.152]  reward=1.432
+[17:57:09] [DBG] step=2431  cmd=strafe_right   act=[+0.489,+0.000,+0.000]  body_vel=[+0.216,+0.007,-0.024]  reward=1.888
+[17:57:10] [DBG] step=2441  cmd=strafe_right   act=[+0.487,+0.000,+0.000]  body_vel=[+0.220,-0.010,+0.126]  reward=1.582
+[17:57:10] [DBG] step=2451  cmd=strafe_right   act=[+0.485,+0.000,+0.000]  body_vel=[+0.208,-0.003,-0.135]  reward=1.495
+[17:57:10] [DBG] step=2461  cmd=strafe_right   act=[+0.491,+0.000,+0.000]  body_vel=[+0.253,-0.001,+0.191]  reward=1.393
+[17:57:10] [DBG] step=2471  cmd=strafe_right   act=[+0.481,+0.000,+0.000]  body_vel=[+0.242,+0.001,+0.192]  reward=1.337
+[17:57:10] [DBG] step=2481  cmd=strafe_right   act=[+0.492,+0.000,+0.000]  body_vel=[+0.224,-0.002,+0.036]  reward=1.904
+[17:57:10] [Sequential] 방향 5/6: turn_left
+[17:57:10] [DBG] step=2491  cmd=turn_left      act=[-0.061,+0.020,-0.505]  body_vel=[-0.000,-0.000,+0.000]  reward=1.490
+[17:57:10] [DBG] step=2501  cmd=turn_left      act=[-0.011,-0.014,-0.450]  body_vel=[-0.035,-0.020,+1.102]  reward=2.679
+[17:57:11] [DBG] step=2511  cmd=turn_left      act=[-0.012,-0.003,-0.461]  body_vel=[-0.007,-0.014,+1.028]  reward=2.950
+[17:57:11] [DBG] step=2521  cmd=turn_left      act=[-0.007,-0.013,-0.455]  body_vel=[-0.005,-0.004,+0.995]  reward=2.988
+[17:57:11] [DBG] step=2531  cmd=turn_left      act=[-0.010,-0.005,-0.451]  body_vel=[-0.028,-0.003,+1.087]  reward=2.762
+[17:57:11] [DBG] step=2541  cmd=turn_left      act=[-0.013,-0.002,-0.445]  body_vel=[-0.021,-0.010,+1.067]  reward=2.841
+[17:57:11] [DBG] step=2551  cmd=turn_left      act=[-0.011,+0.003,-0.451]  body_vel=[-0.001,-0.009,+1.073]  reward=2.831
+[17:57:11] [DBG] step=2561  cmd=turn_left      act=[-0.005,-0.013,-0.460]  body_vel=[-0.016,-0.002,+0.987]  reward=2.984
+[17:57:11] [DBG] step=2571  cmd=turn_left      act=[-0.015,-0.015,-0.453]  body_vel=[-0.020,-0.020,+1.052]  reward=2.882
+[17:57:12] [DBG] step=2581  cmd=turn_left      act=[-0.012,-0.023,-0.451]  body_vel=[-0.014,-0.003,+1.169]  reward=2.381
+[17:57:12] [DBG] step=2591  cmd=turn_left      act=[-0.016,-0.007,-0.441]  body_vel=[-0.019,+0.001,+1.041]  reward=2.920
+[17:57:12] step= 2600  cmd=turn_left      compliance=0.524  speed=0.256m/s  lin_err=0.0353  ang_err=0.0134  ep=10
+[17:57:12] [DBG] step=2601  cmd=turn_left      act=[-0.006,-0.001,-0.469]  body_vel=[+0.013,+0.008,+0.947]  reward=2.940
+[17:57:12] [DBG] step=2611  cmd=turn_left      act=[-0.011,-0.004,-0.463]  body_vel=[+0.008,+0.004,+0.872]  reward=2.690
+[17:57:12] [DBG] step=2621  cmd=turn_left      act=[-0.009,-0.002,-0.452]  body_vel=[-0.005,-0.014,+1.140]  reward=2.531
+[17:57:12] [DBG] step=2631  cmd=turn_left      act=[-0.011,-0.006,-0.449]  body_vel=[-0.024,+0.014,+1.117]  reward=2.632
+[17:57:12] [DBG] step=2641  cmd=turn_left      act=[-0.010,-0.007,-0.450]  body_vel=[-0.028,+0.036,+1.133]  reward=2.524
+[17:57:13] [DBG] step=2651  cmd=turn_left      act=[-0.009,-0.004,-0.458]  body_vel=[-0.008,+0.002,+0.976]  reward=2.983
+[17:57:13] [DBG] step=2661  cmd=turn_left      act=[-0.014,-0.003,-0.456]  body_vel=[-0.012,+0.005,+1.036]  reward=2.935
+[17:57:13] [DBG] step=2671  cmd=turn_left      act=[-0.013,-0.008,-0.455]  body_vel=[-0.008,-0.003,+0.995]  reward=2.988
+[17:57:13] [DBG] step=2681  cmd=turn_left      act=[-0.006,-0.013,-0.450]  body_vel=[-0.016,-0.015,+0.958]  reward=2.954
+[17:57:13] [DBG] step=2691  cmd=turn_left      act=[-0.009,-0.011,-0.449]  body_vel=[+0.006,-0.005,+1.049]  reward=2.908
+[17:57:13] [DBG] step=2701  cmd=turn_left      act=[-0.017,-0.010,-0.446]  body_vel=[-0.010,-0.017,+1.017]  reward=2.964
+[17:57:13] [DBG] step=2711  cmd=turn_left      act=[-0.011,-0.006,-0.460]  body_vel=[+0.000,+0.015,+0.802]  reward=2.337
+[17:57:14] [DBG] step=2721  cmd=turn_left      act=[-0.021,-0.009,-0.458]  body_vel=[-0.006,+0.020,+0.945]  reward=2.931
+[17:57:14] [DBG] step=2731  cmd=turn_left      act=[-0.009,-0.013,-0.449]  body_vel=[-0.025,-0.014,+1.132]  reward=2.555
+[17:57:14] [Sequential] 방향 6/6: turn_right
+[17:57:14] [DBG] step=2741  cmd=turn_right     act=[-0.027,-0.028,+0.428]  body_vel=[-0.019,-0.041,-0.066]  reward=1.437
+[17:57:14] [DBG] step=2751  cmd=turn_right     act=[-0.020,-0.063,+0.403]  body_vel=[-0.018,-0.043,-0.732]  reward=1.958
+[17:57:14] [DBG] step=2761  cmd=turn_right     act=[-0.020,-0.058,+0.392]  body_vel=[-0.009,-0.020,-0.773]  reward=2.186
+[17:57:14] [DBG] step=2771  cmd=turn_right     act=[-0.016,-0.048,+0.409]  body_vel=[-0.011,-0.028,-0.791]  reward=2.263
+[17:57:14] [DBG] step=2781  cmd=turn_right     act=[-0.017,-0.051,+0.404]  body_vel=[+0.002,-0.029,-0.802]  reward=2.324
+[17:57:15] [DBG] step=2791  cmd=turn_right     act=[-0.021,-0.059,+0.404]  body_vel=[-0.019,-0.015,-0.848]  reward=2.564
+[17:57:15] step= 2800  cmd=turn_right     compliance=0.494  speed=0.239m/s  lin_err=0.0328  ang_err=0.0143  ep=11
+[17:57:15] [DBG] step=2801  cmd=turn_right     act=[-0.023,-0.058,+0.393]  body_vel=[+0.015,-0.022,-0.857]  reward=2.606
+[17:57:15] [DBG] step=2811  cmd=turn_right     act=[-0.019,-0.055,+0.396]  body_vel=[-0.008,-0.012,-0.904]  reward=2.817
+[17:57:15] [DBG] step=2821  cmd=turn_right     act=[-0.019,-0.057,+0.402]  body_vel=[+0.009,-0.030,-0.800]  reward=2.307
+[17:57:15] [DBG] step=2831  cmd=turn_right     act=[-0.021,-0.061,+0.403]  body_vel=[-0.002,-0.020,-0.730]  reward=1.987
+[17:57:15] [DBG] step=2841  cmd=turn_right     act=[-0.028,-0.057,+0.397]  body_vel=[-0.008,-0.024,-0.815]  reward=2.393
+[17:57:15] [DBG] step=2851  cmd=turn_right     act=[-0.029,-0.065,+0.388]  body_vel=[+0.005,-0.017,-0.957]  reward=2.956
+[17:57:16] [DBG] step=2861  cmd=turn_right     act=[-0.017,-0.059,+0.402]  body_vel=[-0.017,-0.013,-0.934]  reward=2.906
+[17:57:16] [DBG] step=2871  cmd=turn_right     act=[-0.013,-0.053,+0.397]  body_vel=[+0.009,-0.028,-0.860]  reward=2.615
+[17:57:16] [DBG] step=2881  cmd=turn_right     act=[-0.012,-0.045,+0.408]  body_vel=[-0.020,-0.017,-0.862]  reward=2.626
+[17:57:16] [DBG] step=2891  cmd=turn_right     act=[-0.019,-0.042,+0.400]  body_vel=[+0.000,-0.023,-0.889]  reward=2.752
+[17:57:16] [DBG] step=2901  cmd=turn_right     act=[-0.017,-0.043,+0.411]  body_vel=[-0.013,-0.012,-0.772]  reward=2.185
+[17:57:16] [DBG] step=2911  cmd=turn_right     act=[-0.016,-0.055,+0.401]  body_vel=[-0.018,-0.018,-0.903]  reward=2.804
+[17:57:16] [DBG] step=2921  cmd=turn_right     act=[-0.014,-0.047,+0.400]  body_vel=[-0.015,-0.026,-0.807]  reward=2.347
+[17:57:17] [DBG] step=2931  cmd=turn_right     act=[-0.018,-0.066,+0.387]  body_vel=[+0.017,-0.032,-0.911]  reward=2.816
+[17:57:17] [DBG] step=2941  cmd=turn_right     act=[-0.018,-0.049,+0.409]  body_vel=[-0.008,-0.004,-0.875]  reward=2.701
+[17:57:17] [DBG] step=2951  cmd=turn_right     act=[-0.019,-0.053,+0.389]  body_vel=[-0.016,-0.008,-0.947]  reward=2.938
+[17:57:17] [DBG] step=2961  cmd=turn_right     act=[-0.018,-0.055,+0.404]  body_vel=[-0.005,-0.008,-0.885]  reward=2.747
+[17:57:17] [DBG] step=2971  cmd=turn_right     act=[-0.020,-0.065,+0.396]  body_vel=[+0.014,-0.014,-0.782]  reward=2.230
+[17:57:17] [DBG] step=2981  cmd=turn_right     act=[-0.028,-0.074,+0.397]  body_vel=[+0.005,-0.036,-0.916]  reward=2.833
+[17:57:17] [Sequential] 방향 1/6: forward
+[17:57:17] [DBG] step=2991  cmd=forward        act=[+0.000,+0.889,+0.000]  body_vel=[-0.003,+0.067,-0.104]  reward=1.321
+[17:57:18] step= 3000  cmd=forward        compliance=0.468  speed=0.226m/s  lin_err=0.0311  ang_err=0.0149  ep=12
+[17:57:18] FINAL: 3000 steps, 12 ep | compliance=0.4682  speed=0.226m/s  lin_err=0.0311  ang_err=0.0149
+[17:57:18] 
+[17:57:18]     direction  compliance     speed   lin_err   ang_err   steps
+[17:57:18] -----------------------------------------------------------------
+[17:57:18]       forward      0.8645    0.433    0.0105    0.0105     508
+[17:57:18]      backward      0.8835    0.442    0.0064    0.0058     501
+[17:57:18]   strafe_left      0.4036    0.202    0.0897    0.0069     498
+[17:57:18]  strafe_right      0.4405    0.221    0.0790    0.0097     496
+[17:57:18]     turn_left      0.1120    0.021    0.0007    0.0213     497
+[17:57:18]    turn_right      0.0953    0.030    0.0013    0.0350     500

@@ -147,6 +147,10 @@ class Skill2EnvCfg(DirectRLEnvCfg):
     grasp_drop_steps: int = 2
     grasp_timeout_steps: int = 75
 
+    # === Physics tuning ===
+    object_contact_offset: float = 0.005
+    object_rest_offset: float = 0.002
+
     # === Multi-object (v8 동일) ===
     multi_object_json: str = ""
     num_object_categories: int = 12
@@ -460,8 +464,8 @@ class Skill2Env(DirectRLEnv):
                         mass_props=sim_utils.MassPropertiesCfg(mass=obj_mass),
                         collision_props=sim_utils.CollisionPropertiesCfg(
                             collision_enabled=True,
-                            contact_offset=0.005,
-                            rest_offset=0.002,
+                            contact_offset=self.cfg.object_contact_offset,
+                            rest_offset=self.cfg.object_rest_offset,
                         ),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -100.0)),
@@ -514,8 +518,8 @@ class Skill2Env(DirectRLEnv):
                     ),
                     collision_props=sim_utils.CollisionPropertiesCfg(
                         collision_enabled=True,
-                        contact_offset=0.005,
-                        rest_offset=0.002,
+                        contact_offset=self.cfg.object_contact_offset,
+                        rest_offset=self.cfg.object_rest_offset,
                     ),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(pos=(1.5, 0.0, float(self.cfg.object_height))),
@@ -707,8 +711,8 @@ class Skill2Env(DirectRLEnv):
                 ),
                 collision_props=sim_utils.CollisionPropertiesCfg(
                     collision_enabled=True,
-                    contact_offset=0.005,
-                    rest_offset=0.002,
+                    contact_offset=self.cfg.object_contact_offset,
+                    rest_offset=self.cfg.object_rest_offset,
                 ),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=(3.0, 0.0, 0.0)),

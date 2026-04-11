@@ -1,0 +1,509 @@
+===== 2026-04-01 18:24:15 KST sample 1/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230654 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+Iter 1/195 | EVAL | step=0 | S2:2048 S3:0 | hold_dist=[0.060,0.180] hold_hmax=0.065 hold_prog=0.00
+--ALERT--
+2026-04-01T09:22:56Z [414ms] [Error] [omni.ext.plugin] Could not load the dynamic library from /home/jovyan/miniconda3/envs/rl_train/lib/python3.11/site-packages/isaacsim/extscache/omni.iray.libs-0.0.0+8131b85d.lx64.r/bin/iray/libneuray.so. Error: libGLU.so.1: cannot open shared object file: No such file or directory (note that this may be caused by a dependent library)
+
+===== 2026-04-01 18:34:15 KST sample 2/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230710 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=29 | grip=0.350 objZ=0.027 | real=2 wedged=0 | arm1: entry=0.000→now=-0.127
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=174 | grip=0.481 objZ=0.029 | real=1 wedged=0 | arm1: entry=0.000→now=0.172
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=14 | grip=0.458 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.143
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=418 | grip=0.336 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.106
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=62 | grip=0.418 objZ=0.026 | real=2 wedged=0 | arm1: entry=0.000→now=-0.015
+    [S3] PLACE_HOLD! 1 envs step=3082 s3_step=[440] | arm1: entry=[-0.1604156643152237]→now=[2.663027763366699] max=[2.6943295001983643] | objZ: entry=[0.17844468355178833]→now=[0.0591803714632988] | grip=[0.33724620938301086] src_dst=[0.1794189065694809]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=19 | grip=0.456 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.189
+    [S3] PLACE_HOLD! 1 envs step=3093 s3_step=[969] | arm1: entry=[-0.08369344472885132]→now=[2.651822566986084] max=[2.651822566986084] | objZ: entry=[0.17745602130889893]→now=[0.06462967395782471] | grip=[0.33911198377609253] src_dst=[0.13003875315189362]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=42 | grip=0.364 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.115
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1721 | grip=0.407 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.072→now=3.207
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=23 | grip=0.314 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.130
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=42 | grip=0.379 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.076
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=32 | grip=0.380 objZ=0.020 | real=2 wedged=0 | arm1: entry=0.000→now=-0.093
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=88 | grip=0.366 objZ=0.034 | real=2 wedged=0 | arm1: entry=0.000→now=-0.013
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=59 | grip=0.345 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.090
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=12 | grip=0.375 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=-0.013
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=16 | grip=0.380 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.197
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=98 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.041→now=0.391
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=55 | grip=0.353 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.142
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=15 | grip=0.472 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.122
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=56 | grip=0.362 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.125
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=158 | grip=0.419 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.094
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=11 | grip=0.483 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.219
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=131 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.070→now=-0.023
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=44 | grip=0.386 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=-0.116
+    [S3] PLACE_HOLD! 1 envs step=3176 s3_step=[447] | arm1: entry=[-0.11679624766111374]→now=[2.514120101928711] max=[2.514120101928711] | objZ: entry=[0.16269634664058685]→now=[0.062998466193676] | grip=[0.3204309940338135] src_dst=[0.10145425796508789]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=25 | grip=0.371 objZ=0.190 | real=0 wedged=1 | arm1: entry=0.000→now=-0.113
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=616 | grip=0.351 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.111
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=24 | grip=0.318 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=-0.128
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=16 | grip=0.410 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.004
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=34 | grip=0.393 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.037
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=109 | grip=0.349 objZ=0.026 | real=1 wedged=0 | arm1: entry=0.000→now=-0.138
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=232 | grip=0.359 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.172
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=9 | grip=0.277 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.129
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=129 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.067→now=0.506
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1506 | grip=0.283 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.211→now=0.826
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=88 | grip=0.366 objZ=0.022 | real=1 wedged=0 | arm1: entry=0.000→now=-0.134
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.409 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.114
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=590 | grip=0.339 objZ=0.027 | real=2 wedged=0 | arm1: entry=-0.068→now=0.190
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.495 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.144
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.414 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.001
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=13 | grip=0.432 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.011
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=11 | grip=0.438 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.022
+    [S3] PLACE_HOLD! 1 envs step=3226 s3_step=[1769] | arm1: entry=[-0.029968777671456337]→now=[2.9773364067077637] max=[2.9774844646453857] | objZ: entry=[0.21752935647964478]→now=[0.06400193274021149] | grip=[0.3184588551521301] src_dst=[0.06289294362068176]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=21 | grip=0.324 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.133
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=114 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.092→now=0.412
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=22 | grip=0.372 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.117
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=373 | grip=0.350 objZ=0.034 | real=2 wedged=0 | arm1: entry=0.000→now=0.012
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=13 | grip=0.333 objZ=0.209 | real=1 wedged=1 | arm1: entry=0.000→now=0.311
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=18 | grip=0.349 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.077
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=193 | grip=0.340 objZ=0.024 | real=1 wedged=0 | arm1: entry=0.000→now=-0.053
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.371 objZ=0.023 | real=1 wedged=0 | arm1: entry=0.000→now=-0.178
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=14 | grip=0.383 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.040
+    [S3] PLACE_HOLD! 2 envs step=3270 s3_step=[455, 1648] | arm1: entry=[-0.1281908005475998, -0.08022520691156387]→now=[2.6946959495544434, 2.852932929992676] max=[2.6946959495544434, 2.9853219985961914] | objZ: entry=[0.19048349559307098, 0.1563422828912735]→now=[0.061541199684143066, 0.03716122359037399] | grip=[0.32188722491264343, 0.44991424679756165] src_dst=[0.11314159631729126, 0.1764804869890213]
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=221 | grip=0.336 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.115
+    [S3] PLACE_HOLD reset: 2 envs
+--ALERT--
+
+===== 2026-04-01 18:44:15 KST sample 3/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230786 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=141 | grip=0.424 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.134
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=143 | grip=0.344 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.130
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=30 | grip=0.304 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.139
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=348 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.280→now=0.602
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=134 | grip=0.363 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.002
+    [S3] PLACE_HOLD! 1 envs step=986 s3_step=[1916] | arm1: entry=[-0.08229411393404007]→now=[2.8989450931549072] max=[2.9069530963897705] | objZ: entry=[0.18475313484668732]→now=[0.05521557107567787] | grip=[0.3272778391838074] src_dst=[0.17717386782169342]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=988 s3_step=[1468] | arm1: entry=[-0.06505540013313293]→now=[3.0002329349517822] max=[3.0985283851623535] | objZ: entry=[0.2062128186225891]→now=[0.04212554544210434] | grip=[0.3408462107181549] src_dst=[0.1763496994972229]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=38 | grip=0.320 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.155
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=16 | grip=0.378 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.045
+    [S3] PLACE_HOLD! 1 envs step=1001 s3_step=[359] | arm1: entry=[-0.04323439300060272]→now=[2.636284351348877] max=[2.636284351348877] | objZ: entry=[0.1785476952791214]→now=[0.06318771839141846] | grip=[0.311308890581131] src_dst=[0.08875465393066406]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=60 | grip=0.330 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.124
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=27 | grip=0.307 objZ=0.054 | real=0 wedged=1 | arm1: entry=0.000→now=0.012
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=14 | grip=0.357 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.017
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1796 | grip=0.259 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.292→now=0.737
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1093 | grip=0.327 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.116
+    [S3] PLACE_HOLD! 1 envs step=1010 s3_step=[982] | arm1: entry=[-0.10743918269872665]→now=[2.7615485191345215] max=[2.7949962615966797] | objZ: entry=[0.17066894471645355]→now=[0.03404993191361427] | grip=[0.3118133544921875] src_dst=[0.1769123375415802]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=85 | grip=0.358 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.136
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1697 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.038→now=0.771
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=26 | grip=0.365 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.113
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=18 | grip=0.361 objZ=0.021 | real=1 wedged=0 | arm1: entry=0.000→now=-0.101
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=9 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.117
+    [S3] PLACE_HOLD! 1 envs step=1051 s3_step=[1475] | arm1: entry=[-0.023974133655428886]→now=[2.7115161418914795] max=[2.7115161418914795] | objZ: entry=[0.19122478365898132]→now=[0.06237602233886719] | grip=[0.33304256200790405] src_dst=[0.08319725096225739]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=11 | grip=0.527 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.260
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=577 | grip=0.317 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.209
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=87 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.139→now=-0.097
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=138 | grip=0.345 objZ=0.088 | real=0 wedged=1 | arm1: entry=0.000→now=-0.078
+    [S3] PLACE_HOLD! 1 envs step=1078 s3_step=[434] | arm1: entry=[-0.06732982397079468]→now=[2.576846122741699] max=[2.576846122741699] | objZ: entry=[0.17125457525253296]→now=[0.06346799433231354] | grip=[0.3597337305545807] src_dst=[0.09382225573062897]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=1080 s3_step=[344] | arm1: entry=[-0.1188010722398758]→now=[2.60589599609375] max=[2.60589599609375] | objZ: entry=[0.15764012932777405]→now=[0.06146020442247391] | grip=[0.3818139433860779] src_dst=[0.12081821262836456]
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=8 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.177
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=502 | grip=0.264 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.165→now=0.776
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=76 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.131→now=0.008
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=54 | grip=0.286 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.069
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.386 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.068
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=946 | grip=0.474 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.067→now=2.883
+    [S3] PLACE_HOLD! 1 envs step=1093 s3_step=[535] | arm1: entry=[-0.11526869982481003]→now=[2.50931453704834] max=[2.50931453704834] | objZ: entry=[0.1633000671863556]→now=[0.06261233985424042] | grip=[0.31573134660720825] src_dst=[0.14662674069404602]
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=12 | grip=0.332 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.059
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=491 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.098→now=1.690
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=41 | grip=0.375 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.005
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=246 | grip=0.291 objZ=0.026 | real=2 wedged=0 | arm1: entry=-0.063→now=0.344
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.330 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.100
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=11 | grip=0.296 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.058
+    [S3] PLACE_HOLD! 1 envs step=1114 s3_step=[263] | arm1: entry=[-0.10272960364818573]→now=[2.6827752590179443] max=[2.6827752590179443] | objZ: entry=[0.18386243283748627]→now=[0.06287418305873871] | grip=[0.3192121386528015] src_dst=[0.13049329817295074]
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=50 | grip=0.381 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=-0.069
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=18 | grip=0.369 objZ=0.164 | real=1 wedged=1 | arm1: entry=0.000→now=0.384
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=19 | grip=0.361 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.065
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=73 | grip=0.387 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.010
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=8 | grip=0.314 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.030
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=31 | grip=0.647 objZ=0.176 | real=0 wedged=1 | arm1: entry=0.000→now=0.051
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=174 | grip=0.344 objZ=0.030 | real=1 wedged=0 | arm1: entry=0.000→now=-0.064
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1425 | grip=0.367 objZ=0.037 | real=1 wedged=0 | arm1: entry=0.000→now=0.188
+--ALERT--
+
+===== 2026-04-01 18:54:16 KST sample 4/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230823 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=3803 s3_step=[1291] | arm1: entry=[-0.04685718193650246]→now=[2.7505431175231934] max=[2.7505431175231934] | objZ: entry=[0.20488466322422028]→now=[0.06305362284183502] | grip=[0.31477823853492737] src_dst=[0.1699724644422531]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=3804 s3_step=[1205] | arm1: entry=[-0.13105081021785736]→now=[2.9730312824249268] max=[2.9730312824249268] | objZ: entry=[0.20670874416828156]→now=[0.06272204965353012] | grip=[0.33013254404067993] src_dst=[0.08162257820367813]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1403 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.062→now=0.650
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=33 | grip=0.310 objZ=0.230 | real=0 wedged=1 | arm1: entry=0.000→now=-0.131
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=426 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.039→now=0.711
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=16 | grip=0.398 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.022
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=29 | grip=0.370 objZ=0.037 | real=1 wedged=0 | arm1: entry=0.000→now=-0.056
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=12 | grip=0.301 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.120
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=43 | grip=0.335 objZ=0.027 | real=2 wedged=0 | arm1: entry=0.000→now=-0.025
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.276 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.132
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=102 | grip=0.362 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.113
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=16 | grip=0.354 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.050
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=30 | grip=0.320 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.140
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=44 | grip=0.362 objZ=0.045 | real=1 wedged=1 | arm1: entry=0.000→now=-0.110
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1337 | grip=0.328 objZ=0.036 | real=1 wedged=0 | arm1: entry=0.000→now=0.104
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=177 | grip=0.362 objZ=0.055 | real=1 wedged=1 | arm1: entry=0.000→now=-0.056
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=23 | grip=0.422 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.094
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=47 | grip=0.326 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.115
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1610 | grip=0.276 objZ=0.029 | real=1 wedged=0 | arm1: entry=0.000→now=0.057
+    [S3] PLACE_HOLD! 1 envs step=3899 s3_step=[935] | arm1: entry=[-0.08671581745147705]→now=[3.056624174118042] max=[3.107527256011963] | objZ: entry=[0.19631150364875793]→now=[0.04782147705554962] | grip=[0.3255539536476135] src_dst=[0.06321468204259872]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 2 envs step=3900 s3_step=[461, 443] | arm1: entry=[-0.07911615818738937, -0.10047896206378937]→now=[2.6792995929718018, 2.6166279315948486] max=[2.6792995929718018, 2.6166279315948486] | objZ: entry=[0.1810169517993927, 0.1755369007587433]→now=[0.06326929479837418, 0.06187969073653221] | grip=[0.3393276631832123, 0.332729697227478] src_dst=[0.09854772686958313, 0.11891891807317734]
+    [S3] PLACE_HOLD reset: 2 envs
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=364 | grip=0.312 objZ=0.022 | real=2 wedged=0 | arm1: entry=-0.067→now=0.273
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=36 | grip=0.333 objZ=0.028 | real=1 wedged=0 | arm1: entry=0.000→now=-0.106
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=793 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.049→now=0.455
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=14 | grip=0.396 objZ=0.200 | real=0 wedged=1 | arm1: entry=0.000→now=-0.136
+    [S3] PLACE_HOLD! 1 envs step=3909 s3_step=[1945] | arm1: entry=[-0.09872086346149445]→now=[2.611694097518921] max=[2.687511682510376] | objZ: entry=[0.19067424535751343]→now=[0.05021447688341141] | grip=[0.2674747705459595] src_dst=[0.06486451625823975]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=10 | grip=0.473 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.218
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1539 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.142→now=0.773
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=91 | grip=0.674 objZ=0.027 | real=2 wedged=0 | arm1: entry=0.000→now=0.017
+    [S3] PLACE_HOLD! 1 envs step=3930 s3_step=[400] | arm1: entry=[0.03093087486922741]→now=[2.8137574195861816] max=[2.8137574195861816] | objZ: entry=[0.21962788701057434]→now=[0.06334714591503143] | grip=[0.3110736608505249] src_dst=[0.1286773830652237]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=108 | grip=0.401 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.092
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=22 | grip=0.375 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.027
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=451 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.058→now=0.978
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=30 | grip=0.364 objZ=0.027 | real=2 wedged=0 | arm1: entry=0.000→now=-0.117
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=8 | grip=0.331 objZ=0.378 | real=0 wedged=1 | arm1: entry=0.000→now=0.621
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=285 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.072→now=0.844
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=28 | grip=0.439 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=0.732
+    [S3] PLACE_HOLD! 1 envs step=3958 s3_step=[1797] | arm1: entry=[0.1303432434797287]→now=[2.784940719604492] max=[2.784940719604492] | objZ: entry=[0.24497242271900177]→now=[0.06224953383207321] | grip=[0.3170450031757355] src_dst=[0.16008919477462769]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=3959 s3_step=[260] | arm1: entry=[-0.059639573097229004]→now=[2.6517817974090576] max=[2.6517817974090576] | objZ: entry=[0.17988581955432892]→now=[0.06265836209058762] | grip=[0.3479059338569641] src_dst=[0.13085736334323883]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=284 | grip=0.360 objZ=0.116 | real=0 wedged=1 | arm1: entry=0.000→now=0.161
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1688 | grip=0.336 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.102
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=29 | grip=0.366 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.162
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=165 | grip=0.337 objZ=0.032 | real=1 wedged=0 | arm1: entry=0.000→now=-0.034
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1096 | grip=0.260 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.007→now=0.628
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1268 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.093→now=0.391
+    [S3] PLACE_HOLD! 1 envs step=3982 s3_step=[813] | arm1: entry=[-0.1320165991783142]→now=[2.502174139022827] max=[2.502174139022827] | objZ: entry=[0.16688711941242218]→now=[0.0619620606303215] | grip=[0.3356775641441345] src_dst=[0.08328847587108612]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=72 | grip=0.430 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.819
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=391 | grip=0.344 objZ=0.021 | real=1 wedged=0 | arm1: entry=0.000→now=0.137
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=558 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.042→now=0.631
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=17 | grip=0.379 objZ=0.032 | real=1 wedged=0 | arm1: entry=0.000→now=-0.175
+--ALERT--
+
+===== 2026-04-01 19:04:16 KST sample 5/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230866 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=80 | grip=0.322 objZ=0.020 | real=2 wedged=0 | arm1: entry=-0.049→now=-0.065
+    [S3] PLACE_HOLD! 1 envs step=1608 s3_step=[771] | arm1: entry=[-0.12341903150081635]→now=[2.597642421722412] max=[2.597642421722412] | objZ: entry=[0.16390588879585266]→now=[0.05901817977428436] | grip=[0.3321771025657654] src_dst=[0.1240040734410286]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=1613 s3_step=[332] | arm1: entry=[-0.07899928838014603]→now=[2.72403883934021] max=[2.72403883934021] | objZ: entry=[0.18856564164161682]→now=[0.061785005033016205] | grip=[0.31740066409111023] src_dst=[0.1605222225189209]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=1620 s3_step=[1095] | arm1: entry=[0.07935498654842377]→now=[2.904634952545166] max=[3.2279281616210938] | objZ: entry=[0.17925137281417847]→now=[0.05743732675909996] | grip=[0.3241395354270935] src_dst=[0.1666276603937149]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=138 | grip=0.337 objZ=0.037 | real=1 wedged=0 | arm1: entry=0.000→now=-0.075
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=42 | grip=0.353 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.161
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=855 | grip=0.330 objZ=0.020 | real=2 wedged=0 | arm1: entry=0.002→now=0.287
+    [S3] PLACE_HOLD! 1 envs step=1642 s3_step=[1392] | arm1: entry=[-0.0033902025315910578]→now=[2.681708812713623] max=[2.681708812713623] | objZ: entry=[0.1890404224395752]→now=[0.06184978038072586] | grip=[0.33107826113700867] src_dst=[0.13396765291690826]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=55 | grip=0.321 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.167
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=265 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.099→now=0.971
+    [S3] PLACE_HOLD! 1 envs step=1646 s3_step=[306] | arm1: entry=[-0.12196917086839676]→now=[2.6720175743103027] max=[2.6720175743103027] | objZ: entry=[0.18634049594402313]→now=[0.056049712002277374] | grip=[0.3176766037940979] src_dst=[0.14483414590358734]
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=79 | grip=0.307 objZ=0.022 | real=1 wedged=0 | arm1: entry=0.000→now=-0.115
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=44 | grip=0.301 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.145
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=287 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.090→now=0.864
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=19 | grip=0.372 objZ=0.034 | real=1 wedged=0 | arm1: entry=0.000→now=-0.095
+    [S3] PLACE_HOLD! 1 envs step=1653 s3_step=[507] | arm1: entry=[-0.10035678744316101]→now=[2.717702865600586] max=[2.7259421348571777] | objZ: entry=[0.17888793349266052]→now=[0.06242375820875168] | grip=[0.3424028754234314] src_dst=[0.0768674984574318]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=117 | grip=0.403 objZ=0.037 | real=1 wedged=0 | arm1: entry=0.000→now=-0.009
+    [S3] PLACE_HOLD! 1 envs step=1658 s3_step=[432] | arm1: entry=[-0.1564585268497467]→now=[2.681450843811035] max=[2.681450843811035] | objZ: entry=[0.1882580816745758]→now=[0.059745702892541885] | grip=[0.3468549847602844] src_dst=[0.12854774296283722]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=24 | grip=0.393 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.029
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=45 | grip=0.366 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.122
+    [DROP] phA=2 phB=0 early=0 late=2 avg_step=58 | grip=0.372 objZ=0.028 | real=2 wedged=0 | arm1: entry=0.000→now=-0.037
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=82 | grip=0.354 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.062
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=528 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.120→now=2.034
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=393 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.107→now=1.871
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=15 | grip=0.394 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.046
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=28 | grip=0.380 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.096
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=8 | grip=0.334 objZ=0.380 | real=0 wedged=1 | arm1: entry=0.000→now=0.591
+    [S3] PLACE_HOLD! 1 envs step=1713 s3_step=[593] | arm1: entry=[-0.025552598759531975]→now=[2.7603299617767334] max=[2.7603299617767334] | objZ: entry=[0.18969982862472534]→now=[0.05904912203550339] | grip=[0.32123130559921265] src_dst=[0.1491372287273407]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=277 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.168→now=0.607
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.373 objZ=0.166 | real=0 wedged=1 | arm1: entry=0.000→now=-0.120
+    [S3] PLACE_HOLD! 1 envs step=1727 s3_step=[406] | arm1: entry=[-0.1419113576412201]→now=[2.703632116317749] max=[2.703632116317749] | objZ: entry=[0.19236069917678833]→now=[0.061611779034137726] | grip=[0.3266066014766693] src_dst=[0.1259370595216751]
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=222 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.104→now=0.426
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1596 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.121→now=0.837
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=194 | grip=0.311 objZ=0.020 | real=2 wedged=0 | arm1: entry=-0.053→now=1.020
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.283 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.151
+    [S3] PLACE_HOLD! 1 envs step=1740 s3_step=[426] | arm1: entry=[-0.038113102316856384]→now=[2.7172772884368896] max=[2.7172772884368896] | objZ: entry=[0.19588890671730042]→now=[0.059793151915073395] | grip=[0.33110782504081726] src_dst=[0.11645417660474777]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=30 | grip=0.404 objZ=0.028 | real=2 wedged=0 | arm1: entry=0.000→now=0.063
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=18 | grip=0.303 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.138
+    [S3] PLACE_HOLD! 1 envs step=1746 s3_step=[1180] | arm1: entry=[-0.06532536447048187]→now=[3.106191873550415] max=[3.1154823303222656] | objZ: entry=[0.21262265741825104]→now=[0.061218973249197006] | grip=[0.32167667150497437] src_dst=[0.13925480842590332]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=13 | grip=0.341 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.095
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=310 | grip=0.318 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.115
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=41 | grip=0.376 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.147
+    [S3] PLACE_HOLD! 2 envs step=1757 s3_step=[295, 365] | arm1: entry=[0.02240298129618168, -0.008809386752545834]→now=[2.8149189949035645, 2.7329673767089844] max=[2.8149189949035645, 2.7329673767089844] | objZ: entry=[0.19110339879989624, 0.20496341586112976]→now=[0.06028827279806137, 0.062390051782131195] | grip=[0.3365445137023926, 0.32373306155204773] src_dst=[0.10706748068332672, 0.10746941715478897]
+    [S3] PLACE_HOLD reset: 2 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=15 | grip=0.313 objZ=0.037 | real=1 wedged=0 | arm1: entry=0.000→now=-0.102
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=32 | grip=0.374 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.152
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=25 | grip=0.327 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.091
+    [S3] PLACE_HOLD! 1 envs step=1766 s3_step=[1066] | arm1: entry=[-0.06310553103685379]→now=[2.8394057750701904] max=[2.851085662841797] | objZ: entry=[0.19886448979377747]→now=[0.0619577132165432] | grip=[0.31193238496780396] src_dst=[0.07504293322563171]
+    [S3] PLACE_HOLD reset: 1 envs
+--ALERT--
+
+===== 2026-04-01 19:14:16 KST sample 6/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230932 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=153 | grip=0.405 objZ=0.034 | real=1 wedged=0 | arm1: entry=0.000→now=0.126
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=389 | grip=0.317 objZ=0.020 | real=2 wedged=0 | arm1: entry=-0.063→now=0.165
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=26 | grip=0.398 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.077
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.377 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.015
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=37 | grip=0.379 objZ=0.026 | real=2 wedged=0 | arm1: entry=0.000→now=-0.131
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=157 | grip=0.357 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.061
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=33 | grip=0.365 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.136
+    [S3] PLACE_HOLD! 1 envs step=4415 s3_step=[1261] | arm1: entry=[0.0029462273232638836]→now=[3.0909106731414795] max=[3.124962329864502] | objZ: entry=[0.20474359393119812]→now=[0.03678255155682564] | grip=[0.3038516640663147] src_dst=[0.17303285002708435]
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1224 | grip=0.262 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.153
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1276 | grip=0.264 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.050→now=0.856
+    [S3] PLACE_HOLD! 1 envs step=4435 s3_step=[1734] | arm1: entry=[-0.15309809148311615]→now=[3.007244348526001] max=[3.106384038925171] | objZ: entry=[0.20648545026779175]→now=[0.044816549867391586] | grip=[0.31009218096733093] src_dst=[0.17305731773376465]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1312 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.189→now=0.123
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=39 | grip=0.305 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.107
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=36 | grip=0.337 objZ=0.024 | real=1 wedged=0 | arm1: entry=0.000→now=-0.105
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=35 | grip=0.356 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.101
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=82 | grip=0.262 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.096→now=0.211
+    [S3] PLACE_HOLD! 1 envs step=4468 s3_step=[639] | arm1: entry=[-0.019345520064234734]→now=[2.7067079544067383] max=[2.7067079544067383] | objZ: entry=[0.15655742585659027]→now=[0.056407827883958817] | grip=[0.324762761592865] src_dst=[0.17123794555664062]
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=15 | grip=0.344 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.102
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=39 | grip=0.337 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.116
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=24 | grip=0.432 objZ=0.018 | real=1 wedged=0 | arm1: entry=0.000→now=-0.152
+    [S3] PLACE_HOLD! 1 envs step=4474 s3_step=[528] | arm1: entry=[0.019832124933600426]→now=[2.7879464626312256] max=[2.7879464626312256] | objZ: entry=[0.19911016523838043]→now=[0.06120290607213974] | grip=[0.32907983660697937] src_dst=[0.12834244966506958]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=60 | grip=0.355 objZ=0.052 | real=0 wedged=1 | arm1: entry=0.000→now=-0.135
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=223 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.118→now=1.280
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=11 | grip=0.424 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.016
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=163 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.109→now=0.663
+    [S3] PLACE_HOLD! 1 envs step=4503 s3_step=[415] | arm1: entry=[0.02123863250017166]→now=[2.7233211994171143] max=[2.7233211994171143] | objZ: entry=[0.20149832963943481]→now=[0.0622452050447464] | grip=[0.30908045172691345] src_dst=[0.11618386954069138]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=351 | grip=0.306 objZ=0.020 | real=2 wedged=0 | arm1: entry=0.044→now=0.335
+    [S3] PLACE_HOLD! 1 envs step=4509 s3_step=[531] | arm1: entry=[-0.023426510393619537]→now=[3.012173891067505] max=[3.105457305908203] | objZ: entry=[0.19818201661109924]→now=[0.049745701253414154] | grip=[0.5058943033218384] src_dst=[0.17209650576114655]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=356 | grip=0.303 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.059
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=21 | grip=0.364 objZ=0.040 | real=1 wedged=0 | arm1: entry=0.000→now=-0.105
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=115 | grip=0.384 objZ=0.029 | real=1 wedged=0 | arm1: entry=0.000→now=-0.059
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=14 | grip=0.373 objZ=0.036 | real=1 wedged=0 | arm1: entry=0.000→now=-0.022
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=181 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.130→now=0.783
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1134 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.014→now=0.561
+    [S3] PLACE_HOLD! 1 envs step=4548 s3_step=[1388] | arm1: entry=[0.08287309110164642]→now=[2.653437852859497] max=[2.653437852859497] | objZ: entry=[0.23408430814743042]→now=[0.06188604235649109] | grip=[0.3238818943500519] src_dst=[0.14502528309822083]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=199 | grip=0.337 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.139
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=77 | grip=0.332 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.130
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=58 | grip=0.394 objZ=0.139 | real=0 wedged=1 | arm1: entry=0.000→now=-0.070
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=862 | grip=0.588 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.089→now=2.721
+    [S3] PLACE_HOLD! 1 envs step=4569 s3_step=[580] | arm1: entry=[-0.12050217390060425]→now=[2.838549852371216] max=[2.838549852371216] | objZ: entry=[0.19126731157302856]→now=[0.06003987416625023] | grip=[0.30185237526893616] src_dst=[0.1585235446691513]
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=40 | grip=0.356 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.111
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=9 | grip=0.267 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.137
+    [DROP] phA=2 phB=0 early=1 late=1 avg_step=158 | grip=0.344 objZ=0.031 | real=2 wedged=0 | arm1: entry=0.000→now=-0.127
+    [S3] PLACE_HOLD! 1 envs step=4581 s3_step=[845] | arm1: entry=[-0.13442204892635345]→now=[2.6408212184906006] max=[2.6408212184906006] | objZ: entry=[0.17553667724132538]→now=[0.059633128345012665] | grip=[0.3570629358291626] src_dst=[0.1003960520029068]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=15 | grip=0.383 objZ=0.035 | real=1 wedged=0 | arm1: entry=0.000→now=-0.063
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=10 | grip=0.297 objZ=0.034 | real=1 wedged=0 | arm1: entry=0.000→now=-0.108
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=149 | grip=0.402 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.025
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1232 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.073→now=0.715
+    [S3] PLACE_HOLD! 1 envs step=4601 s3_step=[407] | arm1: entry=[-0.11239492148160934]→now=[2.6064531803131104] max=[2.6064531803131104] | objZ: entry=[0.1642303466796875]→now=[0.06057855859398842] | grip=[0.3264027535915375] src_dst=[0.13285726308822632]
+    [S3] PLACE_HOLD reset: 1 envs
+--ALERT--
+
+===== 2026-04-01 19:24:16 KST sample 7/7 =====
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+--PROC--
+2230322 python train_resip.py --skill combined_s2_s3 --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --s2_resip_checkpoint checkpoints/resip/resip64pct.pt --s3_bc_checkpoint checkpoints/dp_bc_skill3_36d_v3/dp_bc_epoch150.pt --object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --dest_object_usd /home/jovyan/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd --num_envs 2048 --num_env_steps 5000 --total_timesteps 2000000000 --s2_lift_hold_steps 200 --s3_curriculum_stage place_hold --s3_hold_target_dist 0.12 --s3_hold_radius_start 0.18 --s3_hold_radius 0.14 --s3_hold_height_min 0.030 --s3_hold_height_max_start 0.065 --s3_hold_height_max 0.050 --s3_hold_curriculum_successes 3000 --save_dir checkpoints/resip_s3_36d_v15_stage1d --headless
+2230965 bash -c        echo --PROC--;       pgrep -af 'python train_resip.py --skill combined_s2_s3' || true;       echo --ITER--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E '^Iter |hold_dist=|hold_hmax=|hold_prog=|^  S2→S3:|\[S3\] PLACE_HOLD|\[DROP\]|place_total=|place_hold_total=' | tail -n 60 || true;       echo --ALERT--;       tail -n 800 /home/jovyan/resip_s3_36d_v15_stage1d.log | grep -E 'Traceback|RuntimeError|Killed|OOM|CUDA out of memory|nan|NAN|Error:' | tail -n 20 || true     
+--ITER--
+    [S3] PLACE_HOLD! 1 envs step=2352 s3_step=[799] | arm1: entry=[-0.08377906680107117]→now=[2.889805555343628] max=[2.889805555343628] | objZ: entry=[0.2105884850025177]→now=[0.05333478003740311] | grip=[0.334048330783844] src_dst=[0.08126161992549896]
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=229 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.131→now=0.428
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=40 | grip=0.383 objZ=0.027 | real=1 wedged=0 | arm1: entry=0.000→now=-0.076
+    [S3] PLACE_HOLD! 1 envs step=2358 s3_step=[419] | arm1: entry=[-0.10002569854259491]→now=[2.9147138595581055] max=[2.9147138595581055] | objZ: entry=[0.20721516013145447]→now=[0.05996881425380707] | grip=[0.31761687994003296] src_dst=[0.15954449772834778]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=2 early=0 late=2 avg_step=430 | grip=0.262 objZ=0.020 | real=2 wedged=0 | arm1: entry=-0.070→now=0.895
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=24 | grip=0.325 objZ=0.036 | real=1 wedged=0 | arm1: entry=0.000→now=-0.098
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=23 | grip=0.402 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.078
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=561 | grip=0.264 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.112→now=0.616
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=21 | grip=0.369 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=0.025
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=30 | grip=0.347 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.097
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=19 | grip=0.387 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.061
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=142 | grip=0.402 objZ=0.026 | real=1 wedged=0 | arm1: entry=0.000→now=0.178
+    [S3] PLACE_HOLD! 1 envs step=2375 s3_step=[369] | arm1: entry=[-0.07871270924806595]→now=[2.8065035343170166] max=[2.8065035343170166] | objZ: entry=[0.19901669025421143]→now=[0.05925653129816055] | grip=[0.31045886874198914] src_dst=[0.09632160514593124]
+    [DROP] phA=2 phB=0 early=2 late=0 avg_step=26 | grip=0.417 objZ=0.033 | real=2 wedged=0 | arm1: entry=0.000→now=-0.122
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.409 objZ=0.260 | real=0 wedged=1 | arm1: entry=0.000→now=-0.058
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=625 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.144→now=0.901
+    [S3] PLACE_HOLD! 1 envs step=2381 s3_step=[414] | arm1: entry=[-0.007856001146137714]→now=[2.9908745288848877] max=[2.9908745288848877] | objZ: entry=[0.21226143836975098]→now=[0.03496886044740677] | grip=[0.3078445494174957] src_dst=[0.08011466264724731]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=21 | grip=0.377 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=0.016
+    [S3] PLACE_HOLD! 1 envs step=2388 s3_step=[449] | arm1: entry=[-0.02347961999475956]→now=[2.7360925674438477] max=[2.7360925674438477] | objZ: entry=[0.19619812071323395]→now=[0.0601465180516243] | grip=[0.33179762959480286] src_dst=[0.09035934507846832]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=89 | grip=0.370 objZ=0.032 | real=1 wedged=0 | arm1: entry=0.000→now=-0.159
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=451 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.162→now=0.181
+    [S3] PLACE_HOLD! 1 envs step=2397 s3_step=[975] | arm1: entry=[-0.04540276899933815]→now=[2.6801137924194336] max=[2.6801137924194336] | objZ: entry=[0.1484147608280182]→now=[0.06033725291490555] | grip=[0.36778637766838074] src_dst=[0.07395794242620468]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=423 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.005→now=1.092
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=260 | grip=0.372 objZ=0.027 | real=2 wedged=0 | arm1: entry=0.037→now=1.587
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=8 | grip=0.295 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.125
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=598 | grip=0.263 objZ=0.021 | real=2 wedged=0 | arm1: entry=0.087→now=0.402
+    [S3] PLACE_HOLD! 1 envs step=2407 s3_step=[1039] | arm1: entry=[0.21452713012695312]→now=[2.6487090587615967] max=[2.6487090587615967] | objZ: entry=[0.25287410616874695]→now=[0.060508161783218384] | grip=[0.3318234980106354] src_dst=[0.09544841200113297]
+    [S3] PLACE_HOLD reset: 1 envs
+    [S3] PLACE_HOLD! 1 envs step=2409 s3_step=[734] | arm1: entry=[0.010467121377587318]→now=[2.9657514095306396] max=[2.9657514095306396] | objZ: entry=[0.22842082381248474]→now=[0.05656545236706734] | grip=[0.3261031210422516] src_dst=[0.14994685351848602]
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=179 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.092→now=0.620
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=88 | grip=0.354 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.074
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=414 | grip=0.265 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.022→now=1.289
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1027 | grip=0.263 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.098→now=1.078
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=497 | grip=0.265 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.134→now=0.506
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=531 | grip=0.261 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.113→now=0.582
+    [S3] PLACE_HOLD! 1 envs step=2427 s3_step=[376] | arm1: entry=[-0.07330069690942764]→now=[2.6181392669677734] max=[2.6181392669677734] | objZ: entry=[0.16628071665763855]→now=[0.05554678663611412] | grip=[0.3263702690601349] src_dst=[0.09813525527715683]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=33 | grip=0.304 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.081
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=1691 | grip=0.315 objZ=0.034 | real=1 wedged=0 | arm1: entry=0.000→now=0.141
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=102 | grip=0.296 objZ=0.026 | real=2 wedged=0 | arm1: entry=-0.052→now=0.057
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=1205 | grip=0.265 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.088→now=-0.159
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=39 | grip=0.364 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.129
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=613 | grip=0.284 objZ=0.020 | real=1 wedged=0 | arm1: entry=0.000→now=-0.091
+    [S3] PLACE_HOLD! 1 envs step=2449 s3_step=[1858] | arm1: entry=[-0.13095249235630035]→now=[2.906494617462158] max=[2.906494617462158] | objZ: entry=[0.19405265152454376]→now=[0.054816462099552155] | grip=[0.34490129351615906] src_dst=[0.08610262721776962]
+    [DROP] phA=1 phB=0 early=0 late=1 avg_step=52 | grip=0.356 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.109
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=1 early=0 late=2 avg_step=629 | grip=0.288 objZ=0.026 | real=2 wedged=0 | arm1: entry=0.080→now=0.350
+    [DROP] phA=1 phB=1 early=1 late=1 avg_step=89 | grip=0.297 objZ=0.027 | real=2 wedged=0 | arm1: entry=-0.057→now=-0.120
+    [S3] PLACE_HOLD! 1 envs step=2455 s3_step=[353] | arm1: entry=[-0.09390910714864731]→now=[3.048035144805908] max=[3.048035144805908] | objZ: entry=[0.2095281183719635]→now=[0.04291912913322449] | grip=[0.3105403482913971] src_dst=[0.07916785031557083]
+    [S3] PLACE_HOLD reset: 1 envs
+    [DROP] phA=1 phB=0 early=1 late=0 avg_step=20 | grip=0.352 objZ=0.033 | real=1 wedged=0 | arm1: entry=0.000→now=-0.163
+    [DROP] phA=1 phB=1 early=0 late=2 avg_step=109 | grip=0.307 objZ=0.230 | real=1 wedged=1 | arm1: entry=-0.058→now=-0.060
+    [DROP] phA=0 phB=1 early=0 late=1 avg_step=228 | grip=0.264 objZ=0.020 | real=1 wedged=0 | arm1: entry=-0.057→now=0.674
+--ALERT--
+

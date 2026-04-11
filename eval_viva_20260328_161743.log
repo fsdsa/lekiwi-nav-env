@@ -1,0 +1,63 @@
+[16:17:43] Log file: eval_viva_20260328_161743.log
+[16:17:43] ============================================================
+[16:17:43] VIVA Pipeline Eval (manual S1 + RL expert S2)
+[16:17:43] VLM: http://localhost:8000
+[16:17:43] VLA: http://localhost:8002
+[16:17:43] [CHECK] VLM: OK (Qwen/Qwen3-VL-8B-Instruct)
+[16:17:43] [CHECK] VLA: OK (pi0fast-base, 7730MB)
+[16:17:43] [Classify] User command: "find the medicine bottle and place it next to the red cup"
+[16:17:44] [Classify] Result: mode=relative_placement, source="medicine bottle", dest="red cup"
+[16:17:44] [S1 Expert] Loading BC: checkpoints/dp_bc_nav_skill2_v4/dp_bc_epoch300.pt
+[16:17:45] [S1 Expert] BC loaded (obs=26D, act=9D)
+[16:17:45] [S1 Expert] ResiP loaded: checkpoints/resip_nav_tucked_v4/resip_nav_best.pt
+[16:17:45] [S2 Expert] Loading BC: checkpoints/dp_bc_small/dp_bc_epoch150.pt
+[16:17:45] [S2 Expert] BC loaded (obs=30D, act=9D)
+[16:17:45] [S2 Expert] ResiP loaded: backup/appoachandlift/resip64%.pt
+[16:17:45] Setting up environment...
+[16:17:50] [Scene] Robot: (5.81, 12.58), Source: (5.37, 11.36), Dest: (0.62, 16.09), Room: room_4_visual_0
+[16:17:53] ============================================================
+[16:17:53] Controls (hold for continuous movement):
+[16:17:53]   W/↑=forward  S/↓=backward  A/←=strafe left  D/→=strafe right
+[16:17:53]   Z=turn left  X=turn right  SPACE=stop  Q=quit  T=force TARGET_FOUND
+[16:17:53]   1=force S1  2=force S2  3=force S3  4=force S4
+[16:17:53] ============================================================
+[16:17:54] [VLM-CALL] step=0 skill=navigate call_count=0
+[16:17:57] 
+[t=  30 4s 7.9Hz] skill=navigate inst="navigate forward" vlm=0ms(0) act=[0.000,0.500,0.000] pos=(5.82,12.32) yaw=-176.5 depth=0.32
+[16:17:57] [VLM-CALL] step=30 skill=navigate call_count=0
+[16:18:01] 
+[t=  60 7s 8.0Hz] skill=navigate inst="navigate strafe right" vlm=5967ms(1) act=[0.500,0.000,0.000] pos=(5.76,12.11) yaw=-173.4 depth=0.34
+[16:18:01] [VLM-CALL] step=60 skill=navigate call_count=1
+[16:18:05] 
+[t=  90 11s 8.0Hz] skill=navigate inst="navigate turn left" vlm=3775ms(2) act=[0.000,0.000,-0.330] pos=(5.62,12.09) yaw=-146.3 depth=0.33
+[16:18:05] [VLM-CALL] step=90 skill=navigate call_count=2
+[16:18:08] 
+[t= 120 15s 8.1Hz] skill=navigate inst="navigate turn right" vlm=2820ms(3) act=[0.000,0.000,0.330] pos=(5.61,12.09) yaw=-171.0 depth=0.33
+[16:18:08] [VLM-CALL] step=120 skill=navigate call_count=3
+[16:18:12] [VLA-CHECK] step=145 inst="navigate strafe left" chunk=1 dim=9 latency=5560ms
+[16:18:12] 
+[t= 150 19s 8.0Hz] skill=navigate inst="navigate strafe left" vlm=2528ms(4) act=[-0.500,0.000,0.000] pos=(5.75,12.05) yaw=-197.9 depth=0.35
+[16:18:12] [VLM-CALL] step=150 skill=navigate call_count=4
+[16:18:16] 
+[t= 180 22s 8.0Hz] skill=navigate inst="navigate forward" vlm=2179ms(5) act=[0.000,0.500,0.000] pos=(5.78,11.84) yaw=-196.1 depth=0.34
+[16:18:16] [VLM-CALL] step=180 skill=navigate call_count=5
+[16:18:17] [SKILL] navigate → approach_and_lift
+[16:18:18] [VLA-S2] step=201 inst="approach and lift the medicine bottle" chunk=1 dim=9
+[16:18:20] 
+[t= 210 26s 8.0Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[-0.081,0.037,0.123] pos=(5.76,11.71) yaw=-218.1 depth=0.32
+[16:18:23] 
+[t= 240 30s 8.0Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[-0.107,0.018,0.076] pos=(5.80,11.67) yaw=-227.2 depth=0.33
+[16:18:27] 
+[t= 270 34s 8.0Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[-0.092,0.026,0.055] pos=(5.83,11.63) yaw=-239.1 depth=0.34
+[16:18:31] 
+[t= 300 38s 8.0Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[-0.019,0.050,0.016] pos=(5.84,11.60) yaw=-244.9 depth=0.33
+[16:18:31] [VLA-S2] step=301 inst="approach and lift the medicine bottle" chunk=1 dim=9
+[16:18:35] 
+[t= 330 41s 8.0Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[0.072,0.116,-0.017] pos=(5.80,11.60) yaw=-245.1 depth=0.12
+[16:18:39] 
+[t= 360 45s 7.9Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[0.030,0.188,-0.023] pos=(5.72,11.61) yaw=-238.2 depth=0.10
+[16:18:43] 
+[t= 390 49s 7.9Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[0.027,0.145,-0.023] pos=(5.68,11.61) yaw=-238.1 depth=0.10
+[16:18:44] [VLA-S2] step=401 inst="approach and lift the medicine bottle" chunk=1 dim=9
+[16:18:47] 
+[t= 420 53s 7.9Hz] skill=approach_and_lift inst="approach and lift the medicine bottle" vlm=1937ms(6) act=[0.032,0.095,-0.059] pos=(5.67,11.64) yaw=-237.0 depth=0.10

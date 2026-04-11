@@ -56,17 +56,26 @@ class DiffusionPolicyDataset(Dataset):
     obs_horizon=1 is sufficient — no stacking needed.
     """
 
-    def __init__(self, obs_list, act_list, pred_horizon, phase_a_oversample=1):
+    def __init__(
+        self,
+        obs_list,
+        act_list,
+        pred_horizon,
+        phase_a_oversample=1,
+        phase_a_flag_idx=None,
+    ):
         """
         Args:
             obs_list: list of (T_i, obs_dim) arrays per episode
             act_list: list of (T_i, act_dim) arrays per episode
             pred_horizon: number of future actions to predict
-            phase_a_oversample: Phase A (obs[-1]==1.0) oversample factor
+            phase_a_oversample: Phase A oversample factor
+            phase_a_flag_idx: obs index of phase_a_flag; if None, oversample disabled
         """
         self.pred_horizon = pred_horizon
         self.samples = []
         n_phase_a = 0
+        self.phase_a_flag_idx = phase_a_flag_idx
 
         for obs_ep, act_ep in zip(obs_list, act_list):
             T = len(obs_ep)
@@ -86,8 +95,12 @@ class DiffusionPolicyDataset(Dataset):
                 sample = (obs.astype(np.float32), action_seq.astype(np.float32))
                 self.samples.append(sample)
 
-                # Phase A oversample: obs[-1] == 1.0 (phase_a_flag)
-                if phase_a_oversample > 1 and obs.shape[0] > 35 and obs[-1] > 0.5:
+                if (
+                    phase_a_oversample > 1
+                    and self.phase_a_flag_idx is not None
+                    and self.phase_a_flag_idx < obs.shape[0]
+                    and obs[self.phase_a_flag_idx] > 0.5
+                ):
                     for _ in range(phase_a_oversample - 1):
                         self.samples.append(sample)
                     n_phase_a += 1
@@ -134,6 +147,22 @@ class DiffusionPolicyDataset(Dataset):
         return obs_t, torch.from_numpy(action_seq)
 
 
+def _parse_obs_feature_names(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    try:
+        return [
+            x.decode("utf-8") if isinstance(x, bytes) else str(x)
+            for x in list(raw)
+        ]
+    except TypeError:
+        return None
+
+
 def load_demos_from_hdf5(path: str, obs_key="obs", act_key="actions"):
     """
     Load episodic demos from a single HDF5 file.
@@ -142,12 +171,18 @@ def load_demos_from_hdf5(path: str, obs_key="obs", act_key="actions"):
         /episode_N/actions: (T, act_dim)
         /episode_N/teleop_active: (T,) optional
 
-    Returns: obs_list, act_list (lists of arrays per episode)
+    Returns: obs_list, act_list, metadata
     """
     obs_list = []
     act_list = []
+    metadata = {"obs_feature_names": None, "phase_a_flag_idx": None}
 
     with h5py.File(path, "r") as f:
+        names = _parse_obs_feature_names(f.attrs.get("obs_feature_names"))
+        metadata["obs_feature_names"] = names
+        if names and "phase_a_flag" in names:
+            metadata["phase_a_flag_idx"] = names.index("phase_a_flag")
+
         # Get all episode keys and sort numerically
         ep_keys = sorted(
             [k for k in f.keys() if k.startswith("episode_")],
@@ -182,7 +217,9 @@ def load_demos_from_hdf5(path: str, obs_key="obs", act_key="actions"):
 
     print(f"Loaded {len(obs_list)} episodes, "
           f"total {sum(len(o) for o in obs_list)} steps")
-    return obs_list, act_list
+    if metadata["phase_a_flag_idx"] is not None:
+        print(f"Detected phase_a_flag at obs index {metadata['phase_a_flag_idx']}")
+    return obs_list, act_list, metadata
 
 
 # =============================================================================
@@ -238,7 +275,9 @@ def main():
     parser.add_argument("--eval", action="store_true",
                         help="Run evaluation after training")
     parser.add_argument("--phase_a_oversample", type=int, default=1,
-                        help="Phase A (obs[-1]==1.0) oversample factor (1=off, 10=10x)")
+                        help="Phase A oversample factor (1=off)")
+    parser.add_argument("--phase_a_flag_idx", type=int, default=-1,
+                        help="Override obs index of phase_a_flag (-1=auto from HDF5 attrs)")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -247,7 +286,7 @@ def main():
     # =========================================================================
     # 1. Load data
     # =========================================================================
-    obs_list, act_list = load_demos_from_hdf5(args.demo_path)
+    obs_list, act_list, metadata = load_demos_from_hdf5(args.demo_path)
 
     assert obs_list[0].shape[1] == args.obs_dim, \
         f"obs_dim mismatch: data has {obs_list[0].shape[1]}, expected {args.obs_dim}"
@@ -271,8 +310,14 @@ def main():
     # =========================================================================
     # 3. Create dataset
     # =========================================================================
-    dataset = DiffusionPolicyDataset(obs_list, act_list, args.pred_horizon,
-                                     phase_a_oversample=args.phase_a_oversample)
+    phase_a_flag_idx = args.phase_a_flag_idx if args.phase_a_flag_idx >= 0 else metadata["phase_a_flag_idx"]
+    dataset = DiffusionPolicyDataset(
+        obs_list,
+        act_list,
+        args.pred_horizon,
+        phase_a_oversample=args.phase_a_oversample,
+        phase_a_flag_idx=phase_a_flag_idx,
+    )
     dataset.__init_augmentation__(
         vel_dropout_prob=args.vel_dropout,
         grip_noise_std=args.grip_noise,

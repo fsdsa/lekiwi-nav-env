@@ -1,0 +1,1051 @@
+[INFO][AppLauncher]: Using device: cuda:0
+[INFO][AppLauncher]: Loading experience file: /home/yubin11/IsaacLab/apps/isaaclab.python.headless.kit
+Loading user config located at: '/home/yubin11/isaacsim/kit/data/Kit/Isaac-Sim/5.0/user.config.json'
+[Info] [carb] Logging to file: /home/yubin11/isaacsim/kit/logs/Kit/Isaac-Sim/5.0/kit_20260312_221826.log
+2026-03-12T13:18:26Z [321ms] [Warning] [omni.usd_config.extension] Enable omni.materialx.libs extension to use MaterialX
+2026-03-12T13:18:26Z [751ms] [Warning] [omni.isaac.dynamic_control] omni.isaac.dynamic_control is deprecated as of Isaac Sim 4.5. No action is needed from end-users.
+Warp CUDA error: Failed to get driver entry point 'cuDeviceGetUuid' (CUDA error 1)
+Warp CUDA error: Function cuDeviceGetUuid_f: a suitable driver entry point was not found
+Warp CUDA error 36: API call is not supported in the installed CUDA driver (in function cuda_init, /builds/omniverse/warp/warp/native/warp.cu:277)
+2026-03-12T13:18:31Z [5,732ms] [Warning] [gpu.foundation.plugin] Skipping unsupported non-NVIDIA GPU: AMD Unknown (RADV RAPHAEL_MENDOCINO)
+2026-03-12T13:18:31Z [5,733ms] [Warning] [gpu.foundation.plugin] Skipping unsupported non-NVIDIA GPU: AMD Unknown (RADV RAPHAEL_MENDOCINO)
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 590.48.01     | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA GeForce RTX 3090          | Yes: 0 |     | 24576   MB | 10de      | 0          |
+|     |                                  |        |     |            | 2204      | 460254e6.. |
+|     |                                  |        |     |            | 1         |            |
+|---------------------------------------------------------------------------------------------|
+| 1   | AMD Unknown (RADV RAPHAEL_MEND.. |        |     | 21496   MB | 1002      | 0          |
+|     |                                  |        |     |            | 164e      | 00000000.. |
+|     |                                  |        |     |            | 10        |            |
+|=============================================================================================|
+| OS: 22.04.5 LTS (Jammy Jellyfish) ubuntu, Version: 22.04.5, Kernel: 6.8.0-101-generic
+| XServer Vendor: The X.Org Foundation, XServer Version: 12101004 (1.21.1.4)
+| Processor: AMD Ryzen 9 7950X 16-Core Processor
+| Cores: 16 | Logical Cores: 32
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 63465 | Free Memory: 57512
+| Total Page/Swap (MB): 2047 | Free Page/Swap: 2047
+|---------------------------------------------------------------------------------------------|
+2026-03-12T13:18:32Z [5,973ms] [Warning] [gpu.foundation.plugin] CPU performance profile is set to powersave. This profile sets the CPU to the lowest frequency reducing performance.
+Seed: 1735121120
+2026-03-12T13:18:33Z [7,129ms] [Warning] [isaaclab.envs.direct_rl_env] Seed not set for the environment. The environment creation may not be deterministic.
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : None
+	Physics step-size     : 0.02
+	Rendering step-size   : 0.04
+	Environment step-size : 0.04
+  [Object] bbox (scaled): [0.03718119952827692, 0.03674580045044422, 0.06217609913674096]
+  [Object] bbox center offset (local): [2.800021320581436e-06, -5.600042641162872e-06, 0.03108454868197441]
+[INFO]: Time taken for scene creation : 2.437411 seconds
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 512
+	Environment spacing   : 10.0
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : ['/World/ground']
+	Replicate physics     : True
+[INFO]: Starting the simulation. This may take a few seconds. Please wait...
+2026-03-12T13:18:36Z [10,028ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C00/model_collision_0/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,028ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C01/model_collision_1/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,028ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C02/model_collision_10/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,028ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C03/model_collision_11/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C04/model_collision_12/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C05/model_collision_13/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C06/model_collision_14/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C07/model_collision_15/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C08/model_collision_16/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C09/model_collision_17/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C10/model_collision_18/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C11/model_collision_19/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C12/model_collision_2/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C13/model_collision_20/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C14/model_collision_21/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C15/model_collision_22/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C16/model_collision_23/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C17/model_collision_24/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C18/model_collision_25/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C19/model_collision_26/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C20/model_collision_27/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C21/model_collision_28/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C22/model_collision_29/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,029ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C23/model_collision_3/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C24/model_collision_30/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C25/model_collision_31/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C26/model_collision_4/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C27/model_collision_5/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C28/model_collision_6/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C29/model_collision_7/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C30/model_collision_8/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,030ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C31/model_collision_9/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C00/model_collision_0/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C01/model_collision_1/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C02/model_collision_10/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C03/model_collision_11/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C04/model_collision_12/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C05/model_collision_13/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C06/model_collision_14/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C07/model_collision_15/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C08/model_collision_16/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C09/model_collision_17/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C10/model_collision_18/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C11/model_collision_19/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,060ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C12/model_collision_2/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C13/model_collision_20/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C14/model_collision_21/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C15/model_collision_22/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C16/model_collision_23/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C17/model_collision_24/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C18/model_collision_25/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C19/model_collision_26/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C20/model_collision_27/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C21/model_collision_28/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C22/model_collision_29/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C23/model_collision_3/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C24/model_collision_30/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C25/model_collision_31/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C26/model_collision_4/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C27/model_collision_5/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C28/model_collision_6/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C29/model_collision_7/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C30/model_collision_8/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:36Z [10,061ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C31/model_collision_9/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,875ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C28/model_collision_6/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C28/model_collision_6/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C29/model_collision_7/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C29/model_collision_7/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C27/model_collision_5/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C27/model_collision_5/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C22/model_collision_29/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C22/model_collision_29/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C21/model_collision_28/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C21/model_collision_28/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C20/model_collision_27/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C20/model_collision_27/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C26/model_collision_4/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C26/model_collision_4/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C16/model_collision_23/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C16/model_collision_23/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,876ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C25/model_collision_31/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C25/model_collision_31/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,877ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C15/model_collision_22/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C15/model_collision_22/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,877ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C14/model_collision_21/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C14/model_collision_21/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,877ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C13/model_collision_20/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C13/model_collision_20/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C04/model_collision_12/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C04/model_collision_12/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C07/model_collision_15/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C07/model_collision_15/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C01/model_collision_1/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C01/model_collision_1/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C06/model_collision_14/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C06/model_collision_14/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C00/model_collision_0/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C00/model_collision_0/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C05/model_collision_13/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C05/model_collision_13/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C02/model_collision_10/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C02/model_collision_10/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,878ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C03/model_collision_11/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C03/model_collision_11/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C24/model_collision_30/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C24/model_collision_30/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C23/model_collision_3/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C23/model_collision_3/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C08/model_collision_16/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C08/model_collision_16/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C18/model_collision_25/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C18/model_collision_25/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C11/model_collision_19/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C11/model_collision_19/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C12/model_collision_2/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C12/model_collision_2/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C30/model_collision_8/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C30/model_collision_8/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C31/model_collision_9/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C31/model_collision_9/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,879ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C10/model_collision_18/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C10/model_collision_18/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,880ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C09/model_collision_17/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C09/model_collision_17/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,880ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C19/model_collision_26/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C19/model_collision_26/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+2026-03-12T13:18:37Z [10,881ms] [Warning] [omni.usd] Warning: in _ReportErrors at line 3172 of /builds/omniverse/usd-ci/USD/pxr/usd/usd/stage.cpp -- In </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics>: The relationship target </GraspFrictionMaterial> from </World/Colliders/C17/model_collision_24/mesh.material:binding:physics> in layer @/home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd@ refers to a path outside the scope of the reference from </World/envs/env_0/Object>.  Ignoring. (getting targets for relationship </World/envs/env_0/Object/Colliders/C17/model_collision_24/mesh.material:binding:physics> on stage @anon:0x11e7d540:World0.usd@ <0x11e82890>)
+
+[INFO]: Time taken for simulation start : 1.287907 seconds
+[INFO]: Completed setting up the environment...
+  [ArmLimits] loaded from lekiwi_robot_cfg.ARM_LIMITS_BAKED_RAD: 6 arm joints (margin=0.0000 rad, write_to_sim=False)
+  [ArmLimits] loaded from calibration/arm_limits_measured.json: 6 arm joints (margin=0.0000 rad, write_to_sim=False)
+  [Skill2Env] obs=30 act=9 critic=37
+  [Skill2Env] arm_idx=[0, 4, 35, 36, 37, 38] wheel_idx=[1, 2, 3]
+  Env: approach_and_grasp, n=512, dev=cuda:0
+Frozen DP: obs=30, act=9
+Scale: [0.20000000298023224, 0.20000000298023224, 0.20000000298023224, 0.20000000298023224, 0.20000000298023224, 0.30000001192092896, 0.3499999940395355, 0.3499999940395355, 0.3499999940395355]
+Residual params: 154,634
+Resumed ACTOR ONLY from: checkpoints/resip_v6.4b_tuned_from66/resip_best.pt (iter=111, step=48742400, critic/optimizer reset)
+
+============================================================
+  ResiP v6.4 — approach_and_grasp
+  N=512 S=700 B=358400 iters=697
+  scale: arm=0.2 grip=0.3 base=0.35
+  lr: a=0.0001 c=0.001 kl=0.03 ent=0.0001
+  DR=OFF
+  rew_norm=ON
+  R1=GripOpen(+10) R2=ArmXY(×30,base-sub)
+  R3=VGrasp(+25,5s) R3b=VLift(+100,25s,objZ>0.05,ee<0.10) R4=Lift(×200,0.04~0.12m,sus≥3,ee<0.1)
+  R4b=LiftPose(×160.0,σ=0.35,pre=0.15) R4c=PoseReturn(+300,sim>0.80,8s)
+  R5=SustBonus(×50,15s) R6=SoftLift(+100) R7=Time(-0.01)
+  R8=GCF(pre=-2.0, postg=-0.75, postvl=-0.05, f>2.0, obj<0.08)
+  warmup: 0→0/30
+============================================================
+
+
+Iter 112/697 | TRAIN | step=48742400 | wu=0 | EE: 0.833/0.627
+  [LIFT] n=512 cf=0.0~0.0 grip=0.65~0.65 ee3d=0.575 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=232/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=241/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=261/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=263/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=279/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=289/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=299/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=364/7500
+  [LIFT] n=47 cf=0.0~34.7 grip=0.06~0.86 ee3d=0.003 held=30 mg=35
+  [LIFT] n=27 cf=0.0~96.4 grip=0.02~0.68 ee3d=0.005 held=17 mg=19
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=660/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=682/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=695/7500
+  SR=10.55% | G=74(env:152) | VL=48 | PR=0 | L=54 | SL=46 | EE=0.006(0.199) | Base=0.083(0.293) | Grip=-0.02/0.68/1.49 | R=-245.6 | FPS=8585 | ObjZ:0.526/0.184 n=143 | GSus:5 LSus:385 n15+=54 | CF:7455/145 n=481 cf@g=14.479 | GAG:0.309(n=74) B@G:0.422 B@L:0.437 | R2avg=-0.000 Opens=526 ClipR=0.070 R4b=0.000 R8=(pre:47647 g:1815 vl:1456)
+    KL stop ep0: 0.0444>0.03
+  pg=-0.0140 v=368.1559 ent=3.4373 kl=0.0444 clip=0.169 ev=0.001 SPS=1172601
+
+Iter 113/697 | TRAIN | step=49100800 | wu=0 | EE: 0.829/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=227/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=229/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=240/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=250/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [LIFT] n=34 cf=0.0~37.9 grip=-0.10~1.12 ee3d=0.004 held=22 mg=22
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=288/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=302/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=365/7500
+  [LIFT] n=48 cf=0.0~34.7 grip=-0.05~0.99 ee3d=0.009 held=30 mg=36
+  [LIFT] n=36 cf=0.0~31.7 grip=0.05~0.75 ee3d=0.009 held=23 mg=27
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=665/7500
+  SR=12.50% | G=97(env:162) | VL=59 | PR=0 | L=64 | SL=58 | EE=0.009(0.187) | Base=0.067(0.303) | Grip=-0.10/0.69/1.49 | R=110.0 | FPS=8556 | ObjZ:0.503/0.211 n=147 | GSus:5 LSus:310 n15+=64 | CF:33224/163 n=473 cf@g=15.875 | GAG:0.321(n=97) B@G:0.420 B@L:0.434 | R2avg=0.001 Opens=521 ClipR=0.071 R4b=0.000 R8=(pre:43800 g:2404 vl:1780)
+    KL stop ep0: 0.0390>0.03
+  pg=-0.0114 v=126.5611 ent=3.4378 kl=0.0390 clip=0.159 ev=0.009 SPS=589966
+
+Iter 114/697 | TRAIN | step=49459200 | wu=0 | EE: 0.834/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=210/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=238/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=264/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=267/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=269/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=273/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=277/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=281/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=290/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=293/7500
+  [LIFT] n=39 cf=0.0~29.7 grip=-0.14~0.71 ee3d=0.003 held=26 mg=30
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=403/7500
+  [LIFT] n=26 cf=0.0~37.2 grip=0.12~0.71 ee3d=0.007 held=16 mg=18
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=653/7500
+  SR=9.18% | G=71(env:147) | VL=41 | PR=0 | L=47 | SL=42 | EE=0.008(0.199) | Base=0.044(0.303) | Grip=0.05/0.71/1.49 | R=69.7 | FPS=8518 | ObjZ:0.503/0.180 n=134 | GSus:5 LSus:456 n15+=47 | CF:147549/396 n=471 cf@g=14.046 | GAG:0.327(n=71) B@G:0.420 B@L:0.432 | R2avg=-0.000 Opens=525 ClipR=0.074 R4b=0.000 R8=(pre:50363 g:2012 vl:1231)
+    KL stop ep0: 0.0545>0.03
+  pg=-0.0104 v=84.3982 ent=3.4384 kl=0.0545 clip=0.192 ev=0.021 SPS=395429
+
+Iter 115/697 | TRAIN | step=49817600 | wu=0 | EE: 0.840/0.629
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=198/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=204/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=212/7500
+  [LIFT] n=15 cf=0.0~2511.3 grip=0.02~3.22 ee3d=0.007 held=6 mg=6
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=223/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=232/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=238/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=254/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=263/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=267/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=272/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=284/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=296/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=303/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=308/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=325/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=404/7500
+  [LIFT] n=45 cf=0.0~30.2 grip=0.10~0.64 ee3d=0.007 held=30 mg=33
+  [LIFT] n=23 cf=0.0~28.3 grip=-0.02~0.87 ee3d=0.005 held=13 mg=13
+  SR=11.72% | G=70(env:122) | VL=56 | PR=0 | L=60 | SL=58 | EE=0.008(0.210) | Base=0.126(0.300) | Grip=-0.02/0.72/1.49 | R=89.4 | FPS=7923 | ObjZ:0.542/0.213 n=115 | GSus:5 LSus:276 n15+=60 | CF:4273/122 n=476 cf@g=15.163 | GAG:0.338(n=70) B@G:0.415 B@L:0.429 | R2avg=0.000 Opens=533 ClipR=0.082 R4b=0.000 R8=(pre:49268 g:1073 vl:2649)
+    KL stop ep0: 0.0322>0.03
+  pg=-0.0129 v=106.4635 ent=3.4387 kl=0.0322 clip=0.140 ev=0.033 SPS=292941
+
+Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.824/0.629
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=202/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=205/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=211/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=219/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=222/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=224/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=228/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=236/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=241/7500
+  [RESET_DBG] out_of_bounds=0 fell=2 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=254/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=261/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=266/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=270/7500
+  [LIFT] n=125 cf=0.0~50.6 grip=0.13~1.48 ee3d=0.003 held=100 mg=106
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=312/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=374/7500
+  [LIFT] n=135 cf=0.0~34.8 grip=0.17~0.75 ee3d=0.002 held=118 mg=121
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=557/7500
+  [LIFT] n=120 cf=0.0~41.8 grip=0.18~1.43 ee3d=0.004 held=109 mg=110
+  SR=31.84% | G=171(env:224) | VL=159 | PR=0 | L=163 | SL=141 | EE=0.004(0.121) | Base=0.093(0.320) | Grip=0.00/0.70/1.49 | R=22527.7 | FPS=7658 | ObjZ:0.581/0.281 n=216 | GSus:5 LSus:495 n15+=163 | CF:21618/245 n=475 cf@g=17.692 | GAG:0.372(n=171) B@G:0.418 B@L:0.438 | R2avg=0.004 Opens=537 ClipR=0.000 R4b=0.030 R8=(pre:87532 g:1592 vl:3465)
+  ★ Best SL=141
+  ★ Best G=171
+  Best: SR=31.84% SL=141 G=171
+
+Iter 117/697 | TRAIN | step=50176000 | wu=0 | EE: 0.831/0.629
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=201/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=212/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=222/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=226/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=237/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=239/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=258/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=277/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=286/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=289/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=293/7500
+  [LIFT] n=47 cf=0.0~36.4 grip=0.04~0.79 ee3d=0.008 held=30 mg=32
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=411/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=433/7500
+  [LIFT] n=26 cf=0.0~31.0 grip=0.04~0.85 ee3d=0.006 held=12 mg=14
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=628/7500
+  SR=10.55% | G=74(env:132) | VL=50 | PR=0 | L=54 | SL=52 | EE=0.005(0.218) | Base=0.127(0.303) | Grip=0.05/0.74/1.49 | R=75.6 | FPS=7855 | ObjZ:0.493/0.198 n=116 | GSus:5 LSus:444 n15+=54 | CF:9403/142 n=482 cf@g=15.930 | GAG:0.319(n=74) B@G:0.420 B@L:0.430 | R2avg=0.000 Opens=529 ClipR=0.087 R4b=0.000 R8=(pre:54172 g:2080 vl:2247)
+    KL stop ep0: 0.0423>0.03
+  pg=-0.0124 v=84.2320 ent=3.4388 kl=0.0423 clip=0.171 ev=0.044 SPS=232911
+
+Iter 118/697 | TRAIN | step=50534400 | wu=0 | EE: 0.833/0.628
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=179/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=189/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=196/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=210/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=216/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=224/7500
+  [LIFT] n=24 cf=0.0~41.2 grip=0.10~1.41 ee3d=0.008 held=9 mg=9
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=228/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=237/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=240/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=246/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=248/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=259/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=277/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=284/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=291/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=301/7500
+  [LIFT] n=36 cf=0.0~45.3 grip=0.09~1.10 ee3d=0.010 held=13 mg=22
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=492/7500
+  [LIFT] n=20 cf=0.0~24.9 grip=-0.02~1.17 ee3d=0.012 held=9 mg=10
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=642/7500
+  SR=8.59% | G=59(env:110) | VL=35 | PR=0 | L=45 | SL=39 | EE=0.006(0.223) | Base=0.080(0.288) | Grip=0.01/0.77/1.49 | R=55.0 | FPS=7723 | ObjZ:0.560/0.196 n=99 | GSus:5 LSus:210 n15+=44 | CF:24797/188 n=491 cf@g=15.587 | GAG:0.331(n=59) B@G:0.421 B@L:0.427 | R2avg=-0.001 Opens=533 ClipR=0.091 R4b=0.000 R8=(pre:59551 g:1933 vl:1672)
+    KL stop ep0: 0.0492>0.03
+  pg=-0.0113 v=65.9481 ent=3.4386 kl=0.0492 clip=0.184 ev=0.061 SPS=193183
+
+Iter 119/697 | TRAIN | step=50892800 | wu=0 | EE: 0.839/0.629
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=190/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=192/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=194/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=214/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=228/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=232/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=237/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=241/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=261/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=266/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=289/7500
+  [LIFT] n=39 cf=0.0~32.7 grip=0.05~0.96 ee3d=0.007 held=17 mg=24
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=341/7500
+  [LIFT] n=27 cf=0.0~36.2 grip=0.09~0.96 ee3d=0.004 held=16 mg=18
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=578/7500
+  [LIFT] n=13 cf=0.0~31.3 grip=0.15~0.68 ee3d=0.005 held=7 mg=10
+  SR=7.42% | G=54(env:98) | VL=35 | PR=0 | L=38 | SL=34 | EE=0.009(0.219) | Base=0.091(0.298) | Grip=0.01/0.80/1.49 | R=56.6 | FPS=8580 | ObjZ:0.535/0.217 n=82 | GSus:5 LSus:349 n15+=38 | CF:12619/154 n=486 cf@g=15.802 | GAG:0.339(n=54) B@G:0.419 B@L:0.434 | R2avg=-0.001 Opens=533 ClipR=0.097 R4b=0.000 R8=(pre:64773 g:2228 vl:1432)
+    KL stop ep0: 0.0551>0.03
+  pg=-0.0122 v=69.2717 ent=3.4383 kl=0.0551 clip=0.200 ev=0.072 SPS=167884
+
+Iter 120/697 | TRAIN | step=51251200 | wu=0 | EE: 0.838/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=181/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=183/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=185/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=188/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=206/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=208/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=225/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=236/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=239/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=260/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=264/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=318/7500
+  [LIFT] n=36 cf=0.0~40.8 grip=0.05~0.81 ee3d=0.006 held=22 mg=24
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=451/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=494/7500
+  [LIFT] n=23 cf=0.0~27.3 grip=-0.03~0.89 ee3d=0.009 held=12 mg=14
+  SR=6.64% | G=44(env:89) | VL=31 | PR=0 | L=34 | SL=34 | EE=0.010(0.225) | Base=0.126(0.304) | Grip=-0.00/0.81/1.49 | R=51.4 | FPS=8180 | ObjZ:0.505/0.191 n=78 | GSus:5 LSus:327 n15+=34 | CF:57266/295 n=494 cf@g=17.674 | GAG:0.334(n=44) B@G:0.410 B@L:0.426 | R2avg=-0.001 Opens=529 ClipR=0.103 R4b=0.000 R8=(pre:68424 g:757 vl:1245)
+    KL stop ep0: 0.0625>0.03
+  pg=-0.0132 v=62.4985 ent=3.4380 kl=0.0625 clip=0.212 ev=0.093 SPS=147813
+
+Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.831/0.628
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=160/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=168/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=176/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=183/7500
+  [RESET_DBG] out_of_bounds=3 fell=3 task_success=0 time_out=0 ep_len=185/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=189/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=191/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=197/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=199/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=205/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=207/7500
+  [LIFT] n=19 cf=0.0~1055.4 grip=0.21~3.43 ee3d=0.015 held=4 mg=4
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=210/7500
+  [RESET_DBG] out_of_bounds=2 fell=3 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=0 fell=2 task_success=0 time_out=0 ep_len=225/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=227/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=237/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=242/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=249/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=254/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=260/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=262/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=268/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=286/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=316/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=331/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=365/7500
+  [LIFT] n=124 cf=0.0~40.6 grip=0.12~1.49 ee3d=0.004 held=97 mg=102
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=420/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=515/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=558/7500
+  [LIFT] n=88 cf=0.0~32.2 grip=0.18~1.51 ee3d=0.005 held=56 mg=73
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=643/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=686/7500
+  SR=25.59% | G=137(env:158) | VL=126 | PR=0 | L=131 | SL=119 | EE=0.006(0.230) | Base=0.128(0.322) | Grip=0.08/0.86/1.54 | R=15726.1 | FPS=7739 | ObjZ:0.568/0.297 n=156 | GSus:5 LSus:519 n15+=131 | CF:11751/326 n=486 cf@g=16.706 | GAG:0.361(n=137) B@G:0.415 B@L:0.437 | R2avg=0.003 Opens=567 ClipR=0.000 R4b=0.000 R8=(pre:86967 g:1551 vl:3699)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 122/697 | TRAIN | step=51609600 | wu=0 | EE: 0.832/0.632
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=179/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=186/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=199/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=213/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=224/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=226/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=232/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=243/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=249/7500
+  [LIFT] n=27 cf=0.0~50.4 grip=0.09~1.26 ee3d=0.004 held=12 mg=13
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=266/7500
+  [LIFT] n=26 cf=0.0~41.3 grip=0.02~1.08 ee3d=0.010 held=14 mg=18
+  [LIFT] n=19 cf=0.0~34.6 grip=0.05~0.98 ee3d=0.007 held=8 mg=11
+  SR=6.64% | G=44(env:76) | VL=30 | PR=0 | L=34 | SL=33 | EE=0.009(0.238) | Base=0.077(0.307) | Grip=0.01/0.81/1.50 | R=43.2 | FPS=8482 | ObjZ:0.553/0.234 n=67 | GSus:5 LSus:265 n15+=34 | CF:46949/287 n=492 cf@g=16.193 | GAG:0.335(n=44) B@G:0.411 B@L:0.428 | R2avg=-0.001 Opens=535 ClipR=0.109 R4b=0.000 R8=(pre:72756 g:1024 vl:1097)
+    KL stop ep0: 0.0743>0.03
+  pg=-0.0133 v=54.9028 ent=3.4377 kl=0.0743 clip=0.238 ev=0.127 SPS=132751
+
+Iter 123/697 | TRAIN | step=51968000 | wu=0 | EE: 0.843/0.630
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=193/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=197/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=203/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=206/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=212/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=221/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=229/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=251/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=257/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=261/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=300/7500
+  [LIFT] n=20 cf=0.0~36.4 grip=0.00~0.87 ee3d=0.013 held=11 mg=14
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=334/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=399/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=461/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=499/7500
+  [LIFT] n=17 cf=0.0~32.8 grip=0.00~0.88 ee3d=0.012 held=9 mg=10
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=693/7500
+  SR=4.49% | G=28(env:49) | VL=17 | PR=0 | L=23 | SL=18 | EE=0.006(0.258) | Base=0.127(0.288) | Grip=0.08/0.83/1.50 | R=28.5 | FPS=8244 | ObjZ:0.439/0.224 n=44 | GSus:5 LSus:312 n15+=23 | CF:42059/186 n=473 cf@g=18.011 | GAG:0.347(n=28) B@G:0.410 B@L:0.435 | R2avg=-0.003 Opens=528 ClipR=0.116 R4b=0.000 R8=(pre:79916 g:1267 vl:606)
+    KL stop ep0: 0.0871>0.03
+  pg=-0.0111 v=41.9260 ent=3.4374 kl=0.0871 clip=0.259 ev=0.152 SPS=120289
+
+Iter 124/697 | TRAIN | step=52326400 | wu=0 | EE: 0.833/0.630
+  [LIFT] n=1 cf=0.0~0.0 grip=1.36~1.36 ee3d=0.331 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=189/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=214/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=237/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=247/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=260/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=270/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=309/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=330/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=355/7500
+  [LIFT] n=12 cf=0.0~27.3 grip=0.13~1.13 ee3d=0.010 held=5 mg=6
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=499/7500
+  [LIFT] n=9 cf=0.0~22.9 grip=0.10~1.27 ee3d=0.015 held=2 mg=3
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=613/7500
+  SR=2.15% | G=17(env:26) | VL=11 | PR=0 | L=11 | SL=11 | EE=0.016(0.263) | Base=0.121(0.288) | Grip=0.01/0.84/1.49 | R=4.3 | FPS=8065 | ObjZ:0.519/0.232 n=23 | GSus:5 LSus:309 n15+=11 | CF:13131/151 n=455 cf@g=14.920 | GAG:0.364(n=17) B@G:0.423 B@L:0.431 | R2avg=-0.004 Opens=523 ClipR=0.124 R4b=0.000 R8=(pre:82948 g:449 vl:626)
+    KL stop ep0: 0.0354>0.03
+  pg=-0.0063 v=17.5330 ent=3.4373 kl=0.0354 clip=0.167 ev=0.184 SPS=109876
+
+Iter 125/697 | TRAIN | step=52684800 | wu=0 | EE: 0.841/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=186/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=191/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=196/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=206/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=209/7500
+  [LIFT] n=7 cf=0.0~52.4 grip=0.10~1.49 ee3d=0.019 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=225/7500
+  [LIFT] n=15 cf=0.0~27.6 grip=0.03~1.41 ee3d=0.009 held=5 mg=6
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=592/7500
+  [LIFT] n=7 cf=0.0~24.5 grip=0.22~1.49 ee3d=0.008 held=3 mg=3
+  SR=1.95% | G=13(env:23) | VL=10 | PR=0 | L=10 | SL=8 | EE=0.020(0.263) | Base=0.102(0.284) | Grip=0.14/0.84/1.49 | R=4.6 | FPS=8736 | ObjZ:0.346/0.175 n=22 | GSus:5 LSus:215 n15+=10 | CF:7533/94 n=450 cf@g=17.791 | GAG:0.370(n=13) B@G:0.426 B@L:0.436 | R2avg=-0.003 Opens=520 ClipR=0.131 R4b=0.000 R8=(pre:84460 g:425 vl:417)
+    KL stop ep0: 0.0450>0.03
+  pg=-0.0069 v=18.2366 ent=3.4374 kl=0.0450 clip=0.189 ev=0.213 SPS=101895
+
+Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.829/0.629
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=179/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=182/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=187/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=190/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=192/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=199/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=202/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=205/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=207/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=211/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=219/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=258/7500
+  [LIFT] n=36 cf=0.0~38.6 grip=0.11~0.95 ee3d=0.008 held=21 mg=22
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=328/7500
+  [LIFT] n=35 cf=0.0~34.3 grip=0.11~1.49 ee3d=0.007 held=17 mg=23
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=601/7500
+  [LIFT] n=18 cf=0.0~24.6 grip=0.13~1.49 ee3d=0.007 held=4 mg=8
+  SR=8.20% | G=48(env:58) | VL=40 | PR=0 | L=42 | SL=40 | EE=0.008(0.215) | Base=0.099(0.324) | Grip=0.12/0.98/1.50 | R=3093.7 | FPS=8149 | ObjZ:0.542/0.276 n=58 | GSus:5 LSus:441 n15+=42 | CF:25227/183 n=494 cf@g=15.512 | GAG:0.355(n=48) B@G:0.405 B@L:0.433 | R2avg=0.001 Opens=531 ClipR=0.000 R4b=0.000 R8=(pre:126595 g:553 vl:2198)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 127/697 | TRAIN | step=53043200 | wu=0 | EE: 0.837/0.627
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=183/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=194/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=198/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=200/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=228/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=304/7500
+  [LIFT] n=10 cf=0.0~27.1 grip=0.30~1.08 ee3d=0.016 held=3 mg=4
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=385/7500
+  [LIFT] n=9 cf=0.0~29.3 grip=0.11~0.67 ee3d=0.008 held=3 mg=3
+  SR=2.15% | G=14(env:19) | VL=11 | PR=0 | L=11 | SL=11 | EE=0.009(0.273) | Base=0.083(0.278) | Grip=0.14/0.86/1.49 | R=1.1 | FPS=8487 | ObjZ:0.403/0.213 n=18 | GSus:5 LSus:118 n15+=11 | CF:23486/113 n=416 cf@g=18.214 | GAG:0.398(n=14) B@G:0.414 B@L:0.427 | R2avg=-0.004 Opens=519 ClipR=0.136 R4b=0.000 R8=(pre:85342 g:243 vl:699)
+    KL stop ep0: 0.0510>0.03
+  pg=-0.0071 v=14.8921 ent=3.4375 kl=0.0510 clip=0.199 ev=0.259 SPS=94877
+
+Iter 128/697 | TRAIN | step=53401600 | wu=0 | EE: 0.828/0.631
+  [LIFT] n=3 cf=0.0~15.7 grip=0.58~1.37 ee3d=0.021 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=207/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=292/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=340/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=361/7500
+  [LIFT] n=11 cf=0.0~31.7 grip=0.03~1.49 ee3d=0.007 held=4 mg=6
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=464/7500
+  [LIFT] n=7 cf=0.0~26.4 grip=0.12~0.91 ee3d=0.011 held=2 mg=3
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=675/7500
+  SR=1.95% | G=11(env:23) | VL=8 | PR=0 | L=10 | SL=9 | EE=0.013(0.280) | Base=0.114(0.275) | Grip=0.09/0.88/1.49 | R=-0.5 | FPS=8803 | ObjZ:0.448/0.221 n=17 | GSus:5 LSus:145 n15+=10 | CF:1806/69 n=391 cf@g=13.926 | GAG:0.339(n=11) B@G:0.416 B@L:0.432 | R2avg=-0.005 Opens=520 ClipR=0.143 R4b=0.000 R8=(pre:86255 g:105 vl:520)
+    KL stop ep0: 0.0624>0.03
+  pg=-0.0071 v=13.9136 ent=3.4374 kl=0.0624 clip=0.218 ev=0.279 SPS=89063
+
+Iter 129/697 | TRAIN | step=53760000 | wu=0 | EE: 0.838/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=194/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=201/7500
+  [RESET_DBG] out_of_bounds=0 fell=2 task_success=0 time_out=0 ep_len=206/7500
+  [LIFT] n=7 cf=0.0~36.7 grip=0.14~1.42 ee3d=0.016 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=299/7500
+  [LIFT] n=4 cf=0.0~21.3 grip=0.14~0.56 ee3d=0.010 held=1 mg=2
+  [LIFT] n=5 cf=0.0~23.0 grip=0.22~1.30 ee3d=0.014 held=0 mg=0
+  SR=0.78% | G=5(env:12) | VL=3 | PR=0 | L=4 | SL=3 | EE=0.020(0.263) | Base=0.111(0.275) | Grip=0.12/0.88/1.49 | R=-10.6 | FPS=8758 | ObjZ:0.447/0.156 n=11 | GSus:5 LSus:138 n15+=4 | CF:3636/59 n=367 cf@g=12.958 | GAG:0.324(n=5) B@G:0.426 B@L:0.441 | R2avg=-0.004 Opens=518 ClipR=0.150 R4b=0.000 R8=(pre:88495 g:296 vl:192)
+    KL stop ep0: 0.0634>0.03
+  pg=-0.0039 v=3.8438 ent=3.4374 kl=0.0634 clip=0.221 ev=0.290 SPS=83958
+
+Iter 130/697 | TRAIN | step=54118400 | wu=0 | EE: 0.833/0.629
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=180/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=199/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=229/7500
+  [LIFT] n=4 cf=0.0~0.0 grip=0.39~0.86 ee3d=0.064 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=299/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=359/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=436/7500
+  [LIFT] n=5 cf=0.0~18.5 grip=0.53~1.03 ee3d=0.055 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=550/7500
+  [LIFT] n=9 cf=0.0~18.6 grip=0.26~1.21 ee3d=0.010 held=1 mg=1
+  SR=1.17% | G=7(env:11) | VL=3 | PR=0 | L=6 | SL=3 | EE=0.010(0.265) | Base=0.030(0.284) | Grip=0.16/0.90/1.49 | R=-9.7 | FPS=9138 | ObjZ:0.312/0.184 n=10 | GSus:5 LSus:144 n15+=6 | CF:2918/65 n=361 cf@g=16.043 | GAG:0.301(n=7) B@G:0.419 B@L:0.431 | R2avg=-0.004 Opens=520 ClipR=0.153 R4b=0.000 R8=(pre:88383 g:502 vl:120)
+    KL stop ep0: 0.0744>0.03
+  pg=-0.0107 v=4.9286 ent=3.4373 kl=0.0744 clip=0.225 ev=0.288 SPS=79659
+
+Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.838/0.627
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=176/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=184/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=199/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=315/7500
+  [LIFT] n=8 cf=0.0~18.0 grip=0.24~1.27 ee3d=0.026 held=1 mg=1
+  [LIFT] n=8 cf=0.0~27.6 grip=0.24~1.29 ee3d=0.017 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=688/7500
+  SR=0.98% | G=6(env:7) | VL=3 | PR=0 | L=5 | SL=3 | EE=0.023(0.214) | Base=0.080(0.310) | Grip=0.24/1.03/1.51 | R=-348.8 | FPS=8690 | ObjZ:0.513/0.282 n=7 | GSus:5 LSus:129 n15+=5 | CF:1897/63 n=455 cf@g=14.041 | GAG:0.315(n=6) B@G:0.403 B@L:0.392 | R2avg=-0.000 Opens=516 ClipR=0.000 R4b=0.000 R8=(pre:126527 g:214 vl:158)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 132/697 | TRAIN | step=54476800 | wu=0 | EE: 0.836/0.629
+  [LIFT] n=4 cf=0.0~2.5 grip=1.39~1.49 ee3d=0.091 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=211/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=232/7500
+  [LIFT] n=4 cf=0.0~0.0 grip=0.25~1.48 ee3d=0.038 held=0 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=391/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=566/7500
+  [LIFT] n=7 cf=0.0~23.8 grip=0.09~1.05 ee3d=0.002 held=3 mg=3
+  SR=0.98% | G=7(env:12) | VL=4 | PR=0 | L=5 | SL=4 | EE=0.008(0.260) | Base=0.070(0.300) | Grip=0.14/0.85/1.49 | R=-6.4 | FPS=8353 | ObjZ:0.377/0.170 n=12 | GSus:5 LSus:322 n15+=5 | CF:2010/56 n=360 cf@g=16.960 | GAG:0.307(n=7) B@G:0.408 B@L:0.423 | R2avg=-0.003 Opens=516 ClipR=0.155 R4b=0.000 R8=(pre:85564 g:559 vl:155)
+    KL stop ep0: 0.0572>0.03
+  pg=-0.0084 v=9.1143 ent=3.4371 kl=0.0572 clip=0.178 ev=0.311 SPS=75444
+
+Iter 133/697 | TRAIN | step=54835200 | wu=0 | EE: 0.837/0.630
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=193/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=219/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=223/7500
+  [LIFT] n=5 cf=0.0~20.5 grip=0.15~1.18 ee3d=0.015 held=2 mg=2
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=238/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=288/7500
+  [LIFT] n=2 cf=0.0~12.8 grip=0.17~1.08 ee3d=0.023 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=575/7500
+  [LIFT] n=3 cf=0.0~4.7 grip=0.42~0.83 ee3d=0.015 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=673/7500
+  SR=1.17% | G=6(env:8) | VL=4 | PR=0 | L=6 | SL=5 | EE=0.017(0.257) | Base=0.040(0.289) | Grip=0.17/0.83/1.49 | R=-8.1 | FPS=8261 | ObjZ:0.285/0.202 n=8 | GSus:5 LSus:119 n15+=6 | CF:11938/87 n=355 cf@g=13.750 | GAG:0.330(n=6) B@G:0.411 B@L:0.427 | R2avg=-0.003 Opens=518 ClipR=0.158 R4b=0.000 R8=(pre:83050 g:126 vl:255)
+    KL stop ep0: 0.0397>0.03
+  pg=-0.0078 v=6.4060 ent=3.4373 kl=0.0397 clip=0.166 ev=0.335 SPS=71653
+
+Iter 134/697 | TRAIN | step=55193600 | wu=0 | EE: 0.837/0.629
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=276/7500
+  [LIFT] n=5 cf=0.0~24.1 grip=0.22~1.02 ee3d=0.013 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=474/7500
+  [LIFT] n=6 cf=0.0~27.4 grip=0.05~0.87 ee3d=0.007 held=1 mg=2
+  [LIFT] n=4 cf=0.0~12.2 grip=0.29~0.75 ee3d=0.025 held=1 mg=1
+  SR=0.20% | G=2(env:4) | VL=1 | PR=0 | L=1 | SL=1 | EE=0.012(0.260) | Base=0.064(0.293) | Grip=-0.07/0.83/1.49 | R=-10.1 | FPS=7995 | ObjZ:0.372/0.171 n=4 | GSus:5 LSus:149 n15+=1 | CF:6588/70 n=361 cf@g=17.936 | GAG:0.315(n=2) B@G:0.421 B@L:0.410 | R2avg=-0.003 Opens=514 ClipR=0.160 R4b=0.000 R8=(pre:78989 g:89 vl:0)
+    KL stop ep0: 0.0366>0.03
+  pg=-0.0122 v=4.9628 ent=3.4375 kl=0.0366 clip=0.170 ev=0.318 SPS=68146
+
+Iter 135/697 | TRAIN | step=55552000 | wu=0 | EE: 0.833/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=181/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=187/7500
+  [LIFT] n=7 cf=0.0~23.7 grip=-0.07~0.89 ee3d=0.015 held=2 mg=2
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=374/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=434/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=512/7500
+  [LIFT] n=9 cf=0.0~29.2 grip=0.07~1.01 ee3d=0.014 held=2 mg=3
+  SR=1.17% | G=7(env:9) | VL=6 | PR=0 | L=6 | SL=6 | EE=0.005(0.243) | Base=0.115(0.291) | Grip=0.03/0.82/1.49 | R=-2.8 | FPS=8397 | ObjZ:0.489/0.238 n=9 | GSus:5 LSus:204 n15+=6 | CF:18690/98 n=355 cf@g=20.699 | GAG:0.295(n=7) B@G:0.409 B@L:0.423 | R2avg=-0.003 Opens=517 ClipR=0.160 R4b=0.000 R8=(pre:73564 g:110 vl:210)
+    KL stop ep1: 0.0322>0.03
+  pg=-0.0070 v=11.2300 ent=3.4379 kl=0.0322 clip=0.147 ev=0.426 SPS=65167
+
+Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.837/0.631
+  [LIFT] n=9 cf=0.0~0.0 grip=0.52~1.49 ee3d=0.084 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=407/7500
+  [LIFT] n=12 cf=0.0~18.6 grip=0.06~1.26 ee3d=0.005 held=2 mg=2
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=527/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=553/7500
+  [LIFT] n=17 cf=0.0~28.1 grip=0.05~0.86 ee3d=0.011 held=3 mg=3
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=633/7500
+  SR=0.59% | G=5(env:7) | VL=3 | PR=0 | L=3 | SL=3 | EE=0.008(0.219) | Base=0.121(0.282) | Grip=0.21/0.90/1.49 | R=72.4 | FPS=8382 | ObjZ:0.477/0.279 n=7 | GSus:5 LSus:377 n15+=3 | CF:1771/58 n=435 cf@g=14.597 | GAG:0.338(n=5) B@G:0.364 B@L:0.420 | R2avg=-0.002 Opens=516 ClipR=0.000 R4b=0.000 R8=(pre:82052 g:121 vl:127)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 137/697 | TRAIN | step=55910400 | wu=0 | EE: 0.836/0.630
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=169/7500
+  [LIFT] n=8 cf=0.0~0.0 grip=0.64~1.17 ee3d=0.100 held=0 mg=0
+  [LIFT] n=13 cf=0.0~18.0 grip=0.09~1.29 ee3d=0.007 held=1 mg=1
+  [LIFT] n=6 cf=0.0~26.1 grip=0.18~1.23 ee3d=0.011 held=1 mg=1
+  SR=0.20% | G=1(env:6) | VL=1 | PR=0 | L=1 | SL=1 | EE=0.010(0.244) | Base=0.116(0.283) | Grip=0.09/0.81/1.49 | R=-9.8 | FPS=8109 | ObjZ:0.268/0.133 n=6 | GSus:5 LSus:119 n15+=1 | CF:1210/43 n=347 cf@g=15.591 | GAG:0.241(n=1) B@G:0.406 B@L:0.436 | R2avg=-0.003 Opens=513 ClipR=0.161 R4b=0.000 R8=(pre:69194 g:0 vl:2)
+    KL stop ep1: 0.0301>0.03
+  pg=-0.0222 v=4.5565 ent=3.4396 kl=0.0301 clip=0.178 ev=0.393 SPS=62364
+
+Iter 138/697 | TRAIN | step=56268800 | wu=0 | EE: 0.838/0.629
+  [LIFT] n=10 cf=0.0~16.4 grip=0.12~1.39 ee3d=0.013 held=2 mg=2
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=503/7500
+  [LIFT] n=4 cf=0.0~22.4 grip=0.16~1.21 ee3d=0.013 held=1 mg=1
+  SR=0.78% | G=5(env:8) | VL=3 | PR=0 | L=4 | SL=4 | EE=0.019(0.244) | Base=0.014(0.297) | Grip=0.13/0.80/1.49 | R=-5.1 | FPS=7680 | ObjZ:0.348/0.170 n=8 | GSus:5 LSus:233 n15+=4 | CF:2297/43 n=359 cf@g=16.020 | GAG:0.392(n=5) B@G:0.400 B@L:0.422 | R2avg=-0.003 Opens=513 ClipR=0.160 R4b=0.000 R8=(pre:66997 g:155 vl:35)
+    KL stop ep5: 0.0304>0.03
+  pg=-0.0148 v=6.7587 ent=3.4421 kl=0.0304 clip=0.206 ev=0.463 SPS=59654
+
+Iter 139/697 | TRAIN | step=56627200 | wu=0 | EE: 0.826/0.628
+  [LIFT] n=7 cf=0.0~0.0 grip=0.53~1.49 ee3d=0.051 held=0 mg=0
+  [LIFT] n=6 cf=0.0~15.1 grip=0.09~0.91 ee3d=0.016 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=428/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=527/7500
+  [LIFT] n=10 cf=0.0~13.0 grip=-0.05~1.17 ee3d=0.016 held=1 mg=1
+  SR=0.39% | G=2(env:4) | VL=2 | PR=0 | L=2 | SL=2 | EE=0.016(0.289) | Base=0.080(0.283) | Grip=0.08/0.79/1.49 | R=-11.0 | FPS=8437 | ObjZ:0.331/0.196 n=4 | GSus:5 LSus:117 n15+=2 | CF:521/45 n=347 cf@g=21.631 | GAG:0.380(n=2) B@G:0.402 B@L:0.406 | R2avg=-0.003 Opens=514 ClipR=0.162 R4b=0.000 R8=(pre:66924 g:0 vl:61)
+    KL stop ep3: 0.0321>0.03
+  pg=-0.0150 v=4.1182 ent=3.4430 kl=0.0321 clip=0.186 ev=0.471 SPS=57450
+
+Iter 140/697 | TRAIN | step=56985600 | wu=0 | EE: 0.838/0.628
+  [LIFT] n=12 cf=0.0~27.6 grip=0.15~1.11 ee3d=0.020 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=338/7500
+  [LIFT] n=11 cf=0.0~31.7 grip=0.04~1.04 ee3d=0.017 held=1 mg=1
+  [LIFT] n=8 cf=0.0~23.4 grip=0.26~1.22 ee3d=0.034 held=1 mg=1
+  SR=0.39% | G=4(env:8) | VL=2 | PR=0 | L=2 | SL=2 | EE=0.033(0.255) | Base=0.126(0.279) | Grip=0.02/0.80/1.49 | R=-8.2 | FPS=8700 | ObjZ:0.475/0.233 n=8 | GSus:5 LSus:213 n15+=2 | CF:1079/45 n=347 cf@g=16.351 | GAG:0.395(n=4) B@G:0.400 B@L:0.409 | R2avg=-0.004 Opens=513 ClipR=0.161 R4b=0.000 R8=(pre:64376 g:127 vl:128)
+  pg=-0.0119 v=3.7821 ent=3.4437 kl=0.0247 clip=0.212 ev=0.610 SPS=55482
+
+Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.830/0.630
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=176/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=254/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=309/7500
+  [LIFT] n=22 cf=0.0~28.0 grip=0.03~1.28 ee3d=0.006 held=2 mg=3
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=485/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=524/7500
+  [LIFT] n=12 cf=0.0~22.9 grip=0.12~1.48 ee3d=0.008 held=3 mg=4
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=564/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=691/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=697/7500
+  SR=0.98% | G=7(env:10) | VL=5 | PR=0 | L=5 | SL=5 | EE=0.010(0.221) | Base=0.058(0.268) | Grip=0.09/0.91/1.49 | R=412.2 | FPS=8033 | ObjZ:0.493/0.291 n=9 | GSus:5 LSus:471 n15+=5 | CF:24748/145 n=399 cf@g=15.933 | GAG:0.319(n=7) B@G:0.362 B@L:0.434 | R2avg=-0.003 Opens=518 ClipR=0.000 R4b=0.000 R8=(pre:66171 g:218 vl:90)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 142/697 | TRAIN | step=57344000 | wu=0 | EE: 0.830/0.627
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=167/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=190/7500
+  [LIFT] n=5 cf=0.0~0.0 grip=0.95~1.43 ee3d=0.108 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=228/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=340/7500
+  [LIFT] n=2 cf=0.0~0.0 grip=0.30~0.73 ee3d=0.087 held=0 mg=0
+  [LIFT] n=4 cf=0.0~22.0 grip=0.27~0.80 ee3d=0.026 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=616/7500
+  SR=0.20% | G=4(env:10) | VL=1 | PR=0 | L=1 | SL=1 | EE=0.022(0.246) | Base=0.063(0.296) | Grip=0.10/0.80/1.49 | R=-11.0 | FPS=8976 | ObjZ:0.208/0.116 n=8 | GSus:5 LSus:59 n15+=1 | CF:117689/397 n=355 cf@g=7.680 | GAG:0.272(n=4) B@G:0.422 B@L:0.440 | R2avg=-0.003 Opens=517 ClipR=0.163 R4b=0.000 R8=(pre:60418 g:75 vl:67)
+    KL stop ep2: 0.0424>0.03
+  pg=-0.0069 v=1.9564 ent=3.4433 kl=0.0424 clip=0.156 ev=0.368 SPS=53746
+
+Iter 143/697 | TRAIN | step=57702400 | wu=0 | EE: 0.837/0.629
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=217/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=238/7500
+  [RESET_DBG] out_of_bounds=1 fell=0 task_success=0 time_out=0 ep_len=261/7500
+  [LIFT] n=11 cf=0.0~8.4 grip=0.14~0.92 ee3d=0.044 held=0 mg=0
+  [LIFT] n=4 cf=0.0~32.2 grip=0.25~1.07 ee3d=0.028 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=507/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=599/7500
+  [LIFT] n=7 cf=0.0~10.2 grip=0.39~1.40 ee3d=0.061 held=0 mg=0
+  SR=0.00% | G=0(env:3) | VL=0 | PR=0 | L=0 | SL=0 | EE=0.031(0.264) | Base=0.032(0.277) | Grip=-0.01/0.80/1.49 | R=-11.5 | FPS=8295 | ObjZ:0.120/0.087 n=3 | GSus:4 LSus:0 n15+=0 | CF:2834/73 n=329 cf@g=42.602 | R2avg=-0.005 Opens=516 ClipR=0.162 R4b=0.000 R8=(pre:57835 g:0 vl:0)
+    KL stop ep0: 0.0475>0.03
+  pg=-0.0025 v=1.4734 ent=3.4436 kl=0.0475 clip=0.127 ev=0.604 SPS=51984
+
+Iter 144/697 | TRAIN | step=58060800 | wu=0 | EE: 0.831/0.630
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=239/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=336/7500
+  [LIFT] n=12 cf=0.0~25.8 grip=-0.10~1.21 ee3d=0.011 held=3 mg=3
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=536/7500
+  [LIFT] n=8 cf=0.0~31.9 grip=0.00~0.71 ee3d=0.012 held=4 mg=4
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=683/7500
+  SR=0.78% | G=6(env:11) | VL=4 | PR=0 | L=4 | SL=4 | EE=0.011(0.236) | Base=0.036(0.283) | Grip=0.10/0.80/1.49 | R=1.0 | FPS=8891 | ObjZ:0.272/0.162 n=10 | GSus:5 LSus:155 n15+=4 | CF:5829/89 n=331 cf@g=19.528 | GAG:0.436(n=6) B@G:0.395 B@L:0.430 | R2avg=-0.003 Opens=515 ClipR=0.161 R4b=0.000 R8=(pre:54197 g:74 vl:42)
+    KL stop ep1: 0.0330>0.03
+  pg=-0.0015 v=13.1259 ent=3.4440 kl=0.0330 clip=0.161 ev=0.720 SPS=50479
+
+Iter 145/697 | TRAIN | step=58419200 | wu=0 | EE: 0.829/0.627
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=202/7500
+  [LIFT] n=5 cf=0.0~0.0 grip=0.00~1.25 ee3d=0.109 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=215/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=218/7500
+  [LIFT] n=7 cf=0.0~19.0 grip=0.14~1.02 ee3d=0.013 held=2 mg=3
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=506/7500
+  [LIFT] n=3 cf=0.0~27.8 grip=0.08~0.79 ee3d=0.021 held=1 mg=1
+  SR=1.17% | G=8(env:10) | VL=5 | PR=0 | L=6 | SL=5 | EE=0.022(0.226) | Base=0.116(0.284) | Grip=0.18/0.78/1.49 | R=-1.1 | FPS=8942 | ObjZ:0.436/0.234 n=10 | GSus:5 LSus:159 n15+=6 | CF:4113/66 n=360 cf@g=18.090 | GAG:0.322(n=8) B@G:0.418 B@L:0.439 | R2avg=-0.002 Opens=516 ClipR=0.161 R4b=0.000 R8=(pre:50051 g:83 vl:153)
+    KL stop ep1: 0.0342>0.03
+  pg=-0.0026 v=10.8290 ent=3.4441 kl=0.0342 clip=0.181 ev=0.682 SPS=49085
+
+Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.828/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=209/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=238/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=242/7500
+  [LIFT] n=12 cf=0.0~30.6 grip=0.23~1.50 ee3d=0.009 held=2 mg=2
+  [LIFT] n=12 cf=0.0~32.4 grip=0.23~1.49 ee3d=0.007 held=2 mg=3
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=475/7500
+  [LIFT] n=20 cf=0.0~42.1 grip=0.19~1.08 ee3d=0.011 held=3 mg=3
+  SR=0.59% | G=3(env:6) | VL=3 | PR=0 | L=3 | SL=3 | EE=0.012(0.237) | Base=0.039(0.273) | Grip=0.15/0.88/1.49 | R=268.6 | FPS=8441 | ObjZ:0.386/0.250 n=6 | GSus:5 LSus:499 n15+=3 | CF:28033/123 n=375 cf@g=20.294 | GAG:0.428(n=3) B@G:0.377 B@L:0.363 | R2avg=-0.005 Opens=514 ClipR=0.000 R4b=0.000 R8=(pre:50850 g:0 vl:0)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 147/697 | TRAIN | step=58777600 | wu=0 | EE: 0.835/0.629
+  [LIFT] n=8 cf=0.0~17.8 grip=0.13~0.98 ee3d=0.008 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=401/7500
+  [LIFT] n=12 cf=0.0~34.3 grip=0.03~1.22 ee3d=0.011 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=585/7500
+  SR=0.39% | G=3(env:8) | VL=2 | PR=0 | L=2 | SL=2 | EE=0.007(0.243) | Base=0.091(0.281) | Grip=0.10/0.79/1.49 | R=-7.6 | FPS=9127 | ObjZ:0.251/0.124 n=8 | GSus:5 LSus:60 n15+=2 | CF:1149/39 n=339 cf@g=13.080 | GAG:0.288(n=3) B@G:0.406 B@L:0.441 | R2avg=-0.004 Opens=514 ClipR=0.163 R4b=0.000 R8=(pre:49777 g:51 vl:78)
+    KL stop ep6: 0.0323>0.03
+  pg=-0.0075 v=6.3860 ent=3.4412 kl=0.0323 clip=0.213 ev=0.718 SPS=47805
+
+Iter 148/697 | TRAIN | step=59136000 | wu=0 | EE: 0.841/0.627
+  [LIFT] n=2 cf=0.0~23.8 grip=0.54~1.48 ee3d=0.065 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=186/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=225/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=235/7500
+  [LIFT] n=10 cf=0.0~27.6 grip=0.11~0.88 ee3d=0.015 held=4 mg=4
+  [LIFT] n=11 cf=0.0~24.3 grip=0.20~0.88 ee3d=0.006 held=1 mg=2
+  SR=0.98% | G=10(env:19) | VL=5 | PR=0 | L=5 | SL=5 | EE=0.018(0.242) | Base=0.117(0.278) | Grip=0.12/0.78/1.50 | R=-3.9 | FPS=8791 | ObjZ:0.319/0.143 n=19 | GSus:5 LSus:314 n15+=5 | CF:1538/46 n=346 cf@g=14.895 | GAG:0.247(n=10) B@G:0.403 B@L:0.431 | R2avg=-0.004 Opens=514 ClipR=0.165 R4b=0.000 R8=(pre:46780 g:247 vl:127)
+    KL stop ep3: 0.0315>0.03
+  pg=-0.0055 v=7.8588 ent=3.4387 kl=0.0315 clip=0.212 ev=0.756 SPS=46553
+
+Iter 149/697 | TRAIN | step=59494400 | wu=0 | EE: 0.830/0.629
+  [LIFT] n=6 cf=0.0~26.0 grip=0.19~1.49 ee3d=0.017 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=350/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=367/7500
+  [LIFT] n=5 cf=0.0~29.1 grip=0.18~1.21 ee3d=0.014 held=3 mg=3
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=465/7500
+  [LIFT] n=10 cf=0.0~35.5 grip=0.04~0.94 ee3d=0.011 held=2 mg=2
+  SR=0.78% | G=5(env:7) | VL=4 | PR=0 | L=4 | SL=4 | EE=0.009(0.237) | Base=0.052(0.277) | Grip=-0.02/0.81/1.50 | R=-0.8 | FPS=9247 | ObjZ:0.263/0.180 n=7 | GSus:5 LSus:138 n15+=4 | CF:3746/76 n=346 cf@g=21.271 | GAG:0.376(n=5) B@G:0.385 B@L:0.424 | R2avg=-0.004 Opens=515 ClipR=0.167 R4b=0.000 R8=(pre:42822 g:40 vl:37)
+    KL stop ep3: 0.0314>0.03
+  pg=-0.0054 v=14.7309 ent=3.4360 kl=0.0314 clip=0.170 ev=0.781 SPS=45448
+
+Iter 150/697 | TRAIN | step=59852800 | wu=0 | EE: 0.839/0.630
+  [LIFT] n=8 cf=0.0~21.5 grip=0.18~1.06 ee3d=0.025 held=0 mg=0
+  [LIFT] n=3 cf=0.0~16.8 grip=-0.04~0.73 ee3d=0.032 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=699/7500
+  SR=0.00% | G=4(env:13) | VL=0 | PR=0 | L=0 | SL=0 | EE=0.016(0.240) | Base=0.126(0.283) | Grip=0.25/0.82/1.49 | R=-8.3 | FPS=8561 | ObjZ:0.255/0.092 n=12 | GSus:5 LSus:8 n15+=0 | CF:1095/47 n=342 cf@g=5.811 | GAG:0.349(n=4) B@G:0.420 | R2avg=-0.003 Opens=512 ClipR=0.170 R4b=0.000 R8=(pre:39278 g:114 vl:0)
+    KL stop ep0: 0.0342>0.03
+  pg=-0.0027 v=3.4860 ent=3.4352 kl=0.0342 clip=0.088 ev=0.350 SPS=44309
+
+Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.823/0.630
+  [LIFT] n=4 cf=0.0~8.5 grip=0.73~1.48 ee3d=0.096 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=200/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=216/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=278/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=327/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=336/7500
+  [LIFT] n=11 cf=0.0~19.7 grip=0.10~1.48 ee3d=0.008 held=2 mg=3
+  [LIFT] n=14 cf=0.0~25.6 grip=-0.07~1.49 ee3d=0.007 held=3 mg=3
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=643/7500
+  SR=1.37% | G=8(env:10) | VL=7 | PR=0 | L=7 | SL=6 | EE=0.017(0.231) | Base=0.040(0.260) | Grip=0.12/0.93/1.49 | R=231.9 | FPS=7423 | ObjZ:0.506/0.330 n=10 | GSus:5 LSus:232 n15+=7 | CF:12938/83 n=349 cf@g=15.393 | GAG:0.347(n=8) B@G:0.391 B@L:0.413 | R2avg=-0.005 Opens=518 ClipR=0.000 R4b=0.000 R8=(pre:32642 g:50 vl:75)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 152/697 | TRAIN | step=60211200 | wu=0 | EE: 0.837/0.628
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=240/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [LIFT] n=8 cf=0.0~0.0 grip=0.23~1.49 ee3d=0.043 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=263/7500
+  [LIFT] n=6 cf=0.0~21.1 grip=0.05~0.77 ee3d=0.030 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=520/7500
+  [LIFT] n=5 cf=0.0~25.8 grip=0.04~0.68 ee3d=0.014 held=0 mg=0
+  SR=0.20% | G=5(env:13) | VL=1 | PR=0 | L=1 | SL=1 | EE=0.016(0.245) | Base=0.094(0.279) | Grip=0.09/0.78/1.49 | R=-7.9 | FPS=7856 | ObjZ:0.291/0.109 n=12 | GSus:5 LSus:26 n15+=1 | CF:5994/63 n=361 cf@g=12.957 | GAG:0.353(n=5) B@G:0.388 B@L:0.450 | R2avg=-0.004 Opens=516 ClipR=0.169 R4b=0.000 R8=(pre:38087 g:88 vl:41)
+    KL stop ep0: 0.0368>0.03
+  pg=-0.0028 v=3.3250 ent=3.4349 kl=0.0368 clip=0.163 ev=0.658 SPS=43123
+
+Iter 153/697 | TRAIN | step=60569600 | wu=0 | EE: 0.832/0.630
+  [LIFT] n=9 cf=0.0~4.1 grip=0.06~1.12 ee3d=0.076 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=334/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=431/7500
+  [LIFT] n=4 cf=0.0~20.3 grip=0.11~0.90 ee3d=0.009 held=1 mg=1
+  SR=0.39% | G=3(env:8) | VL=2 | PR=0 | L=2 | SL=2 | EE=0.020(0.237) | Base=0.061(0.267) | Grip=0.08/0.80/1.49 | R=-7.2 | FPS=8412 | ObjZ:0.231/0.145 n=7 | GSus:5 LSus:93 n15+=2 | CF:3077/54 n=346 cf@g=13.813 | GAG:0.355(n=3) B@G:0.373 B@L:0.439 | R2avg=-0.004 Opens=514 ClipR=0.169 R4b=0.000 R8=(pre:38848 g:50 vl:33)
+    KL stop ep0: 0.0406>0.03
+  pg=-0.0014 v=4.9064 ent=3.4347 kl=0.0406 clip=0.156 ev=0.593 SPS=42098
+
+Iter 154/697 | TRAIN | step=60928000 | wu=0 | EE: 0.840/0.627
+  [LIFT] n=1 cf=0.0~0.0 grip=1.37~1.37 ee3d=0.116 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=239/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=312/7500
+  [LIFT] n=3 cf=0.0~0.0 grip=0.72~1.04 ee3d=0.138 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=497/7500
+  [LIFT] n=8 cf=0.0~24.2 grip=0.11~1.01 ee3d=0.010 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=607/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=617/7500
+  SR=0.39% | G=3(env:8) | VL=2 | PR=0 | L=2 | SL=2 | EE=0.009(0.236) | Base=0.118(0.272) | Grip=0.20/0.80/1.49 | R=-5.3 | FPS=8411 | ObjZ:0.252/0.114 n=8 | GSus:5 LSus:101 n15+=2 | CF:1321/55 n=363 cf@g=15.089 | GAG:0.325(n=3) B@G:0.417 B@L:0.402 | R2avg=-0.004 Opens=515 ClipR=0.165 R4b=0.000 R8=(pre:35912 g:18 vl:1)
+    KL stop ep2: 0.0302>0.03
+  pg=-0.0067 v=4.7672 ent=3.4349 kl=0.0302 clip=0.228 ev=0.797 SPS=41131
+
+Iter 155/697 | TRAIN | step=61286400 | wu=0 | EE: 0.836/0.628
+  [LIFT] n=6 cf=0.0~0.0 grip=0.85~1.49 ee3d=0.036 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=421/7500
+  [LIFT] n=6 cf=0.0~24.4 grip=0.01~0.70 ee3d=0.011 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=587/7500
+  [LIFT] n=8 cf=0.0~47.5 grip=0.04~0.96 ee3d=0.028 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=692/7500
+  SR=0.59% | G=5(env:9) | VL=2 | PR=0 | L=3 | SL=1 | EE=0.014(0.228) | Base=0.126(0.289) | Grip=0.10/0.78/1.49 | R=-6.9 | FPS=8754 | ObjZ:0.486/0.145 n=9 | GSus:5 LSus:42 n15+=3 | CF:2215/62 n=351 cf@g=11.137 | GAG:0.285(n=5) B@G:0.413 B@L:0.419 | R2avg=-0.003 Opens=514 ClipR=0.165 R4b=0.000 R8=(pre:34427 g:100 vl:70)
+    KL stop ep9: 0.0410>0.03
+  pg=-0.0135 v=3.1300 ent=3.4358 kl=0.0410 clip=0.234 ev=0.392 SPS=40253
+
+Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.826/0.629
+  [LIFT] n=8 cf=0.0~18.2 grip=0.21~1.35 ee3d=0.010 held=0 mg=1
+  [LIFT] n=8 cf=0.0~19.3 grip=0.26~1.11 ee3d=0.006 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=606/7500
+  [LIFT] n=7 cf=0.0~26.3 grip=0.22~0.97 ee3d=0.012 held=0 mg=0
+  SR=0.20% | G=1(env:1) | VL=1 | PR=0 | L=1 | SL=0 | EE=0.012(0.225) | Base=0.072(0.243) | Grip=0.18/0.94/1.49 | R=-78.9 | FPS=8326 | ObjZ:0.219/0.219 n=1 | GSus:5 LSus:29 n15+=1 | CF:1723/47 n=304 cf@g=8.933 | GAG:0.225(n=1) B@G:0.414 B@L:0.443 | R2avg=-0.006 Opens=513 ClipR=0.000 R4b=0.000 R8=(pre:22548 g:0 vl:30)
+  Best: SR=31.84% SL=141 G=171
+
+Iter 157/697 | TRAIN | step=61644800 | wu=0 | EE: 0.835/0.627
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=327/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=342/7500
+  [LIFT] n=7 cf=0.0~8.0 grip=0.04~1.08 ee3d=0.038 held=1 mg=2
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=516/7500
+  [LIFT] n=6 cf=0.0~20.8 grip=0.24~1.46 ee3d=0.008 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=570/7500
+  SR=0.59% | G=4(env:7) | VL=3 | PR=0 | L=3 | SL=3 | EE=0.017(0.223) | Base=0.032(0.269) | Grip=-0.02/0.82/1.49 | R=-3.8 | FPS=8880 | ObjZ:0.244/0.141 n=7 | GSus:5 LSus:132 n15+=3 | CF:1427/53 n=342 cf@g=13.859 | GAG:0.345(n=4) B@G:0.410 B@L:0.433 | R2avg=-0.004 Opens=516 ClipR=0.167 R4b=0.000 R8=(pre:31250 g:46 vl:53)
+    KL stop ep0: 0.0368>0.03
+  pg=-0.0004 v=5.4668 ent=3.4359 kl=0.0368 clip=0.181 ev=0.720 SPS=39446
+
+Iter 158/697 | TRAIN | step=62003200 | wu=0 | EE: 0.834/0.627
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=214/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=216/7500
+  [LIFT] n=5 cf=0.0~10.5 grip=0.10~0.94 ee3d=0.004 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=347/7500
+  [LIFT] n=11 cf=0.0~37.7 grip=0.11~0.93 ee3d=0.017 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=435/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=626/7500
+  [LIFT] n=7 cf=0.0~25.3 grip=0.18~0.86 ee3d=0.014 held=1 mg=1
+  SR=0.78% | G=6(env:13) | VL=3 | PR=0 | L=4 | SL=2 | EE=0.012(0.226) | Base=0.063(0.273) | Grip=0.11/0.81/1.49 | R=-2.0 | FPS=8676 | ObjZ:0.507/0.177 n=12 | GSus:5 LSus:232 n15+=4 | CF:1319/49 n=350 cf@g=18.294 | GAG:0.319(n=6) B@G:0.410 B@L:0.429 | R2avg=-0.004 Opens=516 ClipR=0.166 R4b=0.000 R8=(pre:30719 g:61 vl:52)
+    KL stop ep1: 0.0314>0.03
+  pg=-0.0025 v=6.9432 ent=3.4356 kl=0.0314 clip=0.141 ev=0.768 SPS=38655
+
+Iter 159/697 | TRAIN | step=62361600 | wu=0 | EE: 0.835/0.629
+  [LIFT] n=4 cf=0.0~0.0 grip=0.13~1.20 ee3d=0.107 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=329/7500
+  [LIFT] n=9 cf=0.0~34.0 grip=0.14~1.02 ee3d=0.003 held=2 mg=2
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=646/7500
+  [LIFT] n=7 cf=0.0~30.8 grip=0.14~0.79 ee3d=0.021 held=0 mg=1
+  SR=0.59% | G=3(env:5) | VL=3 | PR=0 | L=3 | SL=3 | EE=0.021(0.229) | Base=0.077(0.270) | Grip=0.14/0.83/1.49 | R=-3.9 | FPS=8753 | ObjZ:0.447/0.327 n=5 | GSus:5 LSus:48 n15+=3 | CF:6140/62 n=331 cf@g=16.215 | GAG:0.251(n=3) B@G:0.408 B@L:0.424 | R2avg=-0.004 Opens=513 ClipR=0.167 R4b=0.000 R8=(pre:28686 g:2 vl:23)
+    KL stop ep1: 0.0314>0.03
+  pg=-0.0059 v=6.0182 ent=3.4344 kl=0.0314 clip=0.188 ev=0.748 SPS=37913
+
+Iter 160/697 | TRAIN | step=62720000 | wu=0 | EE: 0.838/0.630
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=230/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=314/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=347/7500
+  [LIFT] n=7 cf=0.0~13.7 grip=0.12~1.07 ee3d=0.015 held=1 mg=1
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=549/7500
+  [LIFT] n=5 cf=0.0~29.3 grip=0.08~1.05 ee3d=0.015 held=3 mg=3
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=598/7500
+  SR=0.78% | G=9(env:14) | VL=2 | PR=0 | L=4 | SL=1 | EE=0.015(0.228) | Base=0.035(0.274) | Grip=-0.01/0.81/1.50 | R=-1.5 | FPS=9376 | ObjZ:0.497/0.195 n=12 | GSus:5 LSus:154 n15+=4 | CF:2088/46 n=337 cf@g=14.704 | GAG:0.252(n=9) B@G:0.417 B@L:0.430 | R2avg=-0.004 Opens=516 ClipR=0.168 R4b=0.000 R8=(pre:26990 g:96 vl:0)
+    KL stop ep9: 0.0302>0.03
+  pg=-0.0097 v=5.3175 ent=3.4305 kl=0.0302 clip=0.286 ev=0.833 SPS=37258
+
+Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.828/0.628
+  [LIFT] n=4 cf=0.0~0.0 grip=0.65~1.04 ee3d=0.112 held=0 mg=0
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=374/7500
+  [LIFT] n=4 cf=0.0~13.3 grip=0.31~0.82 ee3d=0.014 held=1 mg=1
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=447/7500
+  [LIFT] n=4 cf=0.0~0.0 grip=0.64~1.26 ee3d=0.201 held=0 mg=0
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=670/7500
+2026-03-12T13:54:08Z [2,142,271ms] [Error] [carb] 
+
+../../../source/plugins/carb.tasking/Mutex.cpp(103): void carb::tasking::Mutex::lock()(): Assertion (m_recursive) failed: Recursion not allowed
+
+Assertion Failed!
+The following assertion condition failed in the process 103886:
+	'm_recursive'
+
+at the location:
+	'../../../source/plugins/carb.tasking/Mutex.cpp'
+	on line 103
+	 in void carb::tasking::Mutex::lock()()
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpcogwiv2d: line 3: 103886 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 LEKIWI_USD_PATH=/home/yubin11/Downloads/lekiwi_robot.usd python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip checkpoints/resip_v6.4b_tuned_from66/resip_best.pt --resume_actor_only True --warmup_steps_initial 0 --warmup_steps_final 0 --enable_domain_randomization False --r8_pregrasp_penalty -2.0 --r8_postgrasp_penalty -0.75 --r8_post_vlift_penalty -0.05 --r8_ground_force_thresh 2.0 --r8_obj_height_thresh 0.08 --save_dir checkpoints/resip_v6.4b_groundfix --headless

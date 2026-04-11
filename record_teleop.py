@@ -73,6 +73,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # —— AppLauncher 먼저 ——
 from isaaclab.app import AppLauncher
+from skill3_bc_obs import (
+    S3_BC_EE23_NAMES,
+    S3_BC_OBS_EE23_DIM,
+    S3_BC_MOTION24_NAMES,
+    S3_BC_OBS_MOTION24_DIM,
+    S3_BC_EXTRA_NAMES,
+    S3_BC_OBS_EXTENDED_DIM,
+    S3_BC_OBS_PHASED_DIM,
+    S3_BC_PLACE_FLAG_NAME,
+    build_s3_bc_obs,
+    build_s3_ee23_obs,
+    build_s3_motion24_obs,
+    ee_world_pos,
+    compute_place_open_trigger,
+)
 
 parser = argparse.ArgumentParser(description="LeKiwi Nav — ROS2 텔레옵 데모 녹화")
 parser.add_argument("--num_demos", type=int, default=10,
@@ -160,6 +175,27 @@ parser.add_argument(
     default=0.76,
     help="combined mode: Phase 2→3 전환 FOV 각도 (rad, spawn_heading_max_rad과 동일)",
 )
+parser.add_argument(
+    "--s3_obs_mode",
+    type=str,
+    default="phased53",
+    choices=["phased53", "motion24", "ee23"],
+    help="Skill-3 기록 obs 모드: phased53(기존 53D object-aware), motion24(24D motion-prior), ee23(23D ee/dest 중심)",
+)
+parser.add_argument("--s3_motion_release_xy", type=float, default=0.12,
+                    help="motion24/ee23: release_phase_flag 트리거 ee->dest body XY threshold (m)")
+parser.add_argument("--s3_motion_release_ee_z", type=float, default=0.10,
+                    help="motion24/ee23: release_phase_flag 트리거 ee_z threshold (m)")
+parser.add_argument("--s3_motion_retract_grip", type=float, default=0.90,
+                    help="motion24/ee23: retract_started_flag 트리거 grip threshold")
+parser.add_argument("--s3_dest_spawn_dist_min", type=float, default=0.6,
+                    help="combined auto S3 spawn: robot front min distance (m)")
+parser.add_argument("--s3_dest_spawn_dist_max", type=float, default=0.9,
+                    help="combined auto S3 spawn: robot front max distance (m)")
+parser.add_argument("--s3_dest_heading_max_rad", type=float, default=0.5,
+                    help="combined auto S3 spawn: heading noise range (+/- rad)")
+parser.add_argument("--combined_manual_transit", action="store_true",
+                    help="combined mode: keep old manual transit phase instead of auto spawning S3 destination")
 # GUI 필수 (텔레옵)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -671,13 +707,16 @@ def main():
         )
     is_combined = (args.skill == "combined")
     if is_combined:
-        env_cfg.grasp_gripper_threshold = 0.65
+        env_cfg.grasp_gripper_threshold = 0.60
         env_cfg.dest_object_fixed = False
         env_cfg.dest_object_mass = 50.0
+        env_cfg.dest_spawn_dist_min = float(args.s3_dest_spawn_dist_min)
+        env_cfg.dest_spawn_dist_max = float(args.s3_dest_spawn_dist_max)
+        env_cfg.spawn_heading_max_rad = float(args.s3_dest_heading_max_rad)
     if is_carry:
         # train_resip combined_s2_s3와 동일한 config
         env_cfg.grasp_contact_threshold = 0.55
-        env_cfg.grasp_gripper_threshold = 0.65
+        env_cfg.grasp_gripper_threshold = 0.60
         env_cfg.grasp_max_object_dist = 0.50
         env_cfg.grasp_success_height = 100.0  # S2 자동종료 비활성
         env_cfg.lift_hold_steps = 0
@@ -736,10 +775,12 @@ def main():
 
     # 목적지 마커: dest object USD가 있으면 마커 불필요 (빨간 컵 자체가 보임)
     #              dest object USD가 없으면 초록 구체로 위치 표시
+    # combined auto-spawn 모드는 eval과 동일하게 S2 완료 전까지 marker/cup를 숨긴다.
     _dest_marker = None
     _dest_attr = "dest_object_pos_w" if hasattr(env, "dest_object_pos_w") else "home_pos_w"
     _has_dest_rigid = getattr(env, "_dest_object_rigid", None) is not None
-    if hasattr(env, _dest_attr) and not _has_dest_rigid:
+    _show_dest_marker = not (is_combined and not args.combined_manual_transit)
+    if hasattr(env, _dest_attr) and not _has_dest_rigid and _show_dest_marker:
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
         import isaaclab.sim as sim_utils
         _dest_marker = VisualizationMarkers(VisualizationMarkersCfg(
@@ -832,12 +873,6 @@ def main():
         wz_sign = float(ct.get("wz_sign", -1.0))
     print(f"  wz_sign: {wz_sign}")
 
-    # —— 녹화 루프 ——
-    obs, info = env.reset()
-    if _dest_marker is not None:
-        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
-        _dest_marker.visualize(translations=_hm)
-
     # Navigate: direction command 라벨 헬퍼 (early define — 아래에서 사용)
     _NAV_DIR_LABELS = {
         (0, 1, 0): "FORWARD",
@@ -859,6 +894,87 @@ def main():
                 best_dot = dot
                 best_label = label
         return best_label
+
+    def _auto_spawn_s3_dest_front():
+        if getattr(env, "_dest_object_rigid", None) is None:
+            return
+        from isaaclab.utils.math import quat_apply
+
+        rpos = env.robot.data.root_pos_w[0:1]
+        rquat = env.robot.data.root_quat_w[0:1]
+        local_fwd = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32, device=env.device)
+        fwd = quat_apply(rquat, local_fwd)
+        dist = torch.rand(1, device=env.device) * (
+            float(args.s3_dest_spawn_dist_max) - float(args.s3_dest_spawn_dist_min)
+        ) + float(args.s3_dest_spawn_dist_min)
+        angle_noise = (torch.rand(1, device=env.device) * 2.0 - 1.0) * float(args.s3_dest_heading_max_rad)
+        cos_n = torch.cos(angle_noise)
+        sin_n = torch.sin(angle_noise)
+        fwd_x = fwd[:, 0] * cos_n - fwd[:, 1] * sin_n
+        fwd_y = fwd[:, 0] * sin_n + fwd[:, 1] * cos_n
+        dest_x = rpos[:, 0] + fwd_x * dist
+        dest_y = rpos[:, 1] + fwd_y * dist
+        dest_z = rpos[:, 2] - 0.03
+
+        pose = env._dest_object_rigid.data.default_root_state[0:1, :7].clone()
+        pose[:, 0] = dest_x
+        pose[:, 1] = dest_y
+        pose[:, 2] = dest_z
+        yaw = torch.rand(1, device=env.device) * 2.0 * math.pi - math.pi
+        pose[:, 3] = torch.cos(yaw * 0.5)
+        pose[:, 4] = 0.0
+        pose[:, 5] = 0.0
+        pose[:, 6] = torch.sin(yaw * 0.5)
+        env._dest_object_rigid.write_root_pose_to_sim(pose, env_ids=torch.tensor([0], device=env.device, dtype=torch.long))
+        zero_vel = torch.zeros(1, 6, dtype=torch.float32, device=env.device)
+        env._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=torch.tensor([0], device=env.device, dtype=torch.long))
+        env.dest_object_pos_w[0, 0] = dest_x[0]
+        env.dest_object_pos_w[0, 1] = dest_y[0]
+        env.dest_object_pos_w[0, 2] = dest_z[0]
+        env._s3_transition_dist = float(dist.item())
+        if _dest_marker is not None:
+            _hm = env.dest_object_pos_w[:1].clone()
+            _hm[:, 2] = 0.08
+            _dest_marker.visualize(translations=_hm)
+        print(
+            f"\n  >>> Auto S3 dest spawn: base_dst={env._s3_transition_dist:.2f}m "
+            f"heading_noise={angle_noise.item():+.2f}rad"
+        )
+
+    def _hide_s3_dest_until_phase3():
+        if getattr(env, "_dest_object_rigid", None) is None:
+            return
+        hide_ids = torch.tensor([0], device=env.device, dtype=torch.long)
+        pose = env._dest_object_rigid.data.default_root_state[0:1, :7].clone()
+        pose[:, 0] = env.scene.env_origins[0:1, 0]
+        pose[:, 1] = env.scene.env_origins[0:1, 1]
+        pose[:, 2] = env.scene.env_origins[0:1, 2] - 5.0
+        pose[:, 3] = 1.0
+        pose[:, 4:] = 0.0
+        env._dest_object_rigid.write_root_pose_to_sim(pose, env_ids=hide_ids)
+        zero_vel = torch.zeros(1, 6, dtype=torch.float32, device=env.device)
+        env._dest_object_rigid.write_root_velocity_to_sim(zero_vel, env_ids=hide_ids)
+        if hasattr(env, "dest_object_pos_w"):
+            env.dest_object_pos_w[0, 0] = pose[0, 0]
+            env.dest_object_pos_w[0, 1] = pose[0, 1]
+            env.dest_object_pos_w[0, 2] = pose[0, 2]
+
+    def _sync_combined_phase1_visuals():
+        """Keep combined collection visually aligned with eval before S2 success."""
+        if is_combined and not args.combined_manual_transit:
+            _hide_s3_dest_until_phase3()
+            if _dest_marker is not None:
+                _hm = getattr(env, _dest_attr)[:1].clone()
+                _hm[:, 2] = -5.0
+                _dest_marker.visualize(translations=_hm)
+        elif _dest_marker is not None:
+            _hm = getattr(env, _dest_attr)[:1].clone()
+            _hm[:, 2] = 0.08
+            _dest_marker.visualize(translations=_hm)
+
+    # —— 녹화 루프 ——
+    obs, info = env.reset()
+    _sync_combined_phase1_visuals()
 
     # 디버그: 물체 스폰 확인
     if hasattr(env, 'object_rigid') and env.object_rigid is not None:
@@ -940,6 +1056,8 @@ def main():
         hf.attrs["action_format"] = "v6" if use_v6 else "legacy"
         hf.attrs["physics_grasp_mode"] = bool(physics_grasp_mode)
         hf.attrs["multi_object_mode"] = bool(multi_object_mode)
+        if skill_name == "carry_and_place":
+            hf.attrs["s3_obs_mode"] = args.s3_obs_mode
         if args.object_usd:
             hf.attrs["object_usd"] = str(os.path.expanduser(args.object_usd))
         if args.multi_object_json:
@@ -948,22 +1066,61 @@ def main():
         hf.attrs["object_scale_phys"] = float(args.object_scale_phys)
         if args.gripper_contact_prim_path:
             hf.attrs["gripper_contact_prim_path"] = str(args.gripper_contact_prim_path)
+        if skill_name == "carry_and_place" and obs_dim == S3_BC_OBS_EXTENDED_DIM:
+            hf.attrs["obs_version"] = "skill3_bc_52d_v1"
+            hf.attrs["obs_extra_names"] = ",".join(S3_BC_EXTRA_NAMES)
+        if skill_name == "carry_and_place" and obs_dim == S3_BC_OBS_PHASED_DIM:
+            hf.attrs["obs_version"] = "skill3_bc_53d_v1"
+            hf.attrs["obs_extra_names"] = ",".join((*S3_BC_EXTRA_NAMES, S3_BC_PLACE_FLAG_NAME))
+        if skill_name == "carry_and_place" and obs_dim == S3_BC_OBS_MOTION24_DIM:
+            hf.attrs["obs_version"] = "skill3_motion24_v1"
+            hf.attrs["obs_feature_names"] = ",".join(S3_BC_MOTION24_NAMES)
+            hf.attrs["s3_obs_mode"] = args.s3_obs_mode
+            hf.attrs["s3_motion_release_xy"] = float(args.s3_motion_release_xy)
+            hf.attrs["s3_motion_release_ee_z"] = float(args.s3_motion_release_ee_z)
+            hf.attrs["s3_motion_retract_grip"] = float(args.s3_motion_retract_grip)
+        if skill_name == "carry_and_place" and obs_dim == S3_BC_OBS_EE23_DIM:
+            hf.attrs["obs_version"] = "skill3_ee23_v1"
+            hf.attrs["obs_feature_names"] = ",".join(S3_BC_EE23_NAMES)
+            hf.attrs["s3_obs_mode"] = args.s3_obs_mode
+            hf.attrs["s3_motion_release_xy"] = float(args.s3_motion_release_xy)
+            hf.attrs["s3_motion_release_ee_z"] = float(args.s3_motion_release_ee_z)
+            hf.attrs["s3_motion_retract_grip"] = float(args.s3_motion_retract_grip)
 
     if is_combined or is_carry:
         os.makedirs("demos", exist_ok=True)
 
         if is_combined and args.resume:
-            # demos/에서 가장 최근 combined_skill2_*.hdf5 찾기
-            import glob as _glob
-            s2_files = sorted(_glob.glob("demos/combined_skill2_*.hdf5"))
-            if not s2_files:
-                print("  ERROR: --resume인데 demos/combined_skill2_*.hdf5 파일이 없습니다.")
-                sys.exit(1)
-            skill2_path = s2_files[-1]  # 가장 최근 (타임스탬프 정렬)
-            skill3_path = skill2_path.replace("skill2", "skill3")
-            if not os.path.isfile(skill3_path):
-                print(f"  ERROR: {skill3_path} 파일이 없습니다.")
-                sys.exit(1)
+            if args.output:
+                resume_path = os.path.expanduser(args.output)
+                base = os.path.basename(resume_path)
+                if "combined_skill3_" in base:
+                    skill3_path = resume_path
+                    skill2_path = resume_path.replace("combined_skill3_", "combined_skill2_")
+                elif "combined_skill2_" in base:
+                    skill2_path = resume_path
+                    skill3_path = resume_path.replace("combined_skill2_", "combined_skill3_")
+                else:
+                    print("  ERROR: combined --resume에서 --output은 combined_skill2_*.hdf5 또는 combined_skill3_*.hdf5 여야 합니다.")
+                    sys.exit(1)
+                if not os.path.isfile(skill2_path):
+                    print(f"  ERROR: {skill2_path} 파일이 없습니다.")
+                    sys.exit(1)
+                if not os.path.isfile(skill3_path):
+                    print(f"  ERROR: {skill3_path} 파일이 없습니다.")
+                    sys.exit(1)
+            else:
+                # demos/에서 가장 최근 combined_skill2_*.hdf5 찾기
+                import glob as _glob
+                s2_files = sorted(_glob.glob("demos/combined_skill2_*.hdf5"))
+                if not s2_files:
+                    print("  ERROR: --resume인데 demos/combined_skill2_*.hdf5 파일이 없습니다.")
+                    sys.exit(1)
+                skill2_path = s2_files[-1]  # 가장 최근 (타임스탬프 정렬)
+                skill3_path = skill2_path.replace("skill2", "skill3")
+                if not os.path.isfile(skill3_path):
+                    print(f"  ERROR: {skill3_path} 파일이 없습니다.")
+                    sys.exit(1)
             hdf5_skill2 = h5py.File(skill2_path, "a")
             hdf5_skill3 = h5py.File(skill3_path, "a")
             skill2_saved = sum(1 for k in hdf5_skill2.keys() if k.startswith("episode_"))
@@ -976,7 +1133,8 @@ def main():
             skill3_path = f"demos/combined_skill3_{timestamp}.hdf5"
             hdf5_skill2 = h5py.File(skill2_path, "w")
             hdf5_skill3 = h5py.File(skill3_path, "w")
-            # ⚠️ Skill3Env combined mode에서 obs는 항상 29D (Skill3Env._get_observations).
+            # Skill3Env combined mode의 policy obs는 29D이고, BC 기록용 obs는
+            # 29D + init_pose6 + phase_a_flag + place 관련 extra state로 확장한다.
             # Phase 1(S2 구간)도 29D로 기록됨. train_resip.py main_combined()에서는
             # Skill2Env(30D)를 사용하므로, S2 학습에 이 데모를 쓰려면 obs 변환 필요:
             #   - S2 30D: [0:21] arm+vel, [21:24] object_rel, [24:26] contact_LR, [26:29] bbox, [29:30] cat
@@ -984,7 +1142,13 @@ def main():
             # S3 데모(combined_skill3_*.hdf5)는 그대로 BC 학습에 사용 가능.
             # S2 데모는 별도 env(Skill2Env)에서 수집하거나, 기존 S2 데모 사용 권장.
             _write_hdf5_attrs(hdf5_skill2, 29, "approach_and_grasp")  # 실제 29D 기록
-            _write_hdf5_attrs(hdf5_skill3, 29, "carry_and_place")
+            if args.s3_obs_mode == "motion24":
+                _s3_obs_dim = S3_BC_OBS_MOTION24_DIM
+            elif args.s3_obs_mode == "ee23":
+                _s3_obs_dim = S3_BC_OBS_EE23_DIM
+            else:
+                _s3_obs_dim = S3_BC_OBS_PHASED_DIM
+            _write_hdf5_attrs(hdf5_skill3, _s3_obs_dim, "carry_and_place")
             skill2_saved = 0
             skill3_saved = 0
 
@@ -1055,15 +1219,24 @@ def main():
         phase1_object_pos_w, phase1_object_quat_w, phase1_robot_pos_w, phase1_robot_quat_w = [], [], [], []
         phase3_obs, phase3_actions, phase3_active, phase3_robot_state = [], [], [], []
         phase3_object_pos_w, phase3_object_quat_w, phase3_robot_pos_w, phase3_robot_quat_w = [], [], [], []
-        phase3_dest_pos_w = []
+        phase3_object_center_pos_w, phase3_dest_pos_w, phase3_dest_quat_w, phase3_ee_pos_w = [], [], [], []
+        phase3_init_pose6 = None  # S2→S3 전환 시 arm5+grip1 (36D obs용)
+        _s3_place_open_active = False
+        _s3_motion_release_active = False
+        _s3_motion_retract_active = False
         if is_combined:
-            print(f"  Combined mode: Skill-2 -> Transit -> Skill-3 연속 레코딩")
+            print(f"  Combined mode: Skill-2 -> {'Transit -> ' if args.combined_manual_transit else ''}Skill-3 연속 레코딩")
             print(f"    grasp_hold_steps: {args.grasp_hold_steps} ({args.grasp_hold_steps/60:.1f}s)")
-            print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
-            print(f"    home_fov_thresh: {args.home_fov_thresh:.2f}rad (Phase 2->3 전환)")
+            if args.combined_manual_transit:
+                print(f"    home_dist_thresh: {args.home_dist_thresh}m (Phase 2->3 전환)")
+                print(f"    home_fov_thresh: {args.home_fov_thresh:.2f}rad (Phase 2->3 전환)")
+            else:
+                print(f"    auto S3 dest spawn: front {args.s3_dest_spawn_dist_min:.2f}~{args.s3_dest_spawn_dist_max:.2f}m "
+                      f"| heading ±{args.s3_dest_heading_max_rad:.2f}rad")
             print(f"    grasp_gripper_threshold: {env.cfg.grasp_gripper_threshold}")
             print(f"    Skill-2 output: {skill2_path}")
             print(f"    Skill-3 output: {skill3_path}")
+            print(f"    Skill-3 obs mode: {args.s3_obs_mode}")
             print(f"    → (오른쪽 화살표): 현재 Phase 저장/진행")
             print(f"    ← (왼쪽 화살표): 현재 Phase 폐기, 리셋")
         elif is_carry:
@@ -1107,6 +1280,8 @@ def main():
                       ep_object_pos_w=None, ep_object_quat_w=None,
                       ep_robot_pos_w=None, ep_robot_quat_w=None,
                       ep_dest_pos_w=None,
+                      ep_object_center_pos_w=None, ep_dest_quat_w=None,
+                      ep_ee_pos_w=None,
                       direction_cmd=None):
         grp = hf.create_group(f"episode_{ep_idx}")
         grp.create_dataset("obs", data=np.array(ep_obs))
@@ -1124,6 +1299,12 @@ def main():
             grp.create_dataset("robot_quat_w", data=np.array(ep_robot_quat_w, dtype=np.float32))
         if ep_dest_pos_w and len(ep_dest_pos_w) > 0:
             grp.create_dataset("dest_pos_w", data=np.array(ep_dest_pos_w, dtype=np.float32))
+        if ep_object_center_pos_w and len(ep_object_center_pos_w) > 0:
+            grp.create_dataset("object_center_pos_w", data=np.array(ep_object_center_pos_w, dtype=np.float32))
+        if ep_dest_quat_w and len(ep_dest_quat_w) > 0:
+            grp.create_dataset("dest_quat_w", data=np.array(ep_dest_quat_w, dtype=np.float32))
+        if ep_ee_pos_w and len(ep_ee_pos_w) > 0:
+            grp.create_dataset("ee_pos_w", data=np.array(ep_ee_pos_w, dtype=np.float32))
         # 초기 환경 상태 (리스트 첫 원소 = 에피소드 시작 시점)
         if ep_robot_pos_w and len(ep_robot_pos_w) > 0:
             grp.attrs["robot_init_pos"] = ep_robot_pos_w[0]
@@ -1452,18 +1633,30 @@ def main():
                                       phase1_object_pos_w, phase1_object_quat_w,
                                       phase1_robot_pos_w, phase1_robot_quat_w)
                         skill2_saved += 1
-                        print(f"\n  >>> Phase 1->2: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                        if args.combined_manual_transit:
+                            print(f"\n  >>> Phase 1->2: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                        else:
+                            print(f"\n  >>> Phase 1->3: Skill-2 저장 ({len(phase1_obs)} steps), Skill-3 자동 시작")
                         phase1_obs.clear(); phase1_actions.clear()
                         phase1_active.clear(); phase1_robot_state.clear()
                         phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
                         phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
-                        current_phase = 2
                         grasp_hold_counter = 0; s2_lift_counter = 0
                         if s2_expert_mode and s2_dp is not None:
                             s2_dp.reset()
                             # S2 마지막 arm action 저장 (Phase 2에서 arm 고정용)
                             env._s2_last_arm_action = action[0, :6].clone()
-                        env.episode_length_buf[0] = 0  # Transit용 타이머 리셋
+                        env.episode_length_buf[0] = 0
+                        if args.combined_manual_transit:
+                            current_phase = 2
+                        else:
+                            _auto_spawn_s3_dest_front()
+                            current_phase = 3
+                            phase3_init_pose6 = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy().astype(np.float32)
+                            _s3_phase_a_active = True
+                            _s3_place_open_active = False
+                            _s3_motion_release_active = False
+                            _s3_motion_retract_active = False
 
                 elif current_phase == 2:
                     # Phase 2: Transit (미기록) — home 근처로 이동
@@ -1500,20 +1693,111 @@ def main():
                         print(f"      Skill-3 기록 시작")
                         current_phase = 3
                         env.episode_length_buf[0] = 0  # Skill-3용 타이머 리셋
+                        # S2→S3 전환 시 arm pose 캡처 (extended BC obs용)
+                        phase3_init_pose6 = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy().astype(np.float32)
+                        _s3_phase_a_active = True  # Phase A latch: 한번 B로 전환되면 복귀 안 함
+                        _s3_place_open_active = False
+                        _s3_motion_release_active = False
+                        _s3_motion_retract_active = False
 
                 elif current_phase == 3:
-                    # Phase 3: Skill-3 (29D obs) 레코딩
-                    phase3_obs.append(obs["policy"][0].cpu().numpy())
+                    # Phase 3: Skill-3 BC obs recording
+                    obs29 = obs["policy"][0:1]
+                    # Phase A→B latch: 0.40m 이하 진입 시 영구 전환
+                    _S3_PHASE_B_DIST = 0.40  # eval/train 기준과 동일
+                    if _s3_phase_a_active:
+                        _base_xy = env.robot.data.root_pos_w[0, :2].cpu().numpy()
+                        _dest_xy = env.dest_object_pos_w[0, :2].cpu().numpy()
+                        if np.linalg.norm(_base_xy - _dest_xy) <= _S3_PHASE_B_DIST:
+                            _s3_phase_a_active = False
+                    _phase_a = 1.0 if _s3_phase_a_active else 0.0
+                    if args.s3_obs_mode == "motion24":
+                        _motion_obs = build_s3_motion24_obs(
+                            env,
+                            obs29,
+                            _phase_a,
+                            release_phase_flag=float(_s3_motion_release_active),
+                            retract_started_flag=float(_s3_motion_retract_active),
+                            release_xy_thresh=float(args.s3_motion_release_xy),
+                            release_ee_z_thresh=float(args.s3_motion_release_ee_z),
+                            retract_grip_thresh=float(args.s3_motion_retract_grip),
+                        )[0].cpu().numpy().astype(np.float32)
+                        _release_flag_now = bool(_motion_obs[22] > 0.5)
+                        _retract_flag_now = bool(_motion_obs[23] > 0.5)
+                        if _release_flag_now and not _s3_motion_release_active:
+                            print("\n    [S3 Motion Flag] release_phase latched")
+                        if _retract_flag_now and not _s3_motion_retract_active:
+                            print("\n    [S3 Motion Flag] retract_phase latched")
+                        _s3_motion_release_active = _s3_motion_release_active or _release_flag_now
+                        _s3_motion_retract_active = _s3_motion_retract_active or _retract_flag_now
+                        obs_ext = build_s3_motion24_obs(
+                            env,
+                            obs29,
+                            _phase_a,
+                            release_phase_flag=float(_s3_motion_release_active),
+                            retract_started_flag=float(_s3_motion_retract_active),
+                            release_xy_thresh=float(args.s3_motion_release_xy),
+                            release_ee_z_thresh=float(args.s3_motion_release_ee_z),
+                            retract_grip_thresh=float(args.s3_motion_retract_grip),
+                        )[0].cpu().numpy().astype(np.float32)
+                    elif args.s3_obs_mode == "ee23":
+                        _ee_obs = build_s3_ee23_obs(
+                            env,
+                            obs29,
+                            _phase_a,
+                            release_phase_flag=float(_s3_motion_release_active),
+                            retract_started_flag=float(_s3_motion_retract_active),
+                            release_xy_thresh=float(args.s3_motion_release_xy),
+                            release_ee_z_thresh=float(args.s3_motion_release_ee_z),
+                            retract_grip_thresh=float(args.s3_motion_retract_grip),
+                        )[0].cpu().numpy().astype(np.float32)
+                        _release_flag_now = bool(_ee_obs[21] > 0.5)
+                        _retract_flag_now = bool(_ee_obs[22] > 0.5)
+                        if _release_flag_now and not _s3_motion_release_active:
+                            print("\n    [S3 EE23 Flag] release_phase latched")
+                        if _retract_flag_now and not _s3_motion_retract_active:
+                            print("\n    [S3 EE23 Flag] retract_phase latched")
+                        _s3_motion_release_active = _s3_motion_release_active or _release_flag_now
+                        _s3_motion_retract_active = _s3_motion_retract_active or _retract_flag_now
+                        obs_ext = build_s3_ee23_obs(
+                            env,
+                            obs29,
+                            _phase_a,
+                            release_phase_flag=float(_s3_motion_release_active),
+                            retract_started_flag=float(_s3_motion_retract_active),
+                            release_xy_thresh=float(args.s3_motion_release_xy),
+                            release_ee_z_thresh=float(args.s3_motion_release_ee_z),
+                            retract_grip_thresh=float(args.s3_motion_retract_grip),
+                        )[0].cpu().numpy().astype(np.float32)
+                    else:
+                        _init_pose6 = torch.from_numpy(phase3_init_pose6).to(env.device, dtype=torch.float32)
+                        _place_open_trigger = bool(compute_place_open_trigger(env, obs29, _phase_a)[0].item())
+                        if _place_open_trigger and not _s3_place_open_active:
+                            print("\n    [S3 Phase Flag] place_open_phase latched")
+                        _s3_place_open_active = _s3_place_open_active or _place_open_trigger
+                        obs_ext = build_s3_bc_obs(
+                            env,
+                            obs29,
+                            _init_pose6,
+                            _phase_a,
+                            obs_dim=S3_BC_OBS_PHASED_DIM,
+                            place_open_flag=float(_s3_place_open_active),
+                        )[0].cpu().numpy().astype(np.float32)
+                    phase3_obs.append(obs_ext)
                     phase3_actions.append(action_s)
                     phase3_active.append(bool(is_active))
                     phase3_robot_state.append(rs)
                     # 약병: 실제 물리 위치 (object_pos_w는 gripper 추종 텔레포트 값)
                     phase3_object_pos_w.append(env.object_rigid.data.root_pos_w[0].cpu().numpy())
                     phase3_object_quat_w.append(env.object_rigid.data.root_quat_w[0].cpu().numpy())
+                    phase3_object_center_pos_w.append(env.object_pos_w[0].cpu().numpy())
                     phase3_robot_pos_w.append(env.robot.data.root_pos_w[0].cpu().numpy())
                     phase3_robot_quat_w.append(env.robot.data.root_quat_w[0].cpu().numpy())
+                    phase3_ee_pos_w.append(ee_world_pos(env)[0].cpu().numpy())
                     # 컵: dest object 위치 (물리 body, 50kg)
                     phase3_dest_pos_w.append(env.dest_object_pos_w[0].cpu().numpy())
+                    if getattr(env, "_dest_object_rigid", None) is not None:
+                        phase3_dest_quat_w.append(env._dest_object_rigid.data.root_quat_w[0].cpu().numpy())
 
                 # 상태 출력 (+ grasp 디버그 정보)
                 if step_count % 25 == 0:
@@ -1569,14 +1853,16 @@ def main():
                     phase3_obs.clear(); phase3_actions.clear()
                     phase3_active.clear(); phase3_robot_state.clear()
                     phase3_object_pos_w.clear(); phase3_object_quat_w.clear(); phase3_dest_pos_w.clear()
+                    phase3_object_center_pos_w.clear(); phase3_dest_quat_w.clear(); phase3_ee_pos_w.clear()
                     phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
+                    _s3_place_open_active = False
+                    _s3_motion_release_active = False
+                    _s3_motion_retract_active = False
                     grasp_hold_counter = 0; s2_lift_counter = 0
                     current_phase = 1
                     env._s3_transition_dist = _rnd.uniform(0.6, 0.9)  # 새 에피소드 랜덤 거리
                     obs, info = env.reset()
-                    if _dest_marker is not None:
-                        _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
-                        _dest_marker.visualize(translations=_hm)
+                    _sync_combined_phase1_visuals()
                     step_count = 0
                 elif key == 'right':
                     if current_phase == 1:
@@ -1587,14 +1873,28 @@ def main():
                                           phase1_object_pos_w, phase1_object_quat_w,
                                           phase1_robot_pos_w, phase1_robot_quat_w)
                             skill2_saved += 1
-                            print(f"\n  [→] Phase 1 수동 완료: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                            if args.combined_manual_transit:
+                                print(f"\n  [→] Phase 1 수동 완료: Skill-2 저장 ({len(phase1_obs)} steps), Transit 시작")
+                            else:
+                                print(f"\n  [→] Phase 1 수동 완료: Skill-2 저장 ({len(phase1_obs)} steps), Skill-3 자동 시작")
                             phase1_obs.clear(); phase1_actions.clear()
                             phase1_active.clear(); phase1_robot_state.clear()
                             phase1_object_pos_w.clear(); phase1_object_quat_w.clear()
                             phase1_robot_pos_w.clear(); phase1_robot_quat_w.clear()
-                            current_phase = 2
                             grasp_hold_counter = 0; s2_lift_counter = 0
                             env.episode_length_buf[0] = 0
+                            if args.combined_manual_transit:
+                                current_phase = 2
+                            else:
+                                if s2_expert_mode and s2_dp is not None:
+                                    env._s2_last_arm_action = action[0, :6].clone()
+                                _auto_spawn_s3_dest_front()
+                                current_phase = 3
+                                phase3_init_pose6 = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy().astype(np.float32)
+                                _s3_phase_a_active = True
+                                _s3_place_open_active = False
+                                _s3_motion_release_active = False
+                                _s3_motion_retract_active = False
                         else:
                             print(f"\n  [→] Phase 1: 파지 미완료 (grasped={grasped_now}, steps={len(phase1_obs)}) — 폐기, 리셋")
                             phase1_obs.clear(); phase1_actions.clear()
@@ -1605,14 +1905,17 @@ def main():
                             current_phase = 1
                             env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
                             obs, info = env.reset()
-                            if _dest_marker is not None:
-                                _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
-                                _dest_marker.visualize(translations=_hm)
+                            _sync_combined_phase1_visuals()
                             step_count = 0
                     elif current_phase == 2:
                         print(f"\n  [→] Phase 2 수동 완료: Transit 건너뜀, Skill-3 기록 시작")
                         current_phase = 3
                         env.episode_length_buf[0] = 0
+                        phase3_init_pose6 = env.robot.data.joint_pos[0, env.arm_idx].cpu().numpy().astype(np.float32)
+                        _s3_phase_a_active = True
+                        _s3_place_open_active = False
+                        _s3_motion_release_active = False
+                        _s3_motion_retract_active = False
                     elif current_phase == 3:
                         active_s = int(np.sum(np.asarray(phase3_active, dtype=np.int32)))
                         if len(phase3_obs) > 10 and active_s > 10:
@@ -1620,7 +1923,10 @@ def main():
                                           phase3_obs, phase3_actions, phase3_active, phase3_robot_state,
                                           phase3_object_pos_w, phase3_object_quat_w,
                                           phase3_robot_pos_w, phase3_robot_quat_w,
-                                          ep_dest_pos_w=phase3_dest_pos_w)
+                                          ep_dest_pos_w=phase3_dest_pos_w,
+                                          ep_object_center_pos_w=phase3_object_center_pos_w,
+                                          ep_dest_quat_w=phase3_dest_quat_w,
+                                          ep_ee_pos_w=phase3_ee_pos_w)
                             skill3_saved += 1
                             print(f"\n  [→] Phase 3 수동 완료: Skill-3 저장 ({len(phase3_obs)} steps)")
                         else:
@@ -1628,14 +1934,16 @@ def main():
                         phase3_obs.clear(); phase3_actions.clear()
                         phase3_active.clear(); phase3_robot_state.clear()
                         phase3_object_pos_w.clear(); phase3_object_quat_w.clear(); phase3_dest_pos_w.clear()
+                        phase3_object_center_pos_w.clear(); phase3_dest_quat_w.clear(); phase3_ee_pos_w.clear()
                         phase3_robot_pos_w.clear(); phase3_robot_quat_w.clear()
+                        _s3_place_open_active = False
+                        _s3_motion_release_active = False
+                        _s3_motion_retract_active = False
                         current_phase = 1
                         grasp_hold_counter = 0; s2_lift_counter = 0
                         env._s3_transition_dist = _rnd.uniform(0.6, 0.9)
                         obs, info = env.reset()
-                        if _dest_marker is not None:
-                            _hm = getattr(env, _dest_attr)[:1].clone(); _hm[:, 2] = 0.08
-                            _dest_marker.visualize(translations=_hm)
+                        _sync_combined_phase1_visuals()
                         step_count = 0
                         saved_count = min(skill2_saved, skill3_saved)
                         if saved_count >= max_demos:

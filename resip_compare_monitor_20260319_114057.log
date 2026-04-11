@@ -1,0 +1,138 @@
+===== 2026-03-19 11:40:57 KST =====
+[LOCAL]
+325:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.832/0.628
+342:  Best: SR=33.59% SL=51 G=205
+394:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.841/0.632
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=581/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=636/7500
+  [RESET_DBG] out_of_bounds=1 fell=0 task_success=0 time_out=0 ep_len=689/7500
+  SR=6.05% | G=72(env:153) | VL=20 | PR=0 | L=31 | SL=20 | EE=0.020(0.169) | Base=0.060(0.382) | Grip=0.04/0.50/1.29 | R=14.4 | FPS=9343 | ObjZ:0.602/0.160 n=148 | GSus:5 LSus:107 n15+=31 | CF:2223/63 n=492 cf@g=4.078 | GAG:0.278(n=72) B@G:0.424 B@L:0.441 | R2avg=0.005 Opens=516 ClipR=0.045 R4b=0.000 R8=(15952)
+  pg=-0.0036 v=16.2813 ent=3.4238 kl=0.0108 clip=0.075 ev=0.608 SPS=119696
+
+Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.841/0.632
+  [LIFT] n=2 cf=20.1~34.2 grip=0.28~0.37 ee3d=0.033 held=1 mg=1
+
+[SERVER]
+===== 2026-03-19 11:41:28 KST =====
+[LOCAL]
+325:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.832/0.628
+342:  Best: SR=33.59% SL=51 G=205
+394:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.841/0.632
+412:  Best: SR=33.98% SL=84 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=516/7500
+  [LIFT] n=54 cf=0.0~36.4 grip=0.09~1.39 ee3d=0.004 held=9 mg=41
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=656/7500
+  SR=33.98% | G=199(env:314) | VL=155 | PR=0 | L=174 | SL=84 | EE=0.004(0.161) | Base=0.038(0.336) | Grip=0.11/0.55/1.44 | R=2514.6 | FPS=8638 | ObjZ:0.753/0.364 n=295 | GSus:5 LSus:107 n15+=174 | CF:3176/98 n=498 cf@g=10.684 | GAG:0.326(n=199) B@G:0.410 B@L:0.436 | R2avg=0.006 Opens=521 ClipR=0.000 R4b=0.000 R8=(7513)
+  ★ Best SL=84
+  Best: SR=33.98% SL=84 G=205
+
+Iter 72/697 | TRAIN | step=37273600 | wu=0 | EE: 0.832/0.628
+
+[SERVER]
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+bash: 줄 1: rg: 명령어를 찾을 수 없음
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=313/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=332/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=364/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=375/7500
+  [LIFT] n=17 cf=0.0~37.6 grip=0.01~1.03 ee3d=0.003 held=11 mg=12
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=447/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=470/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=545/7500
+
+===== 2026-03-19 11:41:38 KST =====
+[LOCAL]
+325:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.832/0.628
+342:  Best: SR=33.59% SL=51 G=205
+394:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.841/0.632
+412:  Best: SR=33.98% SL=84 G=205
+  [LIFT] n=54 cf=0.0~36.4 grip=0.09~1.39 ee3d=0.004 held=9 mg=41
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=656/7500
+  SR=33.98% | G=199(env:314) | VL=155 | PR=0 | L=174 | SL=84 | EE=0.004(0.161) | Base=0.038(0.336) | Grip=0.11/0.55/1.44 | R=2514.6 | FPS=8638 | ObjZ:0.753/0.364 n=295 | GSus:5 LSus:107 n15+=174 | CF:3176/98 n=498 cf@g=10.684 | GAG:0.326(n=199) B@G:0.410 B@L:0.436 | R2avg=0.006 Opens=521 ClipR=0.000 R4b=0.000 R8=(7513)
+  ★ Best SL=84
+  Best: SR=33.98% SL=84 G=205
+
+Iter 72/697 | TRAIN | step=37273600 | wu=0 | EE: 0.832/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=225/7500
+
+[SERVER]
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+bash: 줄 1: rg: 명령어를 찾을 수 없음
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=332/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=364/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=375/7500
+  [LIFT] n=17 cf=0.0~37.6 grip=0.01~1.03 ee3d=0.003 held=11 mg=12
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=447/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=470/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=545/7500
+  [LIFT] n=11 cf=0.0~23.0 grip=-0.04~0.47 ee3d=0.021 held=0 mg=2
+
+===== 2026-03-19 11:41:53 KST =====
+[LOCAL]
+325:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.832/0.628
+342:  Best: SR=33.59% SL=51 G=205
+394:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.841/0.632
+412:  Best: SR=33.98% SL=84 G=205
+  ★ Best SL=84
+  Best: SR=33.98% SL=84 G=205
+
+Iter 72/697 | TRAIN | step=37273600 | wu=0 | EE: 0.832/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=225/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=305/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=328/7500
+  [LIFT] n=28 cf=0.0~34.8 grip=0.01~0.65 ee3d=0.008 held=16 mg=20
+
+[SERVER]
+  **********************************************************************
+  *                       Welcome to Cheetah!                          *
+  *                                                                    *
+  *   This system is for the use of authorized users only.  Usage of   *
+  *   this system may be monitored and recorded by system personnel.   *
+  *                                                                    *
+  *   Anyone using this system expressly consents to such monitoring   *
+  *   and is advised that if such monitoring reveals possible          *
+  *   evidence of criminal activity, system personnel may provide the  *
+  *   evidence from such monitoring to law enforcement officials.      *
+  *                                                                    *
+  *   Disconnect IMMEDIATELY if you are not an authorized user!        *
+  **********************************************************************
+
+446:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.835/0.628
+461:  Best: SR=30.47% SL=46 G=183
+519:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.828/0.631
+544:  Best: SR=33.98% SL=66 G=199
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=470/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=545/7500
+  [LIFT] n=11 cf=0.0~23.0 grip=-0.04~0.47 ee3d=0.021 held=0 mg=2
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=685/7500
+  SR=4.88% | G=57(env:152) | VL=20 | PR=0 | L=25 | SL=19 | EE=0.012(0.164) | Base=0.091(0.387) | Grip=-0.16/0.51/1.49 | R=13.6 | FPS=5956 | ObjZ:0.764/0.161 n=145 | GSus:5 LSus:163 n15+=25 | CF:3912/76 n=479 cf@g=5.300 | GAG:0.274(n=57) B@G:0.420 B@L:0.430 | R2avg=0.006 Opens=520 ClipR=0.046 R4b=0.000 R8=(18759)
+  pg=-0.0045 v=20.4909 ent=3.3733 kl=0.0156 clip=0.118 ev=0.658 SPS=58693
+
+Iter 75/697 | TRAIN | step=38348800 | wu=0 | EE: 0.832/0.630
+

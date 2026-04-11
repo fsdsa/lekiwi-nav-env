@@ -1,0 +1,724 @@
+===== 2026-03-19 12:03:02 KST =====
+[LOCAL]
+713:Iter 91/697 | EVAL | step=43008000 | wu=0 | EE: 0.843/0.631
+728:  Best: SR=33.98% SL=92 G=205
+803:Iter 96/697 | EVAL | step=44441600 | wu=0 | EE: 0.832/0.629
+827:  Best: SR=33.98% SL=105 G=205
+904:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.839/0.628
+934:  Best: SR=33.98% SL=105 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=493/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=557/7500
+  [LIFT] n=28 cf=0.0~33.4 grip=0.08~1.15 ee3d=0.004 held=17 mg=19
+  SR=13.09% | G=103(env:165) | VL=47 | PR=0 | L=67 | SL=50 | EE=0.003(0.192) | Base=0.058(0.306) | Grip=0.10/0.58/1.46 | R=104.4 | FPS=8773 | ObjZ:0.531/0.205 n=155 | GSus:5 LSus:358 n15+=67 | CF:24683/188 n=476 cf@g=13.484 | GAG:0.302(n=103) B@G:0.426 B@L:0.442 | R2avg=0.002 Opens=528 ClipR=0.068 R4b=0.000 R8=(40692)
+  pg=-0.0016 v=522.3647 ent=3.3704 kl=0.0118 clip=0.091 ev=0.920 SPS=34382
+
+Iter 104/697 | TRAIN | step=46592000 | wu=0 | EE: 0.834/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=187/7500
+
+[SERVER]
+448:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.831/0.629
+460:  Best: SR=34.38% SL=60 G=211
+516:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.835/0.629
+528:  Best: SR=34.38% SL=71 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=343/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=365/7500
+  [LIFT] n=18 cf=0.0~34.5 grip=0.01~0.74 ee3d=0.002 held=6 mg=14
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=436/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=486/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=575/7500
+  [LIFT] n=12 cf=0.0~41.9 grip=0.12~0.62 ee3d=0.019 held=1 mg=2
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=669/7500
+
+===== 2026-03-19 12:08:02 KST =====
+[LOCAL]
+827:  Best: SR=33.98% SL=105 G=205
+904:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.839/0.628
+934:  Best: SR=33.98% SL=105 G=205
+1014:Iter 106/697 | EVAL | step=47308800 | wu=0 | EE: 0.826/0.628
+1037:  Best: SR=33.98% SL=124 G=205
+1125:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.828/0.628
+  [LIFT] n=35 cf=0.0~33.5 grip=0.04~0.76 ee3d=0.005 held=17 mg=26
+  SR=11.72% | G=94(env:162) | VL=55 | PR=0 | L=60 | SL=51 | EE=0.009(0.192) | Base=0.117(0.323) | Grip=0.09/0.59/1.09 | R=103.3 | FPS=8484 | ObjZ:0.525/0.202 n=151 | GSus:5 LSus:435 n15+=60 | CF:6296/119 n=483 cf@g=14.685 | GAG:0.302(n=94) B@G:0.428 B@L:0.429 | R2avg=0.003 Opens=525 ClipR=0.073 R4b=0.000 R8=(49695)
+  pg=-0.0008 v=876.7932 ent=3.3686 kl=0.0040 clip=0.035 ev=0.918 SPS=30267
+
+Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.828/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=193/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=203/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=211/7500
+
+[SERVER]
+448:Iter 66/697 | EVAL | step=35840000 | wu=0 | EE: 0.831/0.629
+460:  Best: SR=34.38% SL=60 G=211
+516:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.835/0.629
+528:  Best: SR=34.38% SL=71 G=211
+594:Iter 76/697 | EVAL | step=38707200 | wu=0 | EE: 0.829/0.631
+609:  Best: SR=34.38% SL=71 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=331/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=362/7500
+  [LIFT] n=30 cf=0.0~740.4 grip=-0.91~0.89 ee3d=0.004 held=10 mg=17
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=418/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=480/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=572/7500
+  [LIFT] n=18 cf=0.0~35.5 grip=0.08~0.76 ee3d=0.009 held=3 mg=9
+  SR=6.64% | G=75(env:170) | VL=24 | PR=0 | L=34 | SL=20 | EE=0.012(0.171) | Base=0.048(0.361) | Grip=-0.11/0.52/1.23 | R=18.3 | FPS=5941 | ObjZ:0.626/0.169 n=155 | GSus:5 LSus:154 n15+=34 | CF:28005/124 n=478 cf@g=5.862 | GAG:0.277(n=75) B@G:0.422 B@L:0.440 | R2avg=0.005 Opens=519 ClipR=0.045 R4b=0.000 R8=(15979)
+
+===== 2026-03-19 12:13:02 KST =====
+[LOCAL]
+1014:Iter 106/697 | EVAL | step=47308800 | wu=0 | EE: 0.826/0.628
+1037:  Best: SR=33.98% SL=124 G=205
+1125:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.828/0.628
+1142:  Best: SR=33.98% SL=124 G=205
+1234:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.834/0.631
+1258:  Best: SR=33.98% SL=127 G=205
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=321/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=412/7500
+  [LIFT] n=34 cf=0.0~35.6 grip=-0.05~0.99 ee3d=0.008 held=19 mg=23
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=640/7500
+  SR=9.77% | G=80(env:137) | VL=43 | PR=0 | L=50 | SL=44 | EE=0.006(0.255) | Base=0.043(0.307) | Grip=0.08/0.61/1.49 | R=82.4 | FPS=8316 | ObjZ:0.547/0.191 n=130 | GSus:5 LSus:422 n15+=50 | CF:11737/139 n=497 cf@g=14.572 | GAG:0.316(n=80) B@G:0.427 B@L:0.434 | R2avg=0.002 Opens=522 ClipR=0.075 R4b=0.000 R8=(58096)
+  pg=-0.0024 v=765.4259 ent=3.3676 kl=0.0154 clip=0.119 ev=0.920 SPS=27699
+
+Iter 118/697 | TRAIN | step=50534400 | wu=0 | EE: 0.823/0.628
+
+[SERVER]
+516:Iter 71/697 | EVAL | step=37273600 | wu=0 | EE: 0.835/0.629
+528:  Best: SR=34.38% SL=71 G=211
+594:Iter 76/697 | EVAL | step=38707200 | wu=0 | EE: 0.829/0.631
+609:  Best: SR=34.38% SL=71 G=211
+671:Iter 81/697 | EVAL | step=40140800 | wu=0 | EE: 0.831/0.632
+696:  Best: SR=34.38% SL=90 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=225/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=244/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=282/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=341/7500
+  [LIFT] n=25 cf=0.0~1294.3 grip=-0.47~0.78 ee3d=0.006 held=12 mg=24
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=490/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=530/7500
+  [LIFT] n=17 cf=0.0~28.8 grip=-0.01~0.70 ee3d=0.004 held=5 mg=10
+
+===== 2026-03-19 12:18:02 KST =====
+[LOCAL]
+1125:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.828/0.628
+1142:  Best: SR=33.98% SL=124 G=205
+1234:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.834/0.631
+1258:  Best: SR=33.98% SL=127 G=205
+1347:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.833/0.628
+1364:  Best: SR=33.98% SL=127 G=205
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=435/7500
+  [LIFT] n=37 cf=0.0~34.7 grip=0.02~0.81 ee3d=0.008 held=19 mg=25
+  SR=11.33% | G=78(env:135) | VL=52 | PR=0 | L=58 | SL=52 | EE=0.007(0.183) | Base=0.085(0.325) | Grip=0.09/0.64/1.06 | R=117.5 | FPS=8676 | ObjZ:0.584/0.196 n=126 | GSus:5 LSus:477 n15+=58 | CF:36961/189 n=498 cf@g=16.377 | GAG:0.312(n=78) B@G:0.419 B@L:0.437 | R2avg=0.002 Opens=520 ClipR=0.079 R4b=0.000 R8=(59127)
+  pg=-0.0014 v=1000.0344 ent=3.3670 kl=0.0070 clip=0.052 ev=0.939 SPS=25318
+
+Iter 125/697 | TRAIN | step=52684800 | wu=0 | EE: 0.832/0.631
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=185/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=188/7500
+
+[SERVER]
+594:Iter 76/697 | EVAL | step=38707200 | wu=0 | EE: 0.829/0.631
+609:  Best: SR=34.38% SL=71 G=211
+671:Iter 81/697 | EVAL | step=40140800 | wu=0 | EE: 0.831/0.632
+696:  Best: SR=34.38% SL=90 G=211
+758:Iter 86/697 | EVAL | step=41574400 | wu=0 | EE: 0.826/0.628
+777:  Best: SR=34.38% SL=100 G=211
+Iter 88/697 | TRAIN | step=41932800 | wu=0 | EE: 0.823/0.629
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=212/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=265/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=271/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=273/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=276/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=283/7500
+  [LIFT] n=51 cf=0.0~37.0 grip=-0.02~0.59 ee3d=0.006 held=30 mg=39
+
+===== 2026-03-19 12:23:02 KST =====
+[LOCAL]
+1347:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.833/0.628
+1364:  Best: SR=33.98% SL=127 G=205
+1452:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.836/0.630
+1475:  Best: SR=33.98% SL=151 G=205
+1587:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.846/0.629
+1614:  Best: SR=33.98% SL=151 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=460/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=480/7500
+  [LIFT] n=142 cf=0.0~42.5 grip=0.18~1.46 ee3d=0.002 held=60 mg=118
+  [LIFT] n=129 cf=0.0~37.3 grip=0.19~1.44 ee3d=0.003 held=68 mg=104
+  SR=29.10% | G=169(env:230) | VL=146 | PR=0 | L=149 | SL=132 | EE=0.003(0.135) | Base=0.089(0.361) | Grip=0.11/0.63/1.49 | R=14110.5 | FPS=8104 | ObjZ:0.674/0.356 n=215 | GSus:5 LSus:479 n15+=149 | CF:245518/639 n=506 cf@g=19.318 | GAG:0.364(n=169) B@G:0.423 B@L:0.445 | R2avg=0.006 Opens=529 ClipR=0.000 R4b=0.001 R8=(62743)
+  Best: SR=33.98% SL=151 G=205
+
+Iter 132/697 | TRAIN | step=54476800 | wu=0 | EE: 0.833/0.629
+
+[SERVER]
+671:Iter 81/697 | EVAL | step=40140800 | wu=0 | EE: 0.831/0.632
+696:  Best: SR=34.38% SL=90 G=211
+758:Iter 86/697 | EVAL | step=41574400 | wu=0 | EE: 0.826/0.628
+777:  Best: SR=34.38% SL=100 G=211
+854:Iter 91/697 | EVAL | step=43008000 | wu=0 | EE: 0.836/0.628
+872:  Best: SR=34.38% SL=107 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=229/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=234/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=263/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=265/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=277/7500
+  [RESET_DBG] out_of_bounds=2 fell=2 task_success=0 time_out=0 ep_len=281/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=287/7500
+
+===== 2026-03-19 12:28:03 KST =====
+[LOCAL]
+1452:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.836/0.630
+1475:  Best: SR=33.98% SL=151 G=205
+1587:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.846/0.629
+1614:  Best: SR=33.98% SL=151 G=205
+1723:Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.829/0.628
+1743:  Best: SR=34.77% SL=164 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=524/7500
+  [LIFT] n=39 cf=0.0~34.3 grip=0.02~1.32 ee3d=0.007 held=24 mg=27
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=556/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=642/7500
+  SR=11.13% | G=76(env:134) | VL=49 | PR=0 | L=57 | SL=50 | EE=0.007(0.186) | Base=0.124(0.327) | Grip=0.08/0.69/1.49 | R=104.5 | FPS=8421 | ObjZ:0.497/0.205 n=119 | GSus:5 LSus:415 n15+=57 | CF:17574/163 n=492 cf@g=17.805 | GAG:0.318(n=76) B@G:0.423 B@L:0.437 | R2avg=0.003 Opens=535 ClipR=0.086 R4b=0.000 R8=(58322)
+  pg=-0.0005 v=1157.6709 ent=3.3628 kl=0.0029 clip=0.002 ev=0.940 SPS=22181
+
+Iter 139/697 | TRAIN | step=56627200 | wu=0 | EE: 0.833/0.629
+
+[SERVER]
+758:Iter 86/697 | EVAL | step=41574400 | wu=0 | EE: 0.826/0.628
+777:  Best: SR=34.38% SL=100 G=211
+854:Iter 91/697 | EVAL | step=43008000 | wu=0 | EE: 0.836/0.628
+872:  Best: SR=34.38% SL=107 G=211
+950:Iter 96/697 | EVAL | step=44441600 | wu=0 | EE: 0.828/0.628
+966:  Best: SR=34.38% SL=128 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=478/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=504/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=516/7500
+  [LIFT] n=35 cf=0.0~34.6 grip=0.04~0.57 ee3d=0.003 held=17 mg=26
+  SR=11.72% | G=113(env:217) | VL=50 | PR=0 | L=60 | SL=42 | EE=0.004(0.175) | Base=0.072(0.333) | Grip=-0.03/0.61/1.49 | R=80.3 | FPS=5657 | ObjZ:0.557/0.188 n=201 | GSus:5 LSus:337 n15+=60 | CF:11018/137 n=494 cf@g=12.728 | GAG:0.301(n=113) B@G:0.421 B@L:0.432 | R2avg=0.005 Opens=527 ClipR=0.067 R4b=0.000 R8=(23478)
+  pg=-0.0037 v=299.1638 ent=3.3849 kl=0.0148 clip=0.107 ev=0.895 SPS=25225
+
+Iter 98/697 | TRAIN | step=44800000 | wu=0 | EE: 0.836/0.628
+
+===== 2026-03-19 12:33:03 KST =====
+[LOCAL]
+1587:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.846/0.629
+1614:  Best: SR=33.98% SL=151 G=205
+1723:Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.829/0.628
+1743:  Best: SR=34.77% SL=164 G=205
+1859:Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.836/0.627
+1891:  Best: SR=34.77% SL=165 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=275/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=277/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=280/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=282/7500
+  [LIFT] n=54 cf=0.0~39.5 grip=-0.07~0.84 ee3d=0.004 held=32 mg=40
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=462/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=516/7500
+  [LIFT] n=38 cf=0.0~39.6 grip=0.08~1.49 ee3d=0.005 held=24 mg=25
+
+[SERVER]
+854:Iter 91/697 | EVAL | step=43008000 | wu=0 | EE: 0.836/0.628
+872:  Best: SR=34.38% SL=107 G=211
+950:Iter 96/697 | EVAL | step=44441600 | wu=0 | EE: 0.828/0.628
+966:  Best: SR=34.38% SL=128 G=211
+1042:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.840/0.630
+1061:  Best: SR=34.38% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=360/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=372/7500
+  [LIFT] n=46 cf=0.0~34.8 grip=0.02~0.78 ee3d=0.003 held=26 mg=38
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=466/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=488/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=510/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=518/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=613/7500
+
+===== 2026-03-19 12:38:03 KST =====
+[LOCAL]
+1859:Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.836/0.627
+1891:  Best: SR=34.77% SL=165 G=205
+2003:Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.824/0.630
+2035:  Best: SR=35.55% SL=165 G=205
+2138:Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.835/0.631
+2176:  Best: SR=35.55% SL=165 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=279/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=284/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=290/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=327/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=337/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=385/7500
+  [RESET_DBG] out_of_bounds=0 fell=0 task_success=1 time_out=0 ep_len=407/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=443/7500
+
+[SERVER]
+950:Iter 96/697 | EVAL | step=44441600 | wu=0 | EE: 0.828/0.628
+966:  Best: SR=34.38% SL=128 G=211
+1042:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.840/0.630
+1061:  Best: SR=34.38% SL=128 G=211
+1152:Iter 106/697 | EVAL | step=47308800 | wu=0 | EE: 0.829/0.634
+1173:  Best: SR=36.52% SL=128 G=211
+  [LIFT] n=72 cf=0.0~37.4 grip=-0.13~0.78 ee3d=0.005 held=40 mg=49
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=325/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=330/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=355/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=399/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=408/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=411/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=428/7500
+
+===== 2026-03-19 12:43:03 KST =====
+[LOCAL]
+2003:Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.824/0.630
+2035:  Best: SR=35.55% SL=165 G=205
+2138:Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.835/0.631
+2176:  Best: SR=35.55% SL=165 G=205
+2303:Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.833/0.629
+2338:  Best: SR=35.55% SL=165 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=236/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=249/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=252/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=256/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=258/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=269/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=285/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=288/7500
+
+[SERVER]
+1042:Iter 101/697 | EVAL | step=45875200 | wu=0 | EE: 0.840/0.630
+1061:  Best: SR=34.38% SL=128 G=211
+1152:Iter 106/697 | EVAL | step=47308800 | wu=0 | EE: 0.829/0.634
+1173:  Best: SR=36.52% SL=128 G=211
+1263:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.838/0.629
+1292:  Best: SR=36.52% SL=128 G=211
+Iter 112/697 | TRAIN | step=48742400 | wu=0 | EE: 0.835/0.628
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=193/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=206/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=212/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=220/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=226/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=235/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=238/7500
+
+===== 2026-03-19 12:48:03 KST =====
+[LOCAL]
+2176:  Best: SR=35.55% SL=165 G=205
+2303:Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.833/0.629
+2338:  Best: SR=35.55% SL=165 G=205
+2451:Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.835/0.630
+2486:  Best: SR=35.94% SL=165 G=205
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+
+Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=197/7500
+  [LIFT] n=9 cf=0.0~33.0 grip=0.17~0.99 ee3d=0.008 held=2 mg=2
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=213/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=216/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=223/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=230/7500
+
+[SERVER]
+1061:  Best: SR=34.38% SL=128 G=211
+1152:Iter 106/697 | EVAL | step=47308800 | wu=0 | EE: 0.829/0.634
+1173:  Best: SR=36.52% SL=128 G=211
+1263:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.838/0.629
+1292:  Best: SR=36.52% SL=128 G=211
+1401:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.835/0.629
+  [LIFT] n=128 cf=0.0~36.6 grip=0.08~1.42 ee3d=0.003 held=100 mg=114
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=419/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=469/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=483/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=523/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=557/7500
+  [LIFT] n=159 cf=0.0~43.7 grip=0.10~1.42 ee3d=0.003 held=136 mg=142
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=614/7500
+
+===== 2026-03-19 12:53:03 KST =====
+[LOCAL]
+2451:Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.835/0.630
+2486:  Best: SR=35.94% SL=165 G=205
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=254/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=257/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=259/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=261/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=282/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=361/7500
+  [LIFT] n=50 cf=0.0~37.4 grip=-0.05~0.52 ee3d=0.004 held=37 mg=43
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=469/7500
+
+[SERVER]
+1173:  Best: SR=36.52% SL=128 G=211
+1263:Iter 111/697 | EVAL | step=48742400 | wu=0 | EE: 0.838/0.629
+1292:  Best: SR=36.52% SL=128 G=211
+1401:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.835/0.629
+1429:  Best: SR=36.52% SL=128 G=211
+1535:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.828/0.630
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=385/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=398/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=401/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=406/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=411/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=428/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=445/7500
+  [LIFT] n=145 cf=0.0~39.6 grip=0.05~1.45 ee3d=0.003 held=88 mg=123
+
+===== 2026-03-19 12:58:04 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+1292:  Best: SR=36.52% SL=128 G=211
+1401:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.835/0.629
+1429:  Best: SR=36.52% SL=128 G=211
+1535:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.828/0.630
+1573:  Best: SR=36.52% SL=128 G=211
+1679:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.834/0.628
+Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.834/0.628
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=218/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=222/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=244/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=247/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=253/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=255/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=259/7500
+
+===== 2026-03-19 13:03:04 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+1401:Iter 116/697 | EVAL | step=50176000 | wu=0 | EE: 0.835/0.629
+1429:  Best: SR=36.52% SL=128 G=211
+1535:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.828/0.630
+1573:  Best: SR=36.52% SL=128 G=211
+1679:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.834/0.628
+1714:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=385/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=404/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=425/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=436/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=461/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=472/7500
+  [LIFT] n=61 cf=0.0~37.0 grip=0.04~0.83 ee3d=0.006 held=40 mg=50
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=651/7500
+
+===== 2026-03-19 13:08:04 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+1535:Iter 121/697 | EVAL | step=51609600 | wu=0 | EE: 0.828/0.630
+1573:  Best: SR=36.52% SL=128 G=211
+1679:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.834/0.628
+1714:  Best: SR=36.52% SL=128 G=211
+1858:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.831/0.629
+1891:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=349/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=353/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=370/7500
+  [LIFT] n=78 cf=0.0~38.2 grip=-0.05~0.89 ee3d=0.002 held=44 mg=54
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=374/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=385/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=403/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=408/7500
+
+===== 2026-03-19 13:13:04 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+1679:Iter 126/697 | EVAL | step=53043200 | wu=0 | EE: 0.834/0.628
+1714:  Best: SR=36.52% SL=128 G=211
+1858:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.831/0.629
+1891:  Best: SR=36.52% SL=128 G=211
+2026:Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.837/0.628
+2067:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=403/7500
+  [LIFT] n=49 cf=0.0~35.9 grip=-0.03~0.71 ee3d=0.006 held=28 mg=36
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=555/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=565/7500
+  SR=15.62% | G=105(env:176) | VL=72 | PR=0 | L=80 | SL=70 | EE=0.004(0.180) | Base=0.106(0.328) | Grip=-0.08/0.79/1.49 | R=115.9 | FPS=5474 | ObjZ:0.537/0.251 n=162 | GSus:5 LSus:302 n15+=80 | CF:4406/166 n=488 cf@g=17.221 | GAG:0.359(n=105) B@G:0.419 B@L:0.436 | R2avg=0.004 Opens=543 ClipR=0.085 R4b=0.002 R8=(40953)
+  pg=-0.0015 v=929.0226 ent=3.3733 kl=0.0058 clip=0.031 ev=0.920 SPS=14336
+
+Iter 140/697 | TRAIN | step=56985600 | wu=0 | EE: 0.841/0.631
+
+===== 2026-03-19 13:18:04 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+1858:Iter 131/697 | EVAL | step=54476800 | wu=0 | EE: 0.831/0.629
+1891:  Best: SR=36.52% SL=128 G=211
+2026:Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.837/0.628
+2067:  Best: SR=36.52% SL=128 G=211
+2189:Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.844/0.627
+2228:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=384/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=408/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=410/7500
+  [LIFT] n=64 cf=0.0~38.1 grip=-0.03~0.78 ee3d=0.007 held=39 mg=50
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=444/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=461/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=479/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=547/7500
+
+===== 2026-03-19 13:23:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2026:Iter 136/697 | EVAL | step=55910400 | wu=0 | EE: 0.837/0.628
+2067:  Best: SR=36.52% SL=128 G=211
+2189:Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.844/0.627
+2228:  Best: SR=36.52% SL=128 G=211
+2339:Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.838/0.632
+2376:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=308/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=337/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=352/7500
+  [LIFT] n=52 cf=0.0~40.8 grip=0.06~0.60 ee3d=0.006 held=38 mg=44
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=375/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=377/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=381/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=386/7500
+
+===== 2026-03-19 13:28:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2189:Iter 141/697 | EVAL | step=57344000 | wu=0 | EE: 0.844/0.627
+2228:  Best: SR=36.52% SL=128 G=211
+2339:Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.838/0.632
+2376:  Best: SR=36.52% SL=128 G=211
+2507:Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.835/0.628
+2544:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=448/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=519/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=609/7500
+  [LIFT] n=39 cf=0.0~32.4 grip=-0.06~1.45 ee3d=0.007 held=17 mg=25
+  SR=11.91% | G=78(env:126) | VL=53 | PR=0 | L=61 | SL=52 | EE=0.005(0.231) | Base=0.059(0.388) | Grip=0.03/0.87/1.49 | R=76.9 | FPS=5765 | ObjZ:0.526/0.269 n=111 | GSus:5 LSus:262 n15+=61 | CF:33898/308 n=484 cf@g=17.897 | GAG:0.342(n=78) B@G:0.419 B@L:0.430 | R2avg=0.005 Opens=542 ClipR=0.089 R4b=0.000 R8=(49575)
+  pg=-0.0021 v=777.0427 ent=3.3704 kl=0.0037 clip=0.023 ev=0.918 SPS=13027
+
+Iter 154/697 | TRAIN | step=60928000 | wu=0 | EE: 0.832/0.632
+
+===== 2026-03-19 13:33:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2339:Iter 146/697 | EVAL | step=58777600 | wu=0 | EE: 0.838/0.632
+2376:  Best: SR=36.52% SL=128 G=211
+2507:Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.835/0.628
+2544:  Best: SR=36.52% SL=128 G=211
+2670:Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.832/0.628
+2709:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=577/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=593/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=609/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=656/7500
+  SR=15.62% | G=96(env:148) | VL=75 | PR=0 | L=80 | SL=77 | EE=0.002(0.172) | Base=0.081(0.388) | Grip=0.04/0.84/1.54 | R=93.2 | FPS=5752 | ObjZ:0.558/0.298 n=130 | GSus:5 LSus:207 n15+=80 | CF:53295/388 n=493 cf@g=19.244 | GAG:0.329(n=96) B@G:0.421 B@L:0.427 | R2avg=0.006 Opens=546 ClipR=0.093 R4b=0.000 R8=(51640)
+  pg=-0.0019 v=1162.3236 ent=3.3693 kl=0.0042 clip=0.041 ev=0.914 SPS=12650
+
+Iter 159/697 | TRAIN | step=62361600 | wu=0 | EE: 0.832/0.627
+
+===== 2026-03-19 13:38:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2507:Iter 151/697 | EVAL | step=60211200 | wu=0 | EE: 0.835/0.628
+2544:  Best: SR=36.52% SL=128 G=211
+2670:Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.832/0.628
+2709:  Best: SR=36.52% SL=128 G=211
+2828:Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.838/0.628
+2858:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=432/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=501/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=516/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=556/7500
+  [LIFT] n=62 cf=0.0~36.7 grip=-0.10~1.01 ee3d=0.006 held=32 mg=47
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=593/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=596/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=602/7500
+
+===== 2026-03-19 13:43:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2670:Iter 156/697 | EVAL | step=61644800 | wu=0 | EE: 0.832/0.628
+2709:  Best: SR=36.52% SL=128 G=211
+2828:Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.838/0.628
+2858:  Best: SR=36.52% SL=128 G=211
+2975:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.830/0.629
+3006:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=323/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=334/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=337/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=351/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=356/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=366/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=381/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=423/7500
+
+===== 2026-03-19 13:48:05 KST =====
+[LOCAL]
+2589:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.838/0.629
+2621:  Best: SR=35.94% SL=165 G=205
+2743:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.842/0.629
+2761:  Best: SR=35.94% SL=165 G=205
+2866:Iter 176/697 | EVAL | step=67379200 | wu=0 | EE: 0.833/0.630
+2890:  Best: SR=35.94% SL=165 G=205
+
+with the message:
+	"Recursion not allowed"
+
+Press ABORT to exit.
+Press RETRY to debug (attach a debugger first).
+Press IGNORE to attempt to continue.
+/tmp/tmpbyxmg5im: line 3: 26065 Aborted                 (core dumped) env PYTHONUNBUFFERED=1 python train_resip.py --skill approach_and_grasp --bc_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt --object_usd /home/yubin11/isaac-objects/mujoco_scanned_objects/models/5_HTP/model_clean.usd --num_envs 512 --lr_actor 1e-4 --lr_critic 1e-3 --update_epochs 10 --num_minibatches 4 --target_kl 0.03 --ent_coef 1e-4 --total_timesteps 250000000 --normalize_reward True --resume_resip backup/appoachandlift/resip_v6.4b_best.pt --resume_actor_only True --warmup_steps_initial 0 --enable_domain_randomization False --r8_penalty -1.0 --save_dir checkpoints/resip_v6.4b_direct_tuned --headless
+
+[SERVER]
+2828:Iter 161/697 | EVAL | step=63078400 | wu=0 | EE: 0.838/0.628
+2858:  Best: SR=36.52% SL=128 G=211
+2975:Iter 166/697 | EVAL | step=64512000 | wu=0 | EE: 0.830/0.629
+3006:  Best: SR=36.52% SL=128 G=211
+3131:Iter 171/697 | EVAL | step=65945600 | wu=0 | EE: 0.825/0.630
+3162:  Best: SR=36.52% SL=128 G=211
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=243/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=245/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=258/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=265/7500
+  [RESET_DBG] out_of_bounds=0 fell=1 task_success=0 time_out=0 ep_len=273/7500
+  [RESET_DBG] out_of_bounds=1 fell=2 task_success=0 time_out=0 ep_len=279/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=283/7500
+  [RESET_DBG] out_of_bounds=1 fell=1 task_success=0 time_out=0 ep_len=285/7500
+

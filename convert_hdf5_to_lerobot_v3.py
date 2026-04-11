@@ -543,14 +543,42 @@ def main() -> None:
         subtasks_df.to_parquet(subtasks_path)
 
     # Write compatibility tasks.jsonl (legacy helper for external tooling)
+    # LeRobot v3에서 dataset.meta.tasks DataFrame 구조:
+    #   - index = task text (str)
+    #   - column = "task_index" (int)
+    # 이전 LeRobot 버전과 호환을 위해 두 가지 구조 모두 처리
     tasks_jsonl_path = output_root / "meta" / "tasks.jsonl"
     tasks_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-    tasks_df = dataset.meta.tasks.sort_values("task_index")
-    with open(tasks_jsonl_path, "w", encoding="utf-8") as f:
-        for task_text, row in tasks_df.iterrows():
-            # LeRobot v3: task text is the DataFrame index, not a column
-            record = {"task_index": int(row["task_index"]), "task": str(task_text)}
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    tasks_df = dataset.meta.tasks
+    try:
+        if "task_index" in tasks_df.columns:
+            tasks_df_sorted = tasks_df.sort_values("task_index")
+            with open(tasks_jsonl_path, "w", encoding="utf-8") as f:
+                for idx_val, row in tasks_df_sorted.iterrows():
+                    # idx_val은 보통 task text (string)
+                    # 만약 column에 'task'가 있으면 그것을 우선 사용
+                    if "task" in row.index:
+                        task_text = str(row["task"])
+                    else:
+                        task_text = str(idx_val)
+                    record = {"task_index": int(row["task_index"]), "task": task_text}
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        else:
+            # task_index가 index인 경우 (구버전 호환)
+            tasks_df_sorted = tasks_df.sort_index()
+            with open(tasks_jsonl_path, "w", encoding="utf-8") as f:
+                for task_idx, row in tasks_df_sorted.iterrows():
+                    if "task" in row.index:
+                        task_text = str(row["task"])
+                    else:
+                        task_text = str(row.iloc[0]) if len(row) > 0 else ""
+                    record = {"task_index": int(task_idx), "task": task_text}
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[WARN] tasks.jsonl 작성 실패: {e}")
+        print(f"[WARN] tasks DataFrame columns: {list(tasks_df.columns)}")
+        print(f"[WARN] tasks DataFrame index name: {tasks_df.index.name}")
+        print(f"[WARN] tasks DataFrame head:\n{tasks_df.head()}")
 
     # ── 최종 stats.json NaN/inf 검증 ──
     stats_path = output_root / "meta" / "stats.json"

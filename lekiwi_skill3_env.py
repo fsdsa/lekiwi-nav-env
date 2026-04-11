@@ -53,11 +53,10 @@ class Skill3EnvCfg(Skill2EnvCfg):
     # Destination object — Skill2EnvCfg의 기본값 override
     dest_object_usd: str = "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd"
     dest_object_fixed: bool = True       # kinematic — RL 학습 시 밀림 방지
-    # Place 판정 (Skill-3 전용, 데모 기반)
-    place_radius: float = 0.172          # object-dest XY 거리 (데모 max 동일)
-    place_obj_z_min: float = 0.032       # 약병 서있는 상태 obj_z 범위
-    place_obj_z_max: float = 0.034
-    place_grace_steps: int = 500         # place 성공 후 rest pose 복귀 여유 step
+    # Place 판정 (Skill-3 전용)
+    place_radius: float = 0.20           # "옆에" 판정 반경 (XY 20cm 이내)
+    place_height_tolerance: float = 0.10  # 높이 허용 오차
+    place_grace_steps: int = 500          # place 성공 후 rest pose 복귀 여유 step
 
     # Handoff
     handoff_buffer_path: str = ""
@@ -100,8 +99,7 @@ class Skill3Env(Skill2Env):
         # Skill-3 추가 버퍼 (dest_object_pos_w는 Skill2Env에서 생성됨)
         self.prev_dest_dist = torch.zeros(self.num_envs, device=self.device)
         self.intentional_placed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.place_success_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # 1차 성공 시점
-        self.preliminary_success = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)  # 1차 성공 여부
+        self.place_success_step = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)  # place 성공 시점 기록
         # Fallback: handoff buffer 없을 때 매 step teleport carry 사용
         self._fallback_teleport_carry = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         # Combined mode: record_teleop에서 Skill-2→3 연속 레코딩 시 사용
@@ -109,7 +107,6 @@ class Skill3Env(Skill2Env):
         # Handoff buffer에서 읽은 object orientation (identity default)
         self._handoff_object_ori = torch.zeros(self.num_envs, 4, device=self.device)
         self._handoff_object_ori[:, 0] = 1.0  # qw=1 identity
-
         print(f"  [Skill3Env] obs={self.cfg.observation_space} act={self.cfg.action_space} critic={self.cfg.state_space}")
 
     # _create_extra_scene_objects()는 Skill2Env에서 상속 (dest_object_usd 설정 시 자동 스폰)
@@ -361,69 +358,73 @@ class Skill3Env(Skill2Env):
     #  Dones
     # ═══════════════════════════════════════════════════════════════════
 
-    def _check_place_condition(self) -> torch.Tensor:
-        """Place 조건: 약병 서있음(obj_z) + dest 근처(XY)."""
+    def _check_place_success(self) -> torch.Tensor:
+        """Place 성공 판정: source 물체가 dest 물체 옆(XY+Z) + gripper open + 의도적 놓기."""
         obj_pos = self.object_pos_w           # source object (약병)
         dest_pos = self.dest_object_pos_w     # dest object (빨간 컵)
-        env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
 
         xy_dist = torch.norm(obj_pos[:, :2] - dest_pos[:, :2], dim=-1)
-        obj_z = obj_pos[:, 2] - env_z  # 바닥 기준 높이
+        z_diff = torch.abs(obj_pos[:, 2] - dest_pos[:, 2])
 
-        upright = (obj_z >= self.cfg.place_obj_z_min) & (obj_z <= self.cfg.place_obj_z_max)
-        near_dest = xy_dist < self.cfg.place_radius
+        in_range = (xy_dist < self.cfg.place_radius) & (z_diff < self.cfg.place_height_tolerance)
+        gripper_open = self.robot.data.joint_pos[:, self.gripper_idx] > self.cfg.place_gripper_threshold
 
-        return near_dest & upright
+        return in_range & gripper_open & (~self.object_grasped) & (~self.just_dropped)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         metrics = self._compute_metrics()
-        self._update_grasp_state(metrics)
+        self._update_grasp_state(metrics)  # drop 감지 포함
         self._cached_metrics = metrics
 
-        # ── Place 2단계 판정 ──
-        place_cond = self._check_place_condition()
+        # ── CRITICAL-2 Fix: Override parent's lift-based task_success ──
+        # Parent sets task_success=True for lifted objects, but Skill-3
+        # starts with already-lifted objects from handoff buffer.
+        # Use place_success (목적지 물체 옆 판정) instead.
+        place_success = self._check_place_success()
+        # Latch: 한번 place 성공하면 유지 (rest pose 복귀 중 조건 변해도 성공 유지)
+        self.task_success = self.task_success | place_success
 
-        # 1차 성공: obj_z가 최초로 [0.032, 0.034] + XY < 0.172m 진입
-        newly_prelim = place_cond & (~self.preliminary_success)
-        if newly_prelim.any():
-            self.preliminary_success[newly_prelim] = True
-            self.place_success_step[newly_prelim] = self.episode_length_buf[newly_prelim]
+        # Place 성공 시점 기록 (최초 1회)
+        newly_placed = place_success & (self.place_success_step == 0)
+        if newly_placed.any():
+            self.place_success_step[newly_placed] = self.episode_length_buf[newly_placed]
 
-        # max step 도달 시에만 종료 (그 전에는 절대 종료하지 않음)
-        terminated = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        root_pos = metrics["root_pos_w"]
+        # out_of_bounds: env origin (home_pos_w) 기준
+        out_of_bounds = torch.norm(
+            root_pos[:, :2] - self.home_pos_w[:, :2], dim=-1
+        ) > self.cfg.max_dist_from_origin
+        env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
+        fell = ((root_pos[:, 2] - env_z) < 0.01) | ((root_pos[:, 2] - env_z) > 0.5)
+
+        # Skill-3 핵심: drop → terminated (에피소드 즉시 종료)
+        dropped = self.just_dropped
+        terminated = out_of_bounds | fell | dropped
 
         time_out = self.episode_length_buf >= (self.max_episode_length - 1)
-        # 1차 성공 후 grace period
+        # Place 성공 후 grace period (rest pose 복귀 시간)
         place_grace_done = (self.place_success_step > 0) & (
             (self.episode_length_buf - self.place_success_step) >= self.cfg.place_grace_steps
         )
         truncated = place_grace_done | time_out
 
-        # 최종 성공: 에피소드 종료 시점에도 조건 만족
-        if truncated.any():
-            final_success = self.preliminary_success & place_cond
-            self.task_success = final_success
-
-            obj_pos = self.object_pos_w
-            dest_pos = self.dest_object_pos_w
-            env_z = self.scene.env_origins[:, 2] if hasattr(self.scene, "env_origins") else 0.0
-            xy_dist = torch.norm(obj_pos[:, :2] - dest_pos[:, :2], dim=-1)
-            obj_z = obj_pos[:, 2] - env_z
-
-            n_prelim = self.preliminary_success.sum().item()
-            n_final = final_success.sum().item()
+        # RESET 진단
+        if (terminated.any() or truncated.any()):
+            n_oob = out_of_bounds.sum().item()
+            n_fell = fell.sum().item()
+            n_drop = dropped.sum().item()
+            n_ps = place_success.sum().item()
             n_pg = place_grace_done.sum().item()
             n_to = time_out.sum().item()
             ep_len = self.episode_length_buf.max().item()
-            print(f"  [S3_DONE] prelim={n_prelim} final={n_final} grace={n_pg} timeout={n_to} "
-                  f"ep={ep_len}/{self.max_episode_length} "
-                  f"obj_z={obj_z[0]:.4f} xy_dist={xy_dist[0]:.4f}",
+            print(f"  [S3_DONE] oob={n_oob} fell={n_fell} drop={n_drop} "
+                  f"place={n_ps} grace_done={n_pg} timeout={n_to} ep={ep_len}/{self.max_episode_length}",
                   flush=True)
 
         # Logging (saved BEFORE auto-reset clears flags)
-        self.extras["place_success_mask"] = self.task_success.clone()
         self.extras["task_success_rate"] = self.task_success.float().mean()
-        self.extras["preliminary_success"] = self.preliminary_success.clone()
+        self.extras["place_success_mask"] = self.task_success.clone()
+        self.extras["drop_rate"] = dropped.float().mean()
         self.extras["object_grasped_mask"] = self.object_grasped.clone()
         self.extras["just_dropped_mask"] = self.just_dropped.clone()
         self.extras["object_height_mask"] = (self.object_pos_w[:, 2] - self.scene.env_origins[:, 2]).clone()
@@ -444,7 +445,6 @@ class Skill3Env(Skill2Env):
             self.prev_dest_dist[env_ids] = 10.0
             self.intentional_placed[env_ids] = False
             self.place_success_step[env_ids] = 0
-            self.preliminary_success[env_ids] = False
             self._fallback_teleport_carry[env_ids] = False
             # home = env origin (out_of_bounds용)
             env_origins = self.scene.env_origins[env_ids]
@@ -643,7 +643,6 @@ class Skill3Env(Skill2Env):
         self.just_dropped[env_ids] = False
         self.intentional_placed[env_ids] = False
         self.place_success_step[env_ids] = 0
-        self.preliminary_success[env_ids] = False
         self.prev_dest_dist[env_ids] = 10.0
         self.prev_object_dist[env_ids] = 10.0
         self.grasp_entry_step[env_ids] = 0

@@ -1,0 +1,25 @@
+PYTHONPATH: path doesn't exist (/home/yubin11/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/exts/isaacsim.simulation_app)
+PYTHONPATH: path doesn't exist (/home/yubin11/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/extsDeprecated/omni.isaac.kit)
+Traceback (most recent call last):
+  File "/home/yubin11/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/__init__.py", line 96, in expose_api
+    from isaacsim.simulation_app import AppFramework, SimulationApp
+ModuleNotFoundError: No module named 'isaacsim.simulation_app'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/yubin11/IsaacLab/scripts/lekiwi_nav_env/train_resip.py", line 112, in <module>
+    from isaaclab.app import AppLauncher
+  File "/home/yubin11/IsaacLab/source/isaaclab/isaaclab/app/__init__.py", line 15, in <module>
+    from .app_launcher import AppLauncher  # noqa: F401, F403
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/yubin11/IsaacLab/source/isaaclab/isaaclab/app/app_launcher.py", line 24, in <module>
+    import isaacsim  # noqa: F401
+    ^^^^^^^^^^^^^^^
+  File "/home/yubin11/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/__init__.py", line 176, in <module>
+    AppFramework, SimulationApp = expose_api()
+                                  ^^^^^^^^^^^^
+  File "/home/yubin11/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/isaacsim/__init__.py", line 102, in expose_api
+    path = glob.glob(
+           ^^^^^^^^^^
+IndexError: list index out of range

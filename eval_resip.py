@@ -34,6 +34,8 @@ parser.add_argument("--dp_checkpoint", type=str, required=True,
 parser.add_argument("--resip_checkpoint", type=str, default="",
                     help="Path to resip_*.pt (residual policy). 생략 시 base DP만 실행")
 parser.add_argument("--num_episodes", type=int, default=10)
+parser.add_argument("--max_steps", type=int, default=6000,
+                    help="Max steps per episode (default 6000)")
 parser.add_argument("--demo", type=str, default="",
                     help="HDF5 파일 경로 — 지정 시 에피소드 초기 상태를 복원하여 평가")
 parser.add_argument("--inference_steps", type=int, default=4,
@@ -177,7 +179,7 @@ if args.demo and os.path.isfile(args.demo):
 if args.skill == "navigate":
     from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
     env_cfg = Skill1EnvCfg()
-    env_cfg.scene.num_envs = 1
+    env_cfg.scene.num_envs = getattr(args, 'num_envs', 1) or 1
     env_cfg.force_tucked_pose = True  # arm all-zero로 덮어쓸 예정
 elif args.skill in ("approach_and_grasp", "carry"):
     from lekiwi_skill2_eval import Skill2Env, Skill2EnvCfg
@@ -667,8 +669,10 @@ while episode < args.num_episodes and simulation_app.is_running():
                   f" gcf={g['gcf']:.2f}{ground_str}{status}", flush=True)
             window_min_ee_z = 999.0
 
-    # Navigate: 600step에서 강제 종료
+    # 강제 종료: navigate=600, 기타=max_steps
     if args.skill == "navigate" and step_count >= 600:
+        done = True
+    elif step_count >= args.max_steps:
         done = True
     else:
         done = terminated.any() or truncated.any()

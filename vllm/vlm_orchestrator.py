@@ -163,7 +163,7 @@ class RelativePlacementOrchestrator:
                     {"type": "text", "text": INSTRUCT_USER_TEMPLATE},
                 ]},
             ],
-            "max_tokens": 50,
+            "max_tokens": 150,
             "temperature": 0.0,
         }
 
@@ -301,6 +301,9 @@ class VIVAOrchestrator:
         approach_lift_timeout: int = 1000,
         carry_timeout: int = 2000,
         approach_place_timeout: int = 1000,
+        stop_at_carry: bool = False,
+        s2_max_attempts: int = 3,
+        s4_max_attempts: int = 3,
     ):
         self.vlm_server = vlm_server
         self.vlm_model = vlm_model
@@ -315,6 +318,7 @@ class VIVAOrchestrator:
             SkillState.CARRY: carry_timeout,
             SkillState.APPROACH_AND_PLACE: approach_place_timeout,
         }
+        self.stop_at_carry = stop_at_carry
 
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json"})
@@ -334,9 +338,13 @@ class VIVAOrchestrator:
         # 로봇 상태 텍스트 (매 스텝 update_robot_status()로 갱신)
         self._robot_status_text = ""
         self._latest_contact = False  # contact sensor (OBSTACLE 복귀 스킬 분기용)
+        self._latest_arm_joints: list | None = None  # check_lifted_complete()에서 캐시
+        self._latest_grip_pos: float | None = None
 
         # S2/S4 장애물 판별 완료 플래그 (VLM이 CONTINUE 응답 시 True)
         self._obstacle_cleared = False
+        # depth 변화 추적: CONTINUE 후 한번 멀어졌다가 다시 가까워지면 새 장애물로 간주
+        self._prev_depth_clear = False
 
         # S4 place complete 연속 카운터
         self._place_complete_count = 0
@@ -346,6 +354,15 @@ class VIVAOrchestrator:
         self._last_latency = 0.0
         self._call_count = 0
         self._total_latency = 0.0
+
+        # S2/S4 재시도 횟수 제한 (NAVIGATE/CARRY → S2/S4 왕복 무한 루프 방지)
+        self._s2_attempt_count = 0
+        self._s4_attempt_count = 0
+        self._s2_max_attempts = s2_max_attempts
+        self._s4_max_attempts = s4_max_attempts
+
+        # 비동기 VLM 스레드 세대 카운터 (trial 리셋 시 stale 응답 무시)
+        self._generation = 0
 
     # ══════════ 프로퍼티 ══════════
 
@@ -393,6 +410,14 @@ class VIVAOrchestrator:
     def call_count(self) -> int:
         return self._call_count
 
+    @property
+    def s2_attempt_count(self) -> int:
+        return self._s2_attempt_count
+
+    @property
+    def s4_attempt_count(self) -> int:
+        return self._s4_attempt_count
+
     # ══════════ 로봇 상태 갱신 ══════════
 
     def update_robot_status(self, robot_status_text: str):
@@ -402,6 +427,19 @@ class VIVAOrchestrator:
     def update_contact(self, contact: bool):
         """run_full_task.py에서 매 스텝 호출. contact sensor 결과 전달."""
         self._latest_contact = contact
+
+    def update_depth_status(self, depth_min: float | None):
+        """run_full_task.py에서 매 스텝 호출.
+        CONTINUE(obstacle_cleared=True) 후 depth가 한번 멀어졌다가(>0.5m) 다시
+        가까워지면(<0.3m) 새로운 장애물로 간주하고 obstacle_cleared 리셋."""
+        if not self._obstacle_cleared or depth_min is None:
+            return
+        if depth_min > 0.5:
+            self._prev_depth_clear = True
+        elif self._prev_depth_clear and depth_min < 0.3:
+            print(f"  [Depth] obstacle_cleared reset (new obstacle, depth={depth_min:.2f}m)")
+            self._obstacle_cleared = False
+            self._prev_depth_clear = False
 
     def _get_valid_commands(self) -> set[str] | None:
         """현재 스킬에 해당하는 유효 명령어 집합. S2/S4는 None (자유 텍스트 사용 안 함)."""
@@ -416,6 +454,21 @@ class VIVAOrchestrator:
     def _transition_to(self, next_skill: SkillState):
         """스킬 전환. 호출 측(run_full_task.py)에서 vla.reset_buffer() 필요."""
         prev = self._current_skill
+
+        # S2/S4 재시도 상한 체크 (무한 왕복 방지)
+        if next_skill == SkillState.APPROACH_AND_LIFT:
+            self._s2_attempt_count += 1
+            if self._s2_attempt_count > self._s2_max_attempts:
+                print(f"  [FAIL] S2 max attempts ({self._s2_max_attempts}) reached → timeout")
+                self._timed_out = True
+                return
+        elif next_skill == SkillState.APPROACH_AND_PLACE:
+            self._s4_attempt_count += 1
+            if self._s4_attempt_count > self._s4_max_attempts:
+                print(f"  [FAIL] S4 max attempts ({self._s4_max_attempts}) reached → timeout")
+                self._timed_out = True
+                return
+
         self._current_skill = next_skill
         self._skill_step_count = 0
         if next_skill == SkillState.DONE:
@@ -425,28 +478,39 @@ class VIVAOrchestrator:
         if next_skill == SkillState.APPROACH_AND_LIFT:
             self._latest_instruction = f"approach and lift the {self.source_object}"
             self._obstacle_cleared = False
+            self._prev_depth_clear = False
         elif next_skill == SkillState.APPROACH_AND_PLACE:
             self._latest_instruction = f"place the {self.source_object} next to the {self.dest_object}"
             self._obstacle_cleared = False
+            self._prev_depth_clear = False
             self._place_complete_count = 0
+        # S1 진입 시 초기 instruction (S2 OBSTACLE 복귀 시 이전 instruction 잔류 방지)
+        elif next_skill == SkillState.NAVIGATE:
+            self._latest_instruction = "navigate forward"
         # S3 진입 시 초기 instruction
         elif next_skill == SkillState.CARRY:
             self._latest_instruction = "carry forward"
 
-        print(f"  [SKILL] {prev.value} → {next_skill.value}")
+        print(f"  [SKILL] {prev.value} → {next_skill.value} "
+              f"(S2={self._s2_attempt_count}/{self._s2_max_attempts}, "
+              f"S4={self._s4_attempt_count}/{self._s4_max_attempts})")
 
     def _handle_obstacle(self):
         """S2/S4에서 VLM이 "OBSTACLE" 판단 시 호출.
-        contact 여부에 따라 복귀 스킬 결정:
+        contact + lifted pose 검증으로 복귀 스킬 결정:
+          - S2 + contact + 실제 lifted → S3(carry): 정상 파지
+          - S2 + contact 있지만 lifted 아님 → S1(navigate): 살짝 닿은 것 (false positive)
           - S2 + contact 없음 → S1(navigate): 빈 손으로 회피
-          - S2 + contact 있음 → S3(carry): 물체 들고 회피
           - S4 → S3(carry): 항상 물체 들고 있음"""
         if self._current_skill == SkillState.APPROACH_AND_LIFT:
-            if self._latest_contact:
-                # 물체를 잡고 있으면 carry로 전환 (S2로 복귀할 필요 없음)
+            if self._latest_contact and self._is_actually_lifted():
+                # 실제로 들어올린 상태 → carry로 전환
                 self._interrupted_skill = None
                 self._transition_to(SkillState.CARRY)
             else:
+                # contact 있어도 lifted pose 아니면 빈 손 회피와 동일
+                if self._latest_contact:
+                    print(f"  [Obstacle] contact detected but not lifted → treat as empty-handed retreat")
                 self._interrupted_skill = SkillState.APPROACH_AND_LIFT
                 self._transition_to(SkillState.NAVIGATE)
         elif self._current_skill == SkillState.APPROACH_AND_PLACE:
@@ -464,7 +528,33 @@ class VIVAOrchestrator:
         elif self._current_skill == SkillState.NAVIGATE:
             self._transition_to(SkillState.APPROACH_AND_LIFT)
         elif self._current_skill == SkillState.CARRY:
-            self._transition_to(SkillState.APPROACH_AND_PLACE)
+            if self.stop_at_carry:
+                # S4 미구현 → carry에서 끝
+                self._transition_to(SkillState.DONE)
+            else:
+                self._transition_to(SkillState.APPROACH_AND_PLACE)
+
+    def reset_for_new_trial(self):
+        """Multi-trial 평가 시 trial 시작 전 호출. 상태 머신 전체 리셋."""
+        self._current_skill = SkillState.NAVIGATE
+        self._interrupted_skill = None
+        self._skill_step_count = 0
+        self._latest_instruction = "navigate forward"
+        # _pending은 건드리지 않음 — 이전 trial의 async worker가 finally로 해제.
+        # 여기서 False로 설정하면 old worker의 finally가 새 trial의 pending을 잘못 해제함.
+        self._done = False
+        self._timed_out = False
+        self._robot_status_text = ""
+        self._latest_contact = False
+        self._latest_arm_joints = None
+        self._latest_grip_pos = None
+        self._obstacle_cleared = False
+        self._prev_depth_clear = False
+        self._place_complete_count = 0
+        self._s2_attempt_count = 0
+        self._s4_attempt_count = 0
+        self._generation += 1  # stale async 응답 무시
+        # 통계는 유지 (trial 간 누적)
 
     def tick(self):
         """매 스텝 호출. timeout 체크."""
@@ -487,6 +577,15 @@ class VIVAOrchestrator:
                 target_object=target, robot_status=rs,
                 prev_command=self._latest_instruction,
             )
+            # 장애물 회피 후 NAVIGATE 회귀 시 우회 힌트
+            if self._interrupted_skill == SkillState.APPROACH_AND_LIFT:
+                system_prompt += (
+                    "\n\nIMPORTANT: The robot just retreated from an obstacle while "
+                    f"approaching the {target}. Do NOT go straight toward the {target} again — "
+                    "the same obstacle will block you. "
+                    "Try a different direction first (turn left/right or strafe), "
+                    "then approach from a new angle."
+                )
             user_text = VIVA_NAVIGATE_USER_TEMPLATE
 
         elif skill == SkillState.CARRY:
@@ -496,6 +595,15 @@ class VIVAOrchestrator:
                 robot_status=rs,
                 prev_command=self._latest_instruction,
             )
+            # 장애물 회피 후 CARRY 회귀 시 우회 힌트
+            if self._interrupted_skill == SkillState.APPROACH_AND_PLACE:
+                system_prompt += (
+                    "\n\nIMPORTANT: The robot just retreated from an obstacle while "
+                    f"approaching the {self.dest_object}. Do NOT go straight toward the {self.dest_object} again — "
+                    "the same obstacle will block you. "
+                    "Try a different direction first (turn left/right or strafe), "
+                    "then approach from a new angle."
+                )
             user_text = VIVA_CARRY_USER_TEMPLATE
 
         elif skill == SkillState.APPROACH_AND_LIFT:
@@ -526,37 +634,63 @@ class VIVAOrchestrator:
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            "max_tokens": 50,
+            "max_tokens": 150,
             "temperature": 0.0,
         }
 
     def _process_vlm_response(self, raw: str) -> str:
-        """VLM 응답 파싱 + 스킬 전환 트리거 처리."""
-        cleaned = raw.strip().strip('"').strip("'")
+        """VLM 응답 파싱 + 스킬 전환 트리거 처리.
+        Chain-of-thought: 여러 줄 응답에서 명령어 추출."""
+        import re
 
-        if cleaned == "TARGET_FOUND":
+        cleaned = raw.strip()
+        cleaned_upper = cleaned.upper()
+
+        # 1. 키워드 우선 검색 (위치/포맷 무관, 대소문자 무시)
+        if "TARGET_FOUND" in cleaned_upper:
             self._handle_target_found()
             return self._latest_instruction
 
-        if cleaned == "OBSTACLE":
+        # OBSTACLE: S2/S4에서만 트리거. S1/S3에서는 VLM이 자연어 설명에
+        # "obstacle"을 포함할 수 있으므로 키워드 매칭하지 않음 (명령어 파싱으로 진행).
+        if "OBSTACLE" in cleaned_upper and \
+           self._current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
             self._handle_obstacle()
             return self._latest_instruction
 
+        # 2. 대괄호 파싱 (마지막 매치 사용)
+        matches = re.findall(r'\[([^\]]+)\]', cleaned)
+        if matches:
+            cleaned = matches[-1].strip()
+        else:
+            # 3. 마지막 줄에서 추출 (chain-of-thought)
+            lines = [l.strip().strip('"').strip("'") for l in cleaned.split('\n') if l.strip()]
+            cleaned = lines[-1] if lines else cleaned
+
+        cleaned = cleaned.strip('"').strip("'")
+
         # S2/S4에서는 CONTINUE → obstacle_cleared 설정, instruction 변경 안 함
         if self._current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
-            if cleaned == "CONTINUE":
+            if "CONTINUE" in cleaned.upper():
+                self._obstacle_cleared = True
+            else:
+                # VLM이 OBSTACLE/CONTINUE 키워드 없이 자연어 응답한 경우
+                # 안전한 기본값: CONTINUE 처리 (목표물 접근 중이므로 정지보다 진행이 낫다)
+                print(f"  [VLM] S2/S4 obstacle check: unrecognized response '{cleaned[:60]}' "
+                      f"→ treating as CONTINUE")
                 self._obstacle_cleared = True
             return self._latest_instruction
 
         # S1/S3에서는 유효 명령어 검증 후 instruction으로 사용
         valid = self._get_valid_commands()
         if valid is not None and cleaned not in valid:
-            print(f"  [VLM] Invalid command '{cleaned}' for {self._current_skill.value}, keeping previous")
+            print(f"  [VLM] Invalid command '{cleaned}' for {self._current_skill.value}, "
+                  f"raw='{raw[:80]}', keeping previous")
             return self._latest_instruction
         return cleaned
 
-    def query_instruction(self, rgb_array: np.ndarray) -> str:
-        """동기 VLM 호출."""
+    def query_instruction(self, rgb_array: np.ndarray, _gen: int | None = None) -> str:
+        """동기 VLM 호출. _gen은 비동기 호출 시 세대 카운터 (stale 응답 방지)."""
         t0 = time.time()
         b64_img = self.encode_image(rgb_array)
         payload = self._build_vlm_payload(b64_img)
@@ -573,6 +707,11 @@ class VIVAOrchestrator:
             self._last_latency = time.time() - t0
             self._call_count += 1
             self._total_latency += self._last_latency
+            print(f"  [VLM-RAW] call={self._call_count} skill={self._current_skill.value} raw=\"{raw}\"")
+            # HTTP 응답 도착 후 generation 체크 (trial 리셋 시 stale 응답 무시)
+            if _gen is not None and self._generation != _gen:
+                print(f"  [VLM] Stale response ignored (gen {_gen} → {self._generation})")
+                return self._latest_instruction
             return self._process_vlm_response(raw)
 
         except Exception as e:
@@ -585,10 +724,15 @@ class VIVAOrchestrator:
         if self._pending or self._done:
             return
         self._pending = True
+        gen = self._generation
 
         def _worker():
             try:
-                instruction = self.query_instruction(rgb_array)
+                if self._generation != gen:
+                    return
+                instruction = self.query_instruction(rgb_array, _gen=gen)
+                if self._generation != gen:
+                    return
                 with self._lock:
                     if instruction != "done":
                         self._latest_instruction = instruction
@@ -606,11 +750,13 @@ class VIVAOrchestrator:
             return
 
         self._pending = True
+        gen = self._generation
 
         def _worker():
             try:
-                instruction = self.query_instruction(rgb_array)
-                # S2/S4에서는 instruction을 변경하지 않음 (OBSTACLE 시 스킬 전환만 발생)
+                if self._generation != gen:
+                    return
+                self.query_instruction(rgb_array, _gen=gen)
             finally:
                 self._pending = False
 
@@ -618,6 +764,9 @@ class VIVAOrchestrator:
 
     def check_lifted_complete(self, arm_joints: list, grip_pos: float, contact: bool) -> bool:
         """S2 → S3 전환: joint position + contact로 판별."""
+        # 최신 arm/grip 캐시 (_is_actually_lifted()에서 사용)
+        self._latest_arm_joints = arm_joints
+        self._latest_grip_pos = grip_pos
         if self._current_skill != SkillState.APPROACH_AND_LIFT:
             return False
         if not contact:
@@ -627,6 +776,16 @@ class VIVAOrchestrator:
             if not (low <= val <= high):
                 return False
         self._transition_to(SkillState.CARRY)
+        return True
+
+    def _is_actually_lifted(self) -> bool:
+        """현재 캐시된 arm/grip이 LIFTED_POSE_RANGE에 들어있는지 (contact는 별도 체크)."""
+        if self._latest_arm_joints is None or self._latest_grip_pos is None:
+            return False
+        joints_with_grip = list(self._latest_arm_joints) + [self._latest_grip_pos]
+        for val, (low, high) in zip(joints_with_grip, LIFTED_POSE_RANGE.values()):
+            if not (low <= val <= high):
+                return False
         return True
 
     def check_place_complete(self, grip_pos: float, contact: bool) -> bool:

@@ -17,7 +17,7 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Roundtrip latency test")
 parser.add_argument("--vlm_server", type=str, default="http://localhost:8000")
 parser.add_argument("--vla_server", type=str, default="http://localhost:8002")
-parser.add_argument("--vlm_model", type=str, default="Qwen/Qwen2.5-VL-7B-Instruct")
+parser.add_argument("--vlm_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
 parser.add_argument("--num_steps", type=int, default=20)
 parser.add_argument("--camera_width", type=int, default=320)
 parser.add_argument("--camera_height", type=int, default=240)

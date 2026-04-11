@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VLM Inference Server — Qwen2.5-VL-7B-Instruct (Phase 4.5 / Phase 5).
+VLM Inference Server — Qwen3-VL-8B-Instruct (Phase 4.5 / Phase 5).
 
 LeKiwi 3-Skill 파이프라인의 VLM 오케스트레이터.
 base_cam 이미지를 보고 현재 상황을 판단하여 VLA에 전달할 instruction과
@@ -21,7 +21,7 @@ API:
         }
 
     GET /health
-        response: {"status": "ok", "model": "Qwen2.5-VL-7B-Instruct"}
+        response: {"status": "ok", "model": "Qwen3-VL-8B-Instruct"}
 """
 
 from __future__ import annotations
@@ -103,12 +103,12 @@ app = FastAPI(title="LeKiwi VLM Inference Server")
 
 
 def load_model(model_name: str, device: str = "cuda"):
-    """Load Qwen2.5-VL model and processor."""
-    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+    """Load Qwen3-VL model and processor."""
+    from transformers import AutoProcessor, AutoModelForVision2Seq
 
     log.info(f"Loading {model_name} ...")
     t0 = time.time()
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model = AutoModelForVision2Seq.from_pretrained(
         model_name, torch_dtype=torch.bfloat16, device_map=device,
     )
     processor = AutoProcessor.from_pretrained(model_name)
@@ -255,7 +255,7 @@ def classify(req: ClassifyRequest):
 
 def main():
     parser = argparse.ArgumentParser(description="LeKiwi VLM Inference Server")
-    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-VL-7B-Instruct")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--device", type=str, default="cuda")

@@ -1,0 +1,7 @@
+[16:16:33] Log file: eval_viva_20260328_161633.log
+[16:16:33] ============================================================
+[16:16:33] VIVA Pipeline Eval (manual S1 + RL expert S2)
+[16:16:33] VLM: http://localhost:8000
+[16:16:33] VLA: http://localhost:8002
+[16:16:33] [CHECK] VLM: FAIL — HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /v1/models (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7b165dd53fd0>: Failed to establish a new connection: [Errno 111] Connection refused'))
+[16:16:33] → ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 ...

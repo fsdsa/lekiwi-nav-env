@@ -119,7 +119,7 @@ env_cfg.grasp_max_object_dist = 0.50
 if demo_file is not None:
     hdf5_attrs = dict(demo_file.attrs)
     env_cfg.object_mass = float(hdf5_attrs.get("object_mass", env_cfg.object_mass))
-    env_cfg.object_scale = float(hdf5_attrs.get("object_scale_phys", env_cfg.object_scale))
+    env_cfg.object_scale = 0.7
     env_cfg.arm_action_scale = float(hdf5_attrs.get("arm_action_scale", env_cfg.arm_action_scale))
     env_cfg.max_lin_vel = float(hdf5_attrs.get("max_lin_vel", env_cfg.max_lin_vel))
     env_cfg.max_ang_vel = float(hdf5_attrs.get("max_ang_vel", env_cfg.max_ang_vel))
@@ -293,7 +293,7 @@ def _restore_init_state(ep_data):
             env.object_rigid.update(env.sim.cfg.dt)
 
         # ── 5. 자유 settle (마찰만으로 유지되는지 확인) ──
-        for _ in range(120):
+        for _ in range(60):
             env.robot.write_data_to_sim()
             env.sim.step()
         env.robot.update(env.sim.cfg.dt)
