@@ -1350,7 +1350,10 @@ def main_combined():
                     env.env.robot.data.root_pos_w[:, :2] - env.env.dest_object_pos_w[:, :2], dim=-1)
                 # Latch: arm1 > 0.10이면 Phase B (팔 실제 내리기 시작 — 데모 기준)
                 _arm1_cur = env.env.robot.data.joint_pos[:, env.env.arm_idx[1]]
-                entered_b = (phase == 1) & s3_phase_a_latch & (_arm1_cur > 0.10)
+                # 데모 기준: arm1 > init_arm1 + 0.02 (≈ arm1 > -0.17)
+                # init_arm1은 carry 시작 시 ~-0.19. +0.02 = -0.17에서 전환
+                _init_arm1 = s3_init_pose6[:, 1]  # handoff 시 arm1
+                entered_b = (phase == 1) & s3_phase_a_latch & (_arm1_cur > _init_arm1 + 0.02)
                 if entered_b.any():
                     arm_joints_at_entry = env.env.robot.data.joint_pos[entered_b][:, env.env.arm_idx[:5]]
                     s3_arm1_at_phase_b_entry[entered_b] = arm_joints_at_entry[:, 1]
