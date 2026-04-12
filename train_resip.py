@@ -1514,8 +1514,16 @@ def main_combined():
             # Phase A에서는 carry_stabilize에서 배운 grip actor를 그대로 쓰고,
             # Phase B에서만 release 로직(BC hold -> RL direct open)을 적용한다.
             if s3_v15:
-                # grip clamp 없음 — RL이 PLACED ×200 + grip open ×3으로 자연 학습
-                pass
+                # Retract P-controller: ms_released 후 arm→REST_POSE 직접 이동
+                # RL retract 학습 실패 (34 iters, rest=0) → 고정 컨트롤러
+                if v15_ms_released.any():
+                    _ret = v15_ms_released & (~s3_phase_a_latch)
+                    if _ret.any():
+                        _cur_arm = env.env.robot.data.joint_pos[_ret, env.env.arm_idx[:5]]
+                        _tgt = V15_REST_POSE.unsqueeze(0).expand(_cur_arm.shape[0], -1)
+                        s3_action[_ret, 0:5] = (_tgt - _cur_arm) * 2.0  # P-control
+                        s3_action[_ret, 5] = 1.0   # grip open 유지
+                        s3_action[_ret, 6:9] = 0.0  # base 정지
             elif s3_phase_a_grip_residual:
                 s3_action[:, 5] = torch.where(
                     s3_phase_a_latch,
