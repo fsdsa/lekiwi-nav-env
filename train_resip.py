@@ -1519,9 +1519,11 @@ def main_combined():
                 if v15_ms_released.any():
                     _ret = v15_ms_released & (~s3_phase_a_latch)
                     if _ret.any():
-                        _cur_arm = env.env.robot.data.joint_pos[_ret, env.env.arm_idx[:5]]
+                        _ret_idx = _ret.nonzero(as_tuple=False).squeeze(-1)
+                        _all_jp = env.env.robot.data.joint_pos
+                        _cur_arm = _all_jp[_ret_idx][:, env.env.arm_idx[:5]]
                         _tgt = V15_REST_POSE.unsqueeze(0).expand(_cur_arm.shape[0], -1)
-                        s3_action[_ret, 0:5] = (_tgt - _cur_arm) * 2.0  # P-control
+                        s3_action[_ret_idx, 0:5] = (_tgt - _cur_arm) * 2.0  # P-control
                         s3_action[_ret, 5] = 1.0   # grip open 유지
                         s3_action[_ret, 6:9] = 0.0  # base 정지
             elif s3_phase_a_grip_residual:
