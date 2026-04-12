@@ -37,7 +37,7 @@ parser.add_argument("--num_episodes", type=int, default=10)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--s2_max_steps", type=int, default=800)
 parser.add_argument("--s2_lift_hold", type=int, default=200)
-parser.add_argument("--s3_max_steps", type=int, default=3000)
+parser.add_argument("--s3_max_steps", type=int, default=1500)
 parser.add_argument("--inference_steps", type=int, default=8)
 parser.add_argument("--s3_phase_b_only", action="store_true")
 parser.add_argument("--results_jsonl", type=str, default="")
@@ -225,11 +225,31 @@ def build_s3_obs(
             release_ee_z_thresh=float(args.s3_motion_release_ee_z),
             retract_grip_thresh=float(args.s3_motion_retract_grip),
         )
+    if int(s3_cfg["obs_dim"]) == 52:
+        # 52D: 53D (PHASED_DIM) 에서 place_flag 제거 + dim 35 = flag 0/1/2/3
+        obs_53 = build_s3_bc_obs(
+            env, obs_30d, init_pose6, phase_a_flag_val,
+            obs_dim=53,  # S3_BC_OBS_PHASED_DIM
+            place_open_flag=place_open_flag_val,
+            release_phase_flag=release_phase_flag_val,
+            retract_started_flag=retract_started_flag_val,
+        )
+        # dim 52 (place_flag) 제거 → 52D
+        obs_52 = obs_53[:, :52]
+        # dim 35 = 4-value flag (0=carry, 1=lower, 2=release, 3=retract)
+        import torch
+        arm1 = obs_30d[:, 1] if obs_30d.dim() > 1 else obs_30d[1:2]
+        grip = obs_30d[:, 5] if obs_30d.dim() > 1 else obs_30d[5:6]
+        src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+        upright_val = source_uprightness()
+        flag = torch.zeros(obs_52.shape[0], device=obs_52.device)
+        flag[arm1 > 0.10] = 1.0  # lower
+        flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0  # release
+        flag[grip > 0.90] = 3.0  # retract
+        obs_52[:, 35] = flag
+        return obs_52
     return build_s3_bc_obs(
-        env,
-        obs_30d,
-        init_pose6,
-        phase_a_flag_val,
+        env, obs_30d, init_pose6, phase_a_flag_val,
         obs_dim=s3_cfg["obs_dim"],
         place_open_flag=place_open_flag_val,
         release_phase_flag=release_phase_flag_val,
