@@ -1840,7 +1840,7 @@ def main_combined():
                 # BC가 retract 안 배웠으니 RL이 "팔 올리기" 학습
                 # ═════════════════════════════════════════
                 retract_active = active & v15_ms_released
-                ee_pos = skill3_bc_obs.ee_world_pos(env.env)
+                ee_pos = ee_world_pos(env.env)
                 ee_z = ee_pos[:, 2] - env.env.scene.env_origins[:, 2]
                 rew[retract_active] += (30.0 * torch.clamp(ee_z - 0.04, min=0.0))[retract_active]
 
