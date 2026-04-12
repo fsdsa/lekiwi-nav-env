@@ -249,13 +249,14 @@ def build_s3_obs(
         ee_pos_val = ee_world_pos(env)
         ee_z_val = (ee_pos_val[:, 2] - env.scene.env_origins[:, 2]).unsqueeze(-1)
         # init_arm, init_grip
-        init_arm_val = init_pose6[:, :5]
-        init_grip_val = init_pose6[:, 5:6]
+        _ip = init_pose6.unsqueeze(0) if init_pose6.dim() == 1 else init_pose6
+        init_arm_val = _ip[:, :5]
+        init_grip_val = _ip[:, 5:6]
         # flag (latch는 외부에서 관리, 여기서는 현재 상태 기반)
         arm1 = arm[:, 1]
         src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
         upright_val = source_uprightness()
-        _init_arm1 = init_pose6[:, 1]
+        _init_arm1 = _ip[:, 1]
         flag = torch.zeros(N, 1, device=device)
         flag[arm1 > _init_arm1 + 0.02] = 1.0
         flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0
