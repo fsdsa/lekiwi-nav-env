@@ -1461,7 +1461,7 @@ def main_combined():
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
                 # Stage 1: 접근+내림+place+grip open
                 # Stage 2: ms_released 후 retract (arm REST_POSE 복귀)
-                _safe_release = (src_h_pre < 0.04) & (src_upright_pre > 0.85)
+                _safe_release = (src_h_pre < 0.053) & (src_upright_pre > 0.98)  # 데모 기준
                 _retract_mode = v15_ms_released  # release 성공 후 → retract phase
                 # Stage 1 scales
                 s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 내림 보정
@@ -1853,16 +1853,16 @@ def main_combined():
 
                 # Height delta ×30 (v2와 동일, src_h>0.05에서)
                 near_dest = dst_body_dist < 0.15
-                near_h = active_h & near_dest & (src_h > 0.05)
+                near_h = active_h & near_dest & (src_h > 0.053)  # flag 1→2 경계
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (30.0 * height_delta)[near_h]
 
                 # Upright 보상: arm3 조정 구간 전체 (데모: src_h 0.10→0.04, 169 steps)
-                near_ground_pre = active_h & near_dest & (src_h < 0.10) & (src_h >= 0.04) & (~v15_ms_released)
+                near_ground_pre = active_h & near_dest & (src_h < 0.10) & (src_h >= 0.053) & (~v15_ms_released)  # flag 1→2 경계=0.053
                 rew[near_ground_pre] += (5.0 * src_upright)[near_ground_pre]
 
                 # Grip open 보상: grip gate 활성 중에만 (release 전)
-                safe_open = active & near_dest & (src_h < 0.04) & (src_upright > 0.85) & (~v15_ms_released)
+                safe_open = active & near_dest & (src_h < 0.053) & (src_upright > 0.98) & (~v15_ms_released)  # 데모 기준
                 grip_open_q = torch.clamp((grip_pos - 0.30) / 0.7, 0.0, 1.0)
                 rew[safe_open] += (3.0 * grip_open_q)[safe_open]
 
@@ -1901,7 +1901,7 @@ def main_combined():
                     v15_iter_aligned += int(new_align.sum().item())
 
                 # M3: released — grip>0.70을 10 step 유지해야 전환
-                _grip_open_enough = active & placed & (grip_pos > 0.70)
+                _grip_open_enough = active & placed & (grip_pos > 1.0)  # 데모 기준 (peak 1.1-1.5)
                 v15_release_sustain[_grip_open_enough] += 1
                 _grip_not_open = s3m & ~_grip_open_enough & (v15_release_sustain > 0)
                 v15_release_sustain[_grip_not_open] = torch.clamp(v15_release_sustain[_grip_not_open] - 3, min=0)

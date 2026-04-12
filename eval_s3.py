@@ -245,7 +245,7 @@ def build_s3_obs(
         flag = torch.zeros(obs_52.shape[0], device=obs_52.device)
         flag[arm1 > 0.10] = 1.0  # lower
         flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0  # release
-        flag[grip > 0.90] = 3.0  # retract
+        flag[grip > 1.0] = 3.0  # retract (데모 peak 1.1-1.5)
         obs_52[:, 35] = flag
         return obs_52
     return build_s3_bc_obs(
