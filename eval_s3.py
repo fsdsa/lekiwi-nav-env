@@ -60,6 +60,8 @@ from skill3_bc_obs import (
     build_s3_bc_obs,
     build_s3_ee23_obs,
     build_s3_motion24_obs,
+    ee_world_pos,
+    source_uprightness as _source_uprightness_func,
 )
 
 # ── Env ──
@@ -228,18 +230,19 @@ def build_s3_obs(
     if int(s3_cfg["obs_dim"]) == 25:
         # 25D: arm(5)+grip(1)+armvel(5)+gripvel(1)+base_vel(3)+dest_rel_xy(2)+ee_z(1)+init_arm(5)+init_grip(1)+flag(1)
         import torch
+        from isaaclab.utils.math import quat_apply_inverse
         N = obs_30d.shape[0] if obs_30d.dim() > 1 else 1
         device = obs_30d.device
+        # Skill2Env 30D: [0:5]arm [5:6]grip [6:9]base_body_vel [9:12]lin_vel [12:15]ang_vel [15:21]arm+grip_vel [21:24]obj_rel [24:26]contact [26:29]bbox [29:30]cat
         arm = obs_30d[:, 0:5]
         grip = obs_30d[:, 5:6]
-        armvel = obs_30d[:, 15:20]  # from env obs
-        gripvel = obs_30d[:, 20:21]
-        base_vel = obs_30d[:, 6:9]  # base vx, vy, wz in env obs
+        armvel = obs_30d[:, 15:20]   # arm joint vel (5D)
+        gripvel = obs_30d[:, 20:21]  # grip joint vel (1D)
+        base_vel = obs_30d[:, 6:9]   # base body vel (vx, vy, wz)
         # dest_rel_body
         robot_pos = env.robot.data.root_pos_w
         robot_quat = env.robot.data.root_quat_w
         dest_pos = env.dest_object_pos_w
-        from isaaclab.utils.math import quat_apply_inverse
         dest_rel = quat_apply_inverse(robot_quat, dest_pos - robot_pos)
         dest_rel_xy = dest_rel[:, :2]
         # ee_z
@@ -248,7 +251,7 @@ def build_s3_obs(
         # init_arm, init_grip
         init_arm_val = init_pose6[:, :5]
         init_grip_val = init_pose6[:, 5:6]
-        # flag
+        # flag (latch는 외부에서 관리, 여기서는 현재 상태 기반)
         arm1 = arm[:, 1]
         src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
         upright_val = source_uprightness()
