@@ -1164,6 +1164,7 @@ def main_combined():
     # v15 sustain counters (tiered milestones for sustained lower / rest)
     v15_lower_sustain = torch.zeros(N, dtype=torch.long, device=dev)
     v15_rest_sustain = torch.zeros(N, dtype=torch.long, device=dev)
+    v15_release_sustain = torch.zeros(N, dtype=torch.long, device=dev)  # grip>0.70 지속 ���운��
     v15_ms_lower_t1 = torch.zeros(N, dtype=torch.bool, device=dev)
     v15_ms_lower_t2 = torch.zeros(N, dtype=torch.bool, device=dev)
     v15_ms_lower_t3 = torch.zeros(N, dtype=torch.bool, device=dev)
@@ -1514,18 +1515,8 @@ def main_combined():
             # Phase A에서는 carry_stabilize에서 배운 grip actor를 그대로 쓰고,
             # Phase B에서만 release 로직(BC hold -> RL direct open)을 적용한다.
             if s3_v15:
-                # Retract P-controller: ms_released 후 arm→REST_POSE 직접 이동
-                # RL retract 학습 실패 (34 iters, rest=0) → 고정 컨트롤러
-                if v15_ms_released.any():
-                    _ret = v15_ms_released & (~s3_phase_a_latch)
-                    if _ret.any():
-                        _ret_idx = _ret.nonzero(as_tuple=False).squeeze(-1)
-                        _all_jp = env.env.robot.data.joint_pos
-                        _cur_arm = _all_jp[_ret_idx][:, env.env.arm_idx[:5]]
-                        _tgt = V15_REST_POSE.unsqueeze(0).expand(_cur_arm.shape[0], -1)
-                        s3_action[_ret_idx, 0:5] = (_tgt - _cur_arm) * 2.0  # P-control
-                        s3_action[_ret, 5] = 1.0   # grip open 유지
-                        s3_action[_ret, 6:9] = 0.0  # base 정지
+                # P-controller 없음 — retract도 순수 RL (ee_z 보상)
+                pass
             elif s3_phase_a_grip_residual:
                 s3_action[:, 5] = torch.where(
                     s3_phase_a_latch,
@@ -1725,6 +1716,7 @@ def main_combined():
                     v15_ms_success[t_ids] = False
                     v15_lower_sustain[t_ids] = 0
                     v15_rest_sustain[t_ids] = 0
+                    v15_release_sustain[t_ids] = 0
                     v15_ms_lower_t1[t_ids] = False
                     v15_ms_lower_t2[t_ids] = False
                     v15_ms_lower_t3[t_ids] = False
@@ -1844,19 +1836,13 @@ def main_combined():
                 rew[placed] += (200.0 * placed_q)[placed]
 
                 # ═════════════════════════════════════════
-                # 2. REST POSE ×30/step (Skill2 R4b)
-                # placed 상태에서 arm rest pose 복귀
+                # 2. RETRACT: ms_released 후 ee_z 높을수록 보상 (순수 RL)
+                # BC가 retract 안 배웠으니 RL이 "팔 올리기" 학습
                 # ═════════════════════════════════════════
-                rew[placed] += (30.0 * rest_q)[placed]
-
-                # Retract: release 후 REST_POSE 복귀 (2가지 신호)
                 retract_active = active & v15_ms_released
-                # 1) Wide-sigma quality: 거리 4에서도 신호 (sigma=2.0 vs REST의 0.4)
-                retract_q = torch.nan_to_num(torch.exp(-0.5 * (rest_dist / 2.0) ** 2), nan=0.0)
-                rew[retract_active] += (10.0 * retract_q)[retract_active]
-                # 2) Delta: REST_POSE 방향 이동 보상
-                rest_delta = torch.clamp(v15_prev_rest_dist - rest_dist, -0.05, 0.05)
-                rew[retract_active] += (15.0 * rest_delta)[retract_active]
+                ee_pos = skill3_bc_obs.ee_world_pos(env.env)
+                ee_z = ee_pos[:, 2] - env.env.scene.env_origins[:, 2]
+                rew[retract_active] += (30.0 * torch.clamp(ee_z - 0.04, min=0.0))[retract_active]
 
                 # ═════════════════════════════════════════
                 # 3. APPROACH ×5 delta + HEIGHT ×10 delta
@@ -1871,12 +1857,12 @@ def main_combined():
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (30.0 * height_delta)[near_h]
 
-                # Upright 보상: 바닥 근처(src_h<0.05)에서 세울수록 보상
-                near_ground = active & near_dest & (src_h < 0.05)
-                rew[near_ground] += (5.0 * src_upright)[near_ground]
+                # Upright 보상: arm3 조정 구간 전체 (데모: src_h 0.10→0.04, 169 steps)
+                near_ground_pre = active_h & near_dest & (src_h < 0.10) & (src_h >= 0.04) & (~v15_ms_released)
+                rew[near_ground_pre] += (5.0 * src_upright)[near_ground_pre]
 
-                # Grip open 보상: 바닥+upright일 때 grip 열수록 보상 (BC 부족 보완)
-                safe_open = near_ground & (src_upright > 0.85)
+                # Grip open 보상: grip gate 활성 중에만 (release 전)
+                safe_open = active & near_dest & (src_h < 0.04) & (src_upright > 0.85) & (~v15_ms_released)
                 grip_open_q = torch.clamp((grip_pos - 0.30) / 0.7, 0.0, 1.0)
                 rew[safe_open] += (3.0 * grip_open_q)[safe_open]
 
@@ -1905,10 +1891,7 @@ def main_combined():
                 rew[lt3] += 60.0; v15_ms_lower_t3[lt3] = True
                 rew[lt4] += 150.0; v15_ms_lower_t4[lt4] = True
 
-                # Sustained placed (for rested milestone)
-                v15_rest_sustain[placed] += 1
-                _gd = s3m & ~placed & (v15_rest_sustain > 0)
-                v15_rest_sustain[_gd] = torch.clamp(v15_rest_sustain[_gd] - 3, min=0)
+                # (rest_sustain은 ee_z 기반으로 아래에서 처리)
 
                 # M1: aligned (one-time +50)
                 new_align = active_h & (dst_body_dist < V15_BASE_ALIGN_TOL) & (~v15_ms_base_aligned)
@@ -1917,8 +1900,12 @@ def main_combined():
                     v15_ms_base_aligned[new_align] = True
                     v15_iter_aligned += int(new_align.sum().item())
 
-                # M3: released (one-time +100)
-                new_rel = active & placed & (grip_pos > 0.55) & (~v15_ms_released)
+                # M3: released — grip>0.70을 10 step 유지해야 전환
+                _grip_open_enough = active & placed & (grip_pos > 0.70)
+                v15_release_sustain[_grip_open_enough] += 1
+                _grip_not_open = s3m & ~_grip_open_enough & (v15_release_sustain > 0)
+                v15_release_sustain[_grip_not_open] = torch.clamp(v15_release_sustain[_grip_not_open] - 3, min=0)
+                new_rel = _grip_open_enough & (v15_release_sustain >= 10) & (~v15_ms_released)
                 if new_rel.any():
                     rew[new_rel] += 100.0
                     v15_ms_released[new_rel] = True
@@ -1926,7 +1913,12 @@ def main_combined():
 
                 # M4: rested (one-time +100)
                 _bottle_placed = v15_ms_lowered & (~has_contact) & (placement_err < 0.20) & (src_h < 0.06) & (src_upright > 0.70)
-                new_rest = active & _bottle_placed & (rest_dist < V15_REST_TOL) & (v15_rest_sustain >= 3) & (~v15_ms_rested)
+                # rest milestone: ee_z > 0.15 (팔 충분히 올림) + 3 step 유지
+                _ee_high = v15_ms_released & (ee_z > 0.15)
+                v15_rest_sustain[_ee_high] += 1
+                _ee_not_high = s3m & ~_ee_high & (v15_rest_sustain > 0)
+                v15_rest_sustain[_ee_not_high] = torch.clamp(v15_rest_sustain[_ee_not_high] - 3, min=0)
+                new_rest = active & _ee_high & (v15_rest_sustain >= 3) & (~v15_ms_rested)
                 if new_rest.any():
                     rew[new_rest] += 100.0
                     v15_ms_rested[new_rest] = True
@@ -2373,6 +2365,7 @@ def main_combined():
                 v15_ms_success[reset_ids] = False
                 v15_lower_sustain[reset_ids] = 0
                 v15_rest_sustain[reset_ids] = 0
+                v15_release_sustain[reset_ids] = 0
                 v15_ms_lower_t1[reset_ids] = False
                 v15_ms_lower_t2[reset_ids] = False
                 v15_ms_lower_t3[reset_ids] = False
@@ -2421,6 +2414,7 @@ def main_combined():
                 v15_ms_success[reset_mask] = False
                 v15_lower_sustain[reset_mask] = 0
                 v15_rest_sustain[reset_mask] = 0
+                v15_release_sustain[reset_mask] = 0
                 v15_ms_lower_t1[reset_mask] = False
                 v15_ms_lower_t2[reset_mask] = False
                 v15_ms_lower_t3[reset_mask] = False
