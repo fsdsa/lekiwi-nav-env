@@ -225,6 +225,40 @@ def build_s3_obs(
             release_ee_z_thresh=float(args.s3_motion_release_ee_z),
             retract_grip_thresh=float(args.s3_motion_retract_grip),
         )
+    if int(s3_cfg["obs_dim"]) == 25:
+        # 25D: arm(5)+grip(1)+armvel(5)+gripvel(1)+base_vel(3)+dest_rel_xy(2)+ee_z(1)+init_arm(5)+init_grip(1)+flag(1)
+        import torch
+        N = obs_30d.shape[0] if obs_30d.dim() > 1 else 1
+        device = obs_30d.device
+        arm = obs_30d[:, 0:5]
+        grip = obs_30d[:, 5:6]
+        armvel = obs_30d[:, 15:20]  # from env obs
+        gripvel = obs_30d[:, 20:21]
+        base_vel = obs_30d[:, 6:9]  # base vx, vy, wz in env obs
+        # dest_rel_body
+        robot_pos = env.robot.data.root_pos_w
+        robot_quat = env.robot.data.root_quat_w
+        dest_pos = env.dest_object_pos_w
+        from isaaclab.utils.math import quat_apply_inverse
+        dest_rel = quat_apply_inverse(robot_quat, dest_pos - robot_pos)
+        dest_rel_xy = dest_rel[:, :2]
+        # ee_z
+        ee_pos_val = ee_world_pos(env)
+        ee_z_val = (ee_pos_val[:, 2] - env.scene.env_origins[:, 2]).unsqueeze(-1)
+        # init_arm, init_grip
+        init_arm_val = init_pose6[:, :5]
+        init_grip_val = init_pose6[:, 5:6]
+        # flag
+        arm1 = arm[:, 1]
+        src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+        upright_val = source_uprightness()
+        _init_arm1 = init_pose6[:, 1]
+        flag = torch.zeros(N, 1, device=device)
+        flag[arm1 > _init_arm1 + 0.02] = 1.0
+        flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0
+        flag[grip.squeeze(-1) > 1.0] = 3.0
+        obs_25 = torch.cat([arm, grip, armvel, gripvel, base_vel, dest_rel_xy, ee_z_val, init_arm_val, init_grip_val, flag], dim=-1)
+        return obs_25
     if int(s3_cfg["obs_dim"]) == 52:
         # 52D: 53D (PHASED_DIM) 에서 place_flag 제거 + dim 35 = flag 0/1/2/3
         obs_53 = build_s3_bc_obs(
