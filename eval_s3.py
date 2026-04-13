@@ -980,22 +980,40 @@ for ep in range(args.num_episodes):
 
         # Phase 1: S2 expert lift (or skip)
         if args.skip_s2:
-            # Skip S2 — 직접 carry pose로 초기화
+            # Skip S2 — joint position 직접 설정
             obs, _ = env.reset()
-            # Carry pose 설정 (데모 기반)
             carry_arm = torch.tensor([-0.07, -0.19, 0.28, -0.96, -0.03], device=dev)
-            carry_grip = torch.tensor([0.25], device=dev)  # 닫힌 상태
-            target_joints = torch.zeros(env.robot.data.joint_pos.shape[1], device=dev)
-            target_joints[env.arm_idx[:5]] = carry_arm
-            target_joints[env.arm_idx[5]] = carry_grip[0]
-            # 물체를 EE 위치에 spawn하기 위해 몇 step 실행
-            for _ in range(20):
+            carry_grip = torch.tensor([0.30], device=dev)
+
+            # 직접 joint position 설정
+            jp = env.robot.data.joint_pos.clone()
+            jp[0, env.arm_idx[:5]] = carry_arm
+            jp[0, env.arm_idx[5]] = carry_grip[0]
+            env.robot.write_joint_state_to_sim(jp, env.robot.data.joint_vel * 0)
+
+            # 물체를 EE 위치에 이동
+            ee_pos_val = ee_world_pos(env)
+            obj_target = ee_pos_val[0].clone()
+            obj_target[2] -= 0.03  # EE 아래 (그리퍼 안쪽)
+            if hasattr(env, 'object_rigid') and env.object_rigid is not None:
+                obj_state = env.object_rigid.data.default_root_state[0:1].clone()
+                obj_state[0, :3] = obj_target
+                env.object_rigid.write_root_pose_to_sim(obj_state[:, :7])
+                env.object_pos_w[0] = obj_target
+
+            # 물리 안정화 (50 step, zero action)
+            for _ in range(50):
                 action = torch.zeros(1, 9, device=dev)
-                action[0, :5] = carry_arm  # arm target
-                action[0, 5] = carry_grip[0]  # grip target
                 obs, _, _, _, _ = env.step(action)
+                # 매 step grip 닫힌 상태 유지
+                jp = env.robot.data.joint_pos.clone()
+                jp[0, env.arm_idx[5]] = carry_grip[0]
+                env.robot.write_joint_state_to_sim(jp, env.robot.data.joint_vel * 0)
+
             lifted = True
-            print(f"    [SKIP S2] carry pose set, objZ={(env.object_pos_w[0,2]-env.scene.env_origins[0,2]).item():.3f}")
+            objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+            cf = env._contact_force_per_env()[0].item() if env.contact_sensor is not None else 0
+            print(f"    [SKIP S2] carry pose, objZ={objZ:.3f} cf={cf:.1f} grip={env.robot.data.joint_pos[0, env.arm_idx[5]].item():.3f}")
         else:
             obs, _ = env.reset()
             s2_dp.reset()
