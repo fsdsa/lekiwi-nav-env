@@ -61,6 +61,7 @@ from skill3_bc_obs import (
     build_s3_bc_obs,
     build_s3_ee23_obs,
     build_s3_motion24_obs,
+    ee_world_pos,
 )
 
 # ── Env ──
