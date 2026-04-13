@@ -37,9 +37,10 @@ parser.add_argument("--num_episodes", type=int, default=10)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--s2_max_steps", type=int, default=800)
 parser.add_argument("--s2_lift_hold", type=int, default=200)
-parser.add_argument("--s3_max_steps", type=int, default=1500)
+parser.add_argument("--s3_max_steps", type=int, default=3000)
 parser.add_argument("--inference_steps", type=int, default=8)
 parser.add_argument("--s3_phase_b_only", action="store_true")
+parser.add_argument("--skip_s2", action="store_true", help="S2 없이 carry pose에서 바로 S3 시작")
 parser.add_argument("--results_jsonl", type=str, default="")
 parser.add_argument("--trace_jsonl", type=str, default="")
 parser.add_argument("--s3_motion_release_xy", type=float, default=0.16)
@@ -60,8 +61,6 @@ from skill3_bc_obs import (
     build_s3_bc_obs,
     build_s3_ee23_obs,
     build_s3_motion24_obs,
-    ee_world_pos,
-    source_uprightness as _source_uprightness_func,
 )
 
 # ── Env ──
@@ -227,69 +226,11 @@ def build_s3_obs(
             release_ee_z_thresh=float(args.s3_motion_release_ee_z),
             retract_grip_thresh=float(args.s3_motion_retract_grip),
         )
-    if int(s3_cfg["obs_dim"]) == 25:
-        # 25D: arm(5)+grip(1)+armvel(5)+gripvel(1)+base_vel(3)+dest_rel_xy(2)+ee_z(1)+init_arm(5)+init_grip(1)+flag(1)
-        import torch
-        from isaaclab.utils.math import quat_apply_inverse
-        N = obs_30d.shape[0] if obs_30d.dim() > 1 else 1
-        device = obs_30d.device
-        # Skill2Env 30D: [0:5]arm [5:6]grip [6:9]base_body_vel [9:12]lin_vel [12:15]ang_vel [15:21]arm+grip_vel [21:24]obj_rel [24:26]contact [26:29]bbox [29:30]cat
-        arm = obs_30d[:, 0:5]
-        grip = obs_30d[:, 5:6]
-        armvel = obs_30d[:, 15:20]   # arm joint vel (5D)
-        gripvel = obs_30d[:, 20:21]  # grip joint vel (1D)
-        base_vel = obs_30d[:, 6:9]   # base body vel (vx, vy, wz)
-        # dest_rel_body
-        robot_pos = env.robot.data.root_pos_w
-        robot_quat = env.robot.data.root_quat_w
-        dest_pos = env.dest_object_pos_w
-        dest_rel = quat_apply_inverse(robot_quat, dest_pos - robot_pos)
-        dest_rel_xy = dest_rel[:, :2]
-        # ee_z
-        ee_pos_val = ee_world_pos(env)
-        ee_z_val = (ee_pos_val[:, 2] - env.scene.env_origins[:, 2]).unsqueeze(-1)
-        # init_arm, init_grip
-        _ip = init_pose6.unsqueeze(0) if init_pose6.dim() == 1 else init_pose6
-        init_arm_val = _ip[:, :5]
-        init_grip_val = _ip[:, 5:6]
-        # flag (latch는 외부에서 관리, 여기서는 현재 상태 기반)
-        arm1 = arm[:, 1]
-        src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
-        upright_val = source_uprightness()
-        _init_arm1 = _ip[:, 1]
-        flag = torch.zeros(N, 1, device=device)
-        flag[arm1 > _init_arm1 + 0.02] = 1.0
-        flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0
-        flag[grip.squeeze(-1) > 1.0] = 3.0
-        obs_25 = torch.cat([arm, grip, armvel, gripvel, base_vel, dest_rel_xy, ee_z_val, init_arm_val, init_grip_val, flag], dim=-1)
-        return obs_25
-    if int(s3_cfg["obs_dim"]) == 52:
-        # 52D: 53D (PHASED_DIM) 에서 place_flag 제거 + dim 35 = flag 0/1/2/3
-        obs_53 = build_s3_bc_obs(
-            env, obs_30d, init_pose6, phase_a_flag_val,
-            obs_dim=53,  # S3_BC_OBS_PHASED_DIM
-            place_open_flag=place_open_flag_val,
-            release_phase_flag=release_phase_flag_val,
-            retract_started_flag=retract_started_flag_val,
-        )
-        # dim 52 (place_flag) 제거 → 52D
-        obs_52 = obs_53[:, :52]
-        # dim 35 = 4-value flag (0=carry, 1=lower, 2=release, 3=retract)
-        import torch
-        arm1 = obs_30d[:, 1] if obs_30d.dim() > 1 else obs_30d[1:2]
-        grip = obs_30d[:, 5] if obs_30d.dim() > 1 else obs_30d[5:6]
-        src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
-        upright_val = source_uprightness()
-        flag = torch.zeros(obs_52.shape[0], device=obs_52.device)
-        # 데모 기준: arm1 > init_arm1 + 0.02
-        _init_arm1 = obs_30d[:, 1] if obs_30d.dim() > 1 else obs_30d[1:2]
-        flag[arm1 > _init_arm1 + 0.02] = 1.0  # lower
-        flag[(src_h < 0.053) & (upright_val > 0.98)] = 2.0  # release
-        flag[grip > 1.0] = 3.0  # retract (데모 peak 1.1-1.5)
-        obs_52[:, 35] = flag
-        return obs_52
     return build_s3_bc_obs(
-        env, obs_30d, init_pose6, phase_a_flag_val,
+        env,
+        obs_30d,
+        init_pose6,
+        phase_a_flag_val,
         obs_dim=s3_cfg["obs_dim"],
         place_open_flag=place_open_flag_val,
         release_phase_flag=release_phase_flag_val,
@@ -1037,53 +978,71 @@ for ep in range(args.num_episodes):
         else:
             print(f"  [Episode {ep+1}/{args.num_episodes} retry {handoff_attempt+1}/{S3_HANDOFF_MAX_RETRIES}]")
 
-        # Phase 1: S2 expert lift
-        obs, _ = env.reset()
-        s2_dp.reset()
-        lift_counter = 0
-        lifted = False
-        max_retries = 5
-        for attempt in range(max_retries):
-            for s2_step in range(args.s2_max_steps):
-                obs_30d = obs["policy"] if isinstance(obs, dict) else obs
-                action = get_s2_action(obs_30d)
-                obs, _, ter, tru, _ = env.step(action)
+        # Phase 1: S2 expert lift (or skip)
+        if args.skip_s2:
+            # Skip S2 — 직접 carry pose로 초기화
+            obs, _ = env.reset()
+            # Carry pose 설정 (데모 기반)
+            carry_arm = torch.tensor([-0.07, -0.19, 0.28, -0.96, -0.03], device=dev)
+            carry_grip = torch.tensor([0.25], device=dev)  # 닫힌 상태
+            target_joints = torch.zeros(env.robot.data.joint_pos.shape[1], device=dev)
+            target_joints[env.arm_idx[:5]] = carry_arm
+            target_joints[env.arm_idx[5]] = carry_grip[0]
+            # 물체를 EE 위치에 spawn하기 위해 몇 step 실행
+            for _ in range(20):
+                action = torch.zeros(1, 9, device=dev)
+                action[0, :5] = carry_arm  # arm target
+                action[0, 5] = carry_grip[0]  # grip target
+                obs, _, _, _, _ = env.step(action)
+            lifted = True
+            print(f"    [SKIP S2] carry pose set, objZ={(env.object_pos_w[0,2]-env.scene.env_origins[0,2]).item():.3f}")
+        else:
+            obs, _ = env.reset()
+            s2_dp.reset()
+            lift_counter = 0
+            lifted = False
+            max_retries = 5
+            for attempt in range(max_retries):
+                for s2_step in range(args.s2_max_steps):
+                    obs_30d = obs["policy"] if isinstance(obs, dict) else obs
+                    action = get_s2_action(obs_30d)
+                    obs, _, ter, tru, _ = env.step(action)
 
-                grip_pos = env.robot.data.joint_pos[0, env.arm_idx[5]].item()
-                grip_closed = grip_pos < float(env.cfg.grasp_gripper_threshold)
-                has_contact = False
-                if env.contact_sensor is not None:
-                    cf = env._contact_force_per_env()[0].item()
-                    has_contact = cf > float(env.cfg.grasp_contact_threshold)
-                objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+                    grip_pos = env.robot.data.joint_pos[0, env.arm_idx[5]].item()
+                    grip_closed = grip_pos < float(env.cfg.grasp_gripper_threshold)
+                    has_contact = False
+                    if env.contact_sensor is not None:
+                        cf = env._contact_force_per_env()[0].item()
+                        has_contact = cf > float(env.cfg.grasp_contact_threshold)
+                    objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
 
-                if grip_closed and has_contact and objZ > 0.05:
-                    lift_counter += 1
-                else:
-                    lift_counter = 0
+                    if grip_closed and has_contact and objZ > 0.05:
+                        lift_counter += 1
+                    else:
+                        lift_counter = 0
 
-                if (objZ < 0.026 and s2_step > 20) or (s2_step >= args.s2_max_steps - 1):
-                    reason = f"objZ={objZ:.3f}" if objZ < 0.026 else "timeout"
-                    print(f"    [S2 FAIL] {reason} step={s2_step} — retry ({attempt+1}/{max_retries})")
-                    obs, _ = env.reset()
-                    s2_dp.reset()
-                    lift_counter = 0
+                    if (objZ < 0.026 and s2_step > 20) or (s2_step >= args.s2_max_steps - 1):
+                        reason = f"objZ={objZ:.3f}" if objZ < 0.026 else "timeout"
+                        print(f"    [S2 FAIL] {reason} step={s2_step} — retry ({attempt+1}/{max_retries})")
+                        obs, _ = env.reset()
+                        s2_dp.reset()
+                        lift_counter = 0
+                        break
+
+                    if s2_step % 200 == 0:
+                        print(f"    [S2] step={s2_step} objZ={objZ:.3f} grip={grip_pos:.3f} lift={lift_counter}/{args.s2_lift_hold}")
+
+                    if lift_counter >= args.s2_lift_hold:
+                        lifted = True
+                        break
+                if lifted:
                     break
 
-                if s2_step % 200 == 0:
-                    print(f"    [S2] step={s2_step} objZ={objZ:.3f} grip={grip_pos:.3f} lift={lift_counter}/{args.s2_lift_hold}")
-
-                if lift_counter >= args.s2_lift_hold:
-                    lifted = True
-                    break
-            if lifted:
+            if not lifted:
+                print(f"    [S2 FAIL] Could not lift — skip")
+                results.append({"status": "s2_fail"})
+                episode_recorded = True
                 break
-
-        if not lifted:
-            print(f"    [S2 FAIL] Could not lift — skip")
-            results.append({"status": "s2_fail"})
-            episode_recorded = True
-            break
 
         # Capture init_arm_pose
         jp = env.robot.data.joint_pos[0]
