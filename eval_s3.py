@@ -1002,12 +1002,12 @@ for ep in range(args.num_episodes):
                 env.object_rigid.write_root_pose_to_sim(obj_state[:, :7])
                 env.object_pos_w[0] = obj_target
 
-            # 물리 안정화 (50 step, zero action)
+            # 물리 안정화 (50 step) — 매 step arm+grip 강제 유지
             for _ in range(50):
                 action = torch.zeros(1, 9, device=dev)
                 obs, _, _, _, _ = env.step(action)
-                # 매 step grip 닫힌 상태 유지
                 jp = env.robot.data.joint_pos.clone()
+                jp[0, env.arm_idx[:5]] = carry_arm
                 jp[0, env.arm_idx[5]] = carry_grip[0]
                 env.robot.write_joint_state_to_sim(jp, env.robot.data.joint_vel * 0)
 
