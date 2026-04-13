@@ -1462,23 +1462,28 @@ def main_combined():
                 # v16 Phase B: arm/base 적극적 (BC 과적합 극복), grip은 BC 의존
                 # arm 0.30: BC arm 과적합 궤적을 dest별로 적극 보정 (skill2 0.20보다 높음)
                 # base 0.30: heading + 위치 모두 보정 (dest 상대좌표 맞추려면 heading 중요)
-                # Stage 1: 접근+내림+place+grip open
-                # Stage 2: ms_released 후 retract (arm REST_POSE 복귀)
-                _safe_release = (src_h_pre < 0.053) & (src_upright_pre > 0.98)  # 데모 기준
-                _retract_mode = v15_ms_released  # release 성공 후 → retract phase
-                # Stage 1 scales
-                s3_scale_b_dynamic[:, 0:5] = 0.20   # arm: 내림 보정
+                # 상태 기반 scale (flag 기반 X)
+                # 데모: dest_dist=0.37에서 arm 내림 시작, arm0 -0.09→-0.39 (17°좌회전)
+                # eval: 109/207 Phase A 정체 → base 0.40 유지
+                # eval: 26/98 바닥 도달 → arm 0.20 + height delta
+                # eval: 8/98 grip 열림 → grip 0.50 + grip open reward
+                _safe_release = (src_h_pre < 0.053) & (src_upright_pre > 0.98)
+                _retract_mode = v15_ms_released
+
+                # 기본: arm 0.20, grip 0.0, base 0.40
+                s3_scale_b_dynamic[:, 0:5] = 0.20
                 s3_scale_b_dynamic[:, 5] = torch.where(
                     _safe_release,
-                    torch.tensor(0.50, device=dev),   # 바닥+upright → grip RL 0.50 (BC가 grip 못 여니까)
-                    torch.tensor(0.0, device=dev),    # 나머지: grip BC만
+                    torch.tensor(0.50, device=dev),
+                    torch.tensor(0.0, device=dev),
                 )
-                s3_scale_b_dynamic[:, 6:9] = 0.30   # base
-                # Stage 2: retract mode override (release 완료 후)
+                s3_scale_b_dynamic[:, 6:9] = 0.40  # base (Phase A와 동일, 접근 지속)
+
+                # retract: arm 0.50, grip 0.30, base 0.05
                 if _retract_mode.any():
-                    s3_scale_b_dynamic[_retract_mode, 0:5] = 0.50  # arm: REST_POSE로 큰 이동
-                    s3_scale_b_dynamic[_retract_mode, 5] = 0.30    # grip: 열린 상태 유지
-                    s3_scale_b_dynamic[_retract_mode, 6:9] = 0.05  # base: 정지
+                    s3_scale_b_dynamic[_retract_mode, 0:5] = 0.50
+                    s3_scale_b_dynamic[_retract_mode, 5] = 0.30
+                    s3_scale_b_dynamic[_retract_mode, 6:9] = 0.05
             elif s3_enable_release:
                 s3_scale_b_dynamic[:, 0:5] = 0.05 * release_takeover_scale * arm_ramp.unsqueeze(-1)
                 s3_scale_b_dynamic[:, 5]   = 0.35 * grip_gate * arm_ramp
@@ -1854,19 +1859,25 @@ def main_combined():
                 dst_delta = torch.clamp(v15_prev_dst_body_dist - dst_body_dist, -0.05, 0.05)
                 rew[active_h] += (5.0 * dst_delta)[active_h]
 
-                # Height delta ×30 (v2와 동일, src_h>0.05에서)
+                # Height delta ×30 (src_h>0.053, near_dest)
                 near_dest = dst_body_dist < 0.15
-                near_h = active_h & near_dest & (src_h > 0.053)  # flag 1→2 경계
+                near_h = active_h & near_dest & (src_h > 0.053)
                 height_delta = torch.clamp(prev_src_h - src_h, -0.02, 0.02)
                 rew[near_h] += (30.0 * height_delta)[near_h]
 
-                # Upright 보상: arm3 조정 구간 전체 (데모: src_h 0.10→0.04, 169 steps)
-                near_ground_pre = active_h & near_dest & (src_h < 0.10) & (src_h >= 0.053) & (~v15_ms_released)  # flag 1→2 경계=0.053
+                # Placement position delta ×10 (내림 중 arm0 좌우 위치 유도)
+                # 데모: arm0 -0.09→-0.39 (컵 왼쪽으로). placement_err 감소 = 올바른 위치로 이동
+                lowering = active_h & near_dest & (src_h < 0.10)
+                place_delta = torch.clamp(v15_prev_src_body_dist - placement_err, -0.05, 0.05)
+                rew[lowering] += (10.0 * place_delta)[lowering]
+
+                # Upright 보상 ×5: arm3,4 조정 (데모: 0.10→0.053 구간)
+                near_ground_pre = active_h & near_dest & (src_h < 0.10) & (src_h >= 0.053) & (~v15_ms_released)
                 rew[near_ground_pre] += (5.0 * src_upright)[near_ground_pre]
 
                 # Grip open 보상: grip gate 활성 중에만 (release 전)
                 safe_open = active & near_dest & (src_h < 0.053) & (src_upright > 0.98) & (~v15_ms_released)  # 데모 기준
-                grip_open_q = torch.clamp((grip_pos - 0.30) / 0.7, 0.0, 1.0)
+                grip_open_q = torch.clamp((grip_pos - 0.30) / 0.95, 0.0, 1.0)  # 데모 peak 1.25 → (1.25-0.30)/0.95=1.0
                 rew[safe_open] += (3.0 * grip_open_q)[safe_open]
 
                 # ═════════════════════════════════════════
