@@ -508,3 +508,106 @@ def _quat_from_yaw(yaw_rad: float, device: torch.device | str) -> torch.Tensor:
         dtype=torch.float32,
         device=device,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Mesh 기반 floor geometry (AABB가 아닌 실제 mesh 삼각형)
+# ═══════════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=None)
+def _load_floor_triangles(scene_usd: str) -> dict[str, list[tuple]]:
+    """Floor mesh를 room별 2D 삼각형 리스트로 로드.
+    Returns: {room_id: [((x1,y1),(x2,y2),(x3,y3)), ...]}"""
+    from pxr import Gf, Usd, UsdGeom
+
+    stage = Usd.Stage.Open(scene_usd)
+    result: dict[str, list[tuple]] = {}
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        name = prim.GetName().lower()
+        if not name.startswith("room_") or "_visual_" not in name:
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        pts = mesh.GetPointsAttr().Get()
+        fvc = mesh.GetFaceVertexCountsAttr().Get()
+        fvi = mesh.GetFaceVertexIndicesAttr().Get()
+        if not pts or not fvc or not fvi:
+            continue
+        xf = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        wpts = []
+        for p in pts:
+            wp = xf.Transform(Gf.Vec3d(float(p[0]), float(p[1]), float(p[2])))
+            wpts.append((float(wp[0]), float(wp[1])))
+        idx = name.find("_visual_")
+        rid = name[:idx] if idx >= 0 else name
+        tris = result.setdefault(rid, [])
+        off = 0
+        for cnt in fvc:
+            face = [wpts[fvi[off + i]] for i in range(cnt)]
+            for i in range(1, cnt - 1):
+                tris.append((face[0], face[i], face[i + 1]))
+            off += cnt
+    return result
+
+
+def _point_in_triangle_2d(
+    px: float, py: float,
+    ax: float, ay: float,
+    bx: float, by: float,
+    cx: float, cy: float,
+) -> bool:
+    d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    if abs(d) < 1e-10:
+        return False
+    u = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / d
+    v = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / d
+    return u >= -1e-6 and v >= -1e-6 and (u + v) <= 1.0 + 1e-6
+
+
+def point_on_floor_mesh(
+    xy: tuple[float, float],
+    triangles: list[tuple],
+    clearance: float = 0.0,
+) -> bool:
+    """XY 좌표가 실제 floor mesh 위인지 확인. clearance>0이면 가장자리 마진 체크."""
+    px, py = xy
+    on = any(
+        _point_in_triangle_2d(px, py, *a, *b, *c)
+        for a, b, c in triangles
+    )
+    if not on or clearance <= 0:
+        return on
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        tx, ty = px + dx * clearance, py + dy * clearance
+        if not any(
+            _point_in_triangle_2d(tx, ty, *a, *b, *c)
+            for a, b, c in triangles
+        ):
+            return False
+    return True
+
+
+def sample_on_floor_mesh(
+    triangles: list[tuple],
+    obstacles: tuple[Footprint, ...],
+    clearance: float,
+    rng: random.Random,
+    max_tries: int = 2000,
+) -> tuple[float, float]:
+    """실제 floor mesh 삼각형 위에서 collision-free 포인트 샘플."""
+    all_pts = [p for tri in triangles for p in tri]
+    if not all_pts:
+        raise RuntimeError("No floor triangles to sample from")
+    mn_x = min(p[0] for p in all_pts)
+    mx_x = max(p[0] for p in all_pts)
+    mn_y = min(p[1] for p in all_pts)
+    mx_y = max(p[1] for p in all_pts)
+    for _ in range(max_tries):
+        cand = (rng.uniform(mn_x, mx_x), rng.uniform(mn_y, mx_y))
+        if not point_on_floor_mesh(cand, triangles, clearance):
+            continue
+        if not all(_distance_point_to_aabb(cand, obs) >= clearance for obs in obstacles):
+            continue
+        return cand
+    raise RuntimeError("Failed to sample point on floor mesh")

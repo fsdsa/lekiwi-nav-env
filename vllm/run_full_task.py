@@ -60,6 +60,10 @@ parser.add_argument("--dest_object", type=str, default="",
 parser.add_argument("--num_trials", type=int, default=1)
 parser.add_argument("--action_log", type=str, default="",
                     help="매 step VLA action 기록 파일 경로 (빈 문자열=비활성)")
+parser.add_argument("--frame_save_dir", type=str, default="",
+                    help="지정 시 매 N step 카메라 프레임 저장 (PNG). 빈 문자열=비활성")
+parser.add_argument("--frame_save_interval", type=int, default=5,
+                    help="프레임 저장 간격 (steps). 기본 5")
 
 # Camera
 # VLM용: 큰 해상도 (인식 정확도 ↑)
@@ -75,10 +79,21 @@ parser.add_argument("--safety_dist", type=float, default=0.3)
 parser.add_argument("--enable_safety", action="store_true", default=True)
 
 # Timing
-parser.add_argument("--vlm_interval", type=int, default=30,
+parser.add_argument("--vlm_interval", type=int, default=50,
                     help="VLM 호출 시도 간격 (steps, 비동기 _pending으로 자동 throttle)")
 parser.add_argument("--max_total_steps", type=int, default=6000,
                     help="최대 스텝 (6000 = 10분 at 10Hz)")
+
+# ★ Exploration memory
+# NOTE (2026-04-17): memory 기능은 vlm_orchestrator.py의 _MEMORY_ENABLED=False 로 비활성화됨.
+# 아래 CLI 인자는 backward compat을 위해 남아있지만 실제로는 no-op.
+# 재활성화하려면 _MEMORY_ENABLED=True 로 변경 + memory 구조 리팩터 (future work).
+parser.add_argument("--memory_update_interval", type=int, default=0,
+                    help="[DISABLED] scene summary 생성 간격 (steps). 0이면 vlm_interval과 동일값 사용")
+parser.add_argument("--memory_max_entries", type=int, default=12,
+                    help="[DISABLED] 메모리 최대 엔트리 수")
+parser.add_argument("--memory_log", type=str, default="",
+                    help="[DISABLED] 지정 시 매 스텝 memory TSV 기록 (데이터 수집용)")
 
 # Mode
 parser.add_argument("--mode", type=str, default="viva",
@@ -86,9 +101,9 @@ parser.add_argument("--mode", type=str, default="viva",
                     help="viva: VIVA 구조 (VLM+VLA), single_vla: 비교군 ①-B")
 
 # Skill timeouts (VIVA mode)
-parser.add_argument("--navigate_timeout", type=int, default=2000)
+parser.add_argument("--navigate_timeout", type=int, default=200000)
 parser.add_argument("--approach_lift_timeout", type=int, default=1000)
-parser.add_argument("--carry_timeout", type=int, default=2000)
+parser.add_argument("--carry_timeout", type=int, default=200000)
 parser.add_argument("--approach_place_timeout", type=int, default=1000)
 
 # S2/S4 재시도 제한
@@ -117,8 +132,8 @@ parser.add_argument("--scene_install_dir", type=str, default="~/molmospaces/asse
 
 # Difficulty
 parser.add_argument("--difficulty", type=str, default="easy",
-                    choices=["easy", "hard"],
-                    help="easy: 같은 방 (로봇+물체), hard: 다른 방 (로봇과 물체 분리)")
+                    choices=["easy", "middle", "hard"],
+                    help="easy: room9, middle: room4, hard: room6(로봇)+room3(물체)")
 
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -184,9 +199,22 @@ class VLAClient:
             return []
 
     def get_action_9d(self, base_rgb: np.ndarray, wrist_rgb: np.ndarray,
-                      state_9d: list[float], instruction: str) -> np.ndarray:
-        """Action chunk에서 1개 반환 (9D). 버퍼 소진 시 새 쿼리."""
-        if self._buffer_idx >= len(self._action_buffer):
+                      state_9d: list[float], instruction: str,
+                      n_use: int | None = None) -> np.ndarray:
+        """Action chunk에서 1개 반환 (9D). 버퍼 소진 시 새 쿼리.
+
+        Args:
+            n_use: buffer에서 실제로 사용할 action 개수 상한.
+                   예: server가 50개 반환하고 n_use=10이면 10개만 실행 후 재쿼리.
+                   None이면 전체 buffer 소진까지 사용.
+                   Skill-adaptive 제어용 (Navigate/Carry는 짧게, Approach는 길게).
+        """
+        # n_use 제한: server가 많이 반환해도 n_use만큼만 사용
+        effective_max = len(self._action_buffer)
+        if n_use is not None:
+            effective_max = min(effective_max, n_use)
+
+        if self._buffer_idx >= effective_max:
             self._action_buffer = self.query_action(
                 base_rgb, wrist_rgb, state_9d, instruction
             )
@@ -330,11 +358,31 @@ def setup_env(args):
             floor_z = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path)
         else:
             floor_z = 0.0
-        cfg.builtin_ground_z = floor_z * args.scene_scale
+        cfg.builtin_ground_z = floor_z * args.scene_scale - 0.1
         cfg.sim.device = "cpu"
         print(f"  [Scene] {scene_path}, floor_z={floor_z:.4f}, scale={args.scene_scale}, device=cpu")
 
     env = Skill2Env(cfg=cfg)
+
+    # Ground cuboid를 검정색으로 변경 (visual only, physics 건드리지 않음)
+    import omni.usd as _ousd
+    from pxr import UsdShade, Sdf, Gf
+    _stage = _ousd.get_context().get_stage()
+    _cube_vis = _stage.GetPrimAtPath("/World/ground/geometry/mesh")
+    if not _cube_vis.IsValid():
+        _cube_vis = _stage.GetPrimAtPath("/World/ground")
+    if _cube_vis.IsValid():
+        _mtl_path = "/World/Looks/BlackMatte"
+        UsdShade.Material.Define(_stage, _mtl_path)
+        _shader = UsdShade.Shader.Define(_stage, _mtl_path + "/Shader")
+        _shader.CreateIdAttr("UsdPreviewSurface")
+        _shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.02, 0.02, 0.02))
+        _shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(1.0)
+        _shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        _mtl = UsdShade.Material.Get(_stage, _mtl_path)
+        _mtl.CreateSurfaceOutput().ConnectToSource(_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(_cube_vis).Bind(_mtl)
+        print("  [Ground] Black matte material applied")
 
     # omni.replicator 카메라 — VLM / VLA / Depth 분리
     # 1) base 큰 RP (VLM용, 1280x800)
@@ -400,6 +448,30 @@ def setup_env(args):
     print(f"  [Render] Big RP toggle: {'OK' if big_toggle_works else 'DISABLED (GUI mode or unsupported)'}")
     print(f"  [Render] VLM={args.vlm_width}x{args.vlm_height} VLA={args.vla_width}x{args.vla_height} Depth={DEPTH_W}x{DEPTH_H}")
 
+    # ── Arm pose presets (normalized [-1,1]) ──
+    _arm_lim = env.robot.data.soft_joint_pos_limits[0, env.arm_idx[:6]]  # (6, 2)
+    _arm_lo = _arm_lim[..., 0]
+    _arm_hi = _arm_lim[..., 1]
+    _arm_center = 0.5 * (_arm_lo + _arm_hi)
+    _arm_half = 0.5 * (_arm_hi - _arm_lo)
+
+    def _raw_to_norm(raw_list):
+        raw = torch.tensor(raw_list, dtype=torch.float32, device=env.device)
+        return ((raw - _arm_center) / _arm_half.clamp(min=1e-6)).clamp(-1.0, 1.0)
+
+    # Navigate tucked pose — ACTION space 값 (dataset navigate action 평균)
+    # ★ _raw_to_norm이 아닌 dataset action 값 사용. env가 동일한 action space로 해석.
+    _NAV_TUCKED_ACTION = [-0.001, -1.000, +1.000, +0.658, -0.537, -0.999]
+    _tucked_action = np.array(_NAV_TUCKED_ACTION, dtype=np.float32)
+
+    # Approach & Lift 데모 첫 프레임 ACTION 평균 (100 에피소드)
+    # ★ STATE가 아닌 ACTION space — VLA가 학습한 것과 동일 space
+    _APPROACH_INIT_ACTION = [-0.00306, -0.89805, 0.94939, 0.87188, -0.5546, -0.71724]
+    _approach_init_action = np.array(_APPROACH_INIT_ACTION, dtype=np.float32)
+
+    print(f"  [Tucked]       action: {[f'{v:+.3f}' for v in _tucked_action.tolist()]}")
+    print(f"  [ApproachInit] action: {[f'{v:+.3f}' for v in _approach_init_action.tolist()]}")
+
     cams = {
         "base_rgb": base_rgb_annot,        # 1280x800 VLM용
         "depth": depth_annot,
@@ -409,6 +481,8 @@ def setup_env(args):
         "_depth_rp": depth_rp,
         "_big_toggle_works": big_toggle_works,
         "_set_rp_enabled": _set_rp_enabled,
+        "_tucked_action": _tucked_action,
+        "_approach_init_action": _approach_init_action,
     }
     return env, cams, scene_path
 
@@ -529,6 +603,7 @@ def main():
 
     # ── 3. Orchestrator 생성 ──
     if args.mode == "viva":
+        memory_interval = args.memory_update_interval if args.memory_update_interval > 0 else args.vlm_interval
         orch = VIVAOrchestrator(
             vlm_server=args.vlm_server,
             vlm_model=args.vlm_model,
@@ -543,6 +618,8 @@ def main():
             stop_at_carry=args.stop_at_carry,
             s2_max_attempts=args.s2_max_attempts,
             s4_max_attempts=args.s4_max_attempts,
+            memory_max_entries=args.memory_max_entries,
+            memory_update_interval=memory_interval,
         )
     elif args.mode == "single_vla":
         orch = RelativePlacementOrchestrator(
@@ -582,6 +659,19 @@ def main():
         print(f"  Difficulty: {args.difficulty} ({'같은 방' if args.difficulty == 'easy' else '다른 방'})")
     print(f"{'='*60}\n")
 
+    # ★ Memory log (데이터 수집용)
+    mem_log_file = None
+    if args.mode == "viva" and args.memory_log:
+        mem_log_file = open(args.memory_log, "w", buffering=1)
+        mem_log_file.write("trial\tstep\tskill\tinstruction\tmem_count\tmem_entries\n")
+        print(f"  Memory log: {args.memory_log}")
+
+    # ★ Frame save
+    _frame_save_dir = None
+    if args.frame_save_dir:
+        _frame_save_dir = os.path.expanduser(args.frame_save_dir)
+        print(f"  Frame save: {_frame_save_dir} (every {args.frame_save_interval} steps)")
+
     # ── 4. 메인 루프 ──
     for trial in range(args.num_trials):
         print(f"  === Trial {trial + 1}/{args.num_trials} ({args.difficulty}) ===")
@@ -592,70 +682,102 @@ def main():
             orch.reset_for_new_trial()
         prev_skill = orch.current_skill if args.mode == "viva" else None
 
-        # ── Difficulty-aware 스폰 ──
+        # ── Difficulty-aware 스폰 (record_teleop_scene.py와 동일) ──
         if scene_path is not None:
             from procthor_scene import (
-                sample_scene_task_layout, apply_scene_task_layout,
-                SceneSpawnCfg, _load_floor_regions, _load_support_floor_z,
-                _find_robot_region, SCENE_PRESETS,
+                apply_scene_task_layout, SceneTaskLayout,
+                _load_floor_regions, _load_support_floor_z,
+                _load_scene_obstacles, _find_robot_region,
+                _load_floor_triangles, sample_on_floor_mesh,
+                SCENE_PRESETS,
             )
             import math as _m
+            import random as _rng_mod
+
+            _DIFFICULTY_MAP = {
+                "easy":   ("room_9",  1.086, 33.694, 214.4, "room_9"),
+                "middle": ("room_4",  3.25,  14.05,  -76.2, "room_4"),
+                "hard":   ("room_6", 10.80,   3.25,   -3.4, "room_3"),
+            }
+
+            def _room_id(fp):
+                name = fp.path.split("/")[-1]
+                idx = name.find("_visual_")
+                return name[:idx] if idx >= 0 else name
+
+            _scene_str = str(scene_path.resolve())
             preset = SCENE_PRESETS.get(args.scene_idx)
-            sfz = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path) if preset else 0.0
-            regions = _load_floor_regions(str(scene_path.resolve()), support_floor_z=sfz)
+            sfz = _load_support_floor_z(_scene_str, preset.support_floor_prim_path) if preset else 0.0
+            regions = _load_floor_regions(_scene_str, support_floor_z=sfz)
+            obstacles = _load_scene_obstacles(_scene_str)
+            floor_tris = _load_floor_triangles(_scene_str)
             ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
-            src_ov = SceneSpawnCfg(
-                min_robot_dist=float(getattr(env.cfg, "object_dist_min", 0.8)) / ss,
-                max_robot_dist=float(getattr(env.cfg, "object_dist_max", 1.2)) / ss,
-                clearance_radius=0.14,
-            )
+
+            _diff_entry = _DIFFICULTY_MAP[args.difficulty]
+            _target_room, _rx, _ry, _ryaw_deg, _obj_room_id = _diff_entry
+            _obj_tris = floor_tris.get(_obj_room_id, [])
+            _fz = sfz * ss
+
             layout = None
-            r_room = s_room = d_room = None
-            r_eq_s = r_eq_d = False
             for _spawn_try in range(200):
+                _rng = _rng_mod.Random()
                 try:
-                    layout = sample_scene_task_layout(
-                        args.scene_idx, scene_usd=scene_path,
-                        scene_scale=args.scene_scale,
-                        source_spawn_override=src_ov,
-                        robot_faces_source=True,
-                        randomize_robot_xy=True,
-                    )
+                    _sxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
+                    _dxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
                 except RuntimeError:
                     continue
-                # Room 체크 (robot / source / dest)
-                r_xy = (layout.robot_xy[0] / ss, layout.robot_xy[1] / ss)
-                s_xy = (layout.source_xy[0] / ss, layout.source_xy[1] / ss)
-                d_xy = (layout.dest_xy[0] / ss, layout.dest_xy[1] / ss)
-                r_room = _find_robot_region(r_xy, regions)
-                s_room = _find_robot_region(s_xy, regions)
-                d_room = _find_robot_region(d_xy, regions)
-                if r_room is None or s_room is None or d_room is None:
+                if _m.dist(_sxy, _dxy) < 1.5:
                     continue
-                r_eq_s = (r_room.path == s_room.path)
-                r_eq_d = (r_room.path == d_room.path)
-                if args.difficulty == "easy" and r_eq_s and r_eq_d:
-                    break  # 로봇 = source 방 = dest 방
-                elif args.difficulty == "hard" and (not r_eq_s) and (not r_eq_d):
-                    break  # source ≠ 로봇 방, dest ≠ 로봇 방
+                if _obj_room_id == _target_room:
+                    if _m.dist((_rx, _ry), _sxy) < 1.5 or _m.dist((_rx, _ry), _dxy) < 1.5:
+                        continue
+                layout = SceneTaskLayout(
+                    robot_xy=(_rx * ss, _ry * ss),
+                    robot_yaw_rad=_m.radians(_ryaw_deg),
+                    source_xy=(_sxy[0] * ss, _sxy[1] * ss),
+                    source_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+                    dest_xy=(_dxy[0] * ss, _dxy[1] * ss),
+                    dest_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+                    floor_z=_fz,
+                    source_rest_z=0.033,
+                )
+                break
             else:
-                print(f"  [WARN] {args.difficulty} 조건 만족 실패 200회 → 마지막 layout 사용")
+                print(f"  [WARN] {args.difficulty} 스폰 실패 200회")
             if layout is None:
-                print(f"  [ERROR] Spawn completely failed (200 RuntimeErrors) → skip trial")
+                print(f"  [ERROR] Spawn failed → skip trial")
                 continue
             apply_scene_task_layout(env, layout)
-            # settle
+
+            # arm → navigate tucked pose
+            _env_id = torch.tensor([0], device=env.device)
             _zero_v = torch.zeros(1, env.robot.num_joints, device=env.device)
+            _NAV_TUCKED = [-0.02966, -0.213839, 0.09066, -0.4, 0.058418, -0.201554]
+            _jp = env.robot.data.joint_pos[0:1].clone()
+            _jp[0, env.arm_idx[:5]] = torch.tensor(_NAV_TUCKED[:5], dtype=torch.float32, device=env.device)
+            _jp[0, env.arm_idx[5]] = _NAV_TUCKED[5]
+            _jv = torch.zeros_like(_jp)
+            env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
+            env.robot.set_joint_position_target(_jp, env_ids=_env_id)
             env.robot.set_joint_velocity_target(_zero_v)
             for _ in range(60):
                 env.sim.step()
                 env.sim.render()
-            r_room_str = r_room.path if r_room else "?"
-            s_room_str = s_room.path if s_room else "?"
-            d_room_str = d_room.path if d_room else "?"
-            print(f"  [Spawn] robot={r_room_str} | source={s_room_str} | dest={d_room_str} | "
-                  f"r==s:{r_eq_s} r==d:{r_eq_d} | "
-                  f"src_dist={_m.dist(layout.robot_xy, layout.source_xy):.2f}m")
+            # re-teleport
+            apply_scene_task_layout(env, layout)
+            env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
+            env.robot.set_joint_position_target(_jp, env_ids=_env_id)
+            env.robot.set_joint_velocity_target(_zero_v)
+            env.sim.step()
+            env.robot.update(env.sim.cfg.dt)
+
+            _r_room = _find_robot_region((_rx, _ry), regions)
+            _s_room = _find_robot_region(_sxy, regions)
+            _d_room = _find_robot_region(_dxy, regions)
+            print(f"  [Spawn] {args.difficulty} | "
+                  f"robot={_room_id(_r_room) if _r_room else '?'}({_rx:.1f},{_ry:.1f}) | "
+                  f"src={_room_id(_s_room) if _s_room else '?'} | "
+                  f"dest={_room_id(_d_room) if _d_room else '?'}")
 
         vla.reset_buffer()
         total_steps = 0
@@ -798,10 +920,15 @@ def main():
 
                 if args.mode == "viva":
                     if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
-                        # S1/S3: 매 vlm_interval 스텝마다 VLM 호출 (방향 지시)
-                        # depth warning 시에는 즉시 호출 (forward 차단 상태에서 빠르게 새 방향 획득)
-                        depth_urgent = (depth_min is not None and depth_min < args.safety_dist)
-                        if total_steps % args.vlm_interval == 0 or depth_urgent:
+                        # S1/S3:
+                        # (a) depth < safety_dist 이고 obstacle_cleared=False → obstacle check 우선
+                        #     (behind-arm 판단 포함). CONTINUE 받으면 forward 허용.
+                        # (b) 그 외 일반적 vlm_interval마다 regular navigate/carry query
+                        depth_close = (depth_min is not None and depth_min < args.safety_dist)
+                        if depth_close and not orch.obstacle_cleared:
+                            _ensure_fresh_rgb()
+                            orch.query_obstacle_check_async(base_rgb)
+                        elif total_steps % args.vlm_interval == 0:
                             _ensure_fresh_rgb()
                             orch.query_async(base_rgb)
                     elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
@@ -827,25 +954,67 @@ def main():
                 # (f) VLA action — base_rgb는 VLM 해상도(1280x800)이므로 VLA용 640x400으로 downscale
                 instruction = orch.instruction
                 state = get_state_9d(env)
+
+                # S2/S4: VLA state를 데모 초기 분포에 맞추기
+                # base velocity: 0으로 강제 (데모는 정지 상태에서 시작)
+                # arm state: 실제 물리 state 사용 (BRAKE가 approach init으로 이동시켰으므로)
+                if args.mode == "viva" and orch.current_skill in (
+                    SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE
+                ):
+                    state[6] = 0.0  # vx
+                    state[7] = 0.0  # vy
+                    state[8] = 0.0  # wz
+
                 base_rgb_vla = downscale_for_vla(base_rgb, args.vla_width, args.vla_height)
+
+                # Skill-adaptive n_use: chunk=50 예측을 받되
+                #   Navigate/Carry: 30개 사용
+                #   Approach_and_lift/place: 50개 전부 사용 → 긴 horizon planning으로 grasp 정밀도
+                if args.mode == "viva" and orch.current_skill in (
+                    SkillState.NAVIGATE, SkillState.CARRY
+                ):
+                    n_use = 30
+                else:
+                    n_use = 50
+
                 _t_vla0 = time.perf_counter()
-                action = vla.get_action_9d(base_rgb_vla, wrist_rgb, state, instruction)
+                action = vla.get_action_9d(base_rgb_vla, wrist_rgb, state, instruction, n_use=n_use)
                 _t_vla_sum += time.perf_counter() - _t_vla0
                 _t_vla_n += 1
 
-                # (g) Safety layer — 스킬별 분기
-                #     S1/S3: depth < safety_dist → 전진(vy > 0)만 차단
-                #            (backward, strafe, rotation은 허용 → 탈출 가능)
+                # Clamp 제거 (2026-04-17): ±0.95 clamp가 학습 분포(~±1.35)를 잘라내서
+                # gripper grasp 불가 + arm motion 제한. Env 내부의 torch.clamp(arm_targets,
+                # arm_lo, arm_hi)가 joint 한계 내에서 최종 safety 담당.
+                # action[:6] = np.clip(action[:6], -0.95, 0.95)  # REMOVED
+
+                # Navigate/Carry base scaling (2026-04-17, updated):
+                # 0.7 → 0.5로 축소. VLM obstacle check 지연(~1.5s) 동안 충돌 방지 위해
+                # 로봇 속도 절반으로. 0.5 × 0.5 m/s = 0.25 m/s 기준 → 1.5s 동안 0.24m 이동 (< 0.3m trigger).
+                # Approach_and_lift/place는 정밀 grasp 위해 스케일링 없음.
+                if args.mode == "viva" and orch.current_skill in (
+                    SkillState.NAVIGATE, SkillState.CARRY
+                ):
+                    action[6:9] *= 0.5
+
+                # (g) Safety layer — 스킬별 분기 (2026-04-17 updated)
+                #     S1/S3: depth < safety_dist 시 VLM obstacle check 기반 판단
+                #            - obstacle_cleared=True (VLM이 CONTINUE) → 전진 허용
+                #            - obstacle_cleared=False (VLM 대기 중 or OBSTACLE) → 전진 차단
+                #            (backward, strafe, rotation은 언제나 허용 → 탈출 가능)
                 #     S2/S4: 비활성화 (목표물 접근 필요)
                 #            BUT: VLM obstacle check pending 중이면 전진 감속 (충돌 방지)
                 stopped = False
                 if args.enable_safety and depth_min is not None and depth_min < args.safety_dist:
                     if args.mode == "viva":
-                        if orch.safety_layer_active and float(action[7]) > 0:
-                            action = action.copy()
-                            action[7] = 0.0  # 전진(vy > 0)만 차단
-                            stopped = True
-                            safety_stops += 1
+                        if orch.safety_layer_active:
+                            # S1/S3: VLM-based judgment
+                            if not orch.obstacle_cleared and float(action[7]) > 0:
+                                # 아직 CONTINUE 못 받음 → 전진 block (conservative default)
+                                action = action.copy()
+                                action[7] = 0.0
+                                stopped = True
+                                safety_stops += 1
+                            # obstacle_cleared=True 면 VLM이 OK 판정 → 전진 허용
                         # S2/S4: VLM 응답 대기 중이고 obstacle 의심 시 전진 감속
                         elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
                             if orch.is_pending and not orch.obstacle_cleared and float(action[7]) > 0:
@@ -868,6 +1037,28 @@ def main():
                 #     특히 S2→S3 전환 시 S2의 arm action이 남아있으면 물체를 놓아버린다.
                 if args.mode == "viva" and prev_skill != orch.current_skill:
                     vla.reset_buffer()
+
+                    # Navigate → Approach/Place 전환 시: 로봇 정지 (데모 초기조건 맞추기)
+                    # 데모 approach는 항상 정지 상태(vx≈0, vy≈0)에서 시작.
+                    # navigate에서 전환 시 잔여 속도가 있으면 VLA가 그 속도를 유지해버림.
+                    if prev_skill in (SkillState.NAVIGATE, SkillState.CARRY) and \
+                       orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
+                        # BRAKE: base 정지만 (arm은 현재 상태 유지)
+                        _BRAKE_STEPS = 15
+                        _cur = get_state_9d(env)
+                        _stop = np.zeros(9, dtype=np.float32)
+                        _stop[:6] = _cur[:6]  # arm+grip 현재 유지
+                        print(f"  [BRAKE] base stop ({_BRAKE_STEPS} steps)")
+                        for _br in range(_BRAKE_STEPS):
+                            action_t = torch.tensor(_stop, dtype=torch.float32,
+                                                    device=device).unsqueeze(0)
+                            obs, rew, term, trunc, info = env.step(action_t)
+                            env.sim.render()
+                            total_steps += 1
+                        print(f"  [BRAKE] complete")
+                        prev_skill = orch.current_skill
+                        continue  # 루프 재시작: 새 이미지 + 새 instruction으로 VLA 호출
+
                     prev_skill = orch.current_skill
 
                 # (i) env step
@@ -894,6 +1085,27 @@ def main():
                     )
                     if total_steps % 20 == 0:
                         action_log_f.flush()
+
+                # ★ Frame save
+                if _frame_save_dir is not None and total_steps % args.frame_save_interval == 0:
+                    _trial_dir = os.path.join(_frame_save_dir, f"trial_{trial+1}")
+                    os.makedirs(_trial_dir, exist_ok=True)
+                    sk = orch.current_skill.value if args.mode == "viva" else "single"
+                    _fname = f"step_{total_steps:05d}_{sk}"
+                    if base_rgb is not None:
+                        Image.fromarray(base_rgb).save(os.path.join(_trial_dir, f"{_fname}_base.jpg"), quality=90)
+                    if wrist_rgb is not None:
+                        Image.fromarray(wrist_rgb).save(os.path.join(_trial_dir, f"{_fname}_wrist.jpg"), quality=90)
+
+                # ★ Memory log
+                if mem_log_file is not None:
+                    entries = orch.memory_entries
+                    entries_str = "|".join(e.replace("|", "/") for e in entries)
+                    inst_safe = instruction.replace("\t", " ").replace("\n", " ")
+                    mem_log_file.write(
+                        f"{trial+1}\t{total_steps}\t{orch.current_skill.value}\t"
+                        f"{inst_safe}\t{len(entries)}\t{entries_str}\n"
+                    )
 
                 # (i') Stuck 감지 — navigate / carry 중에만, warmup 30 step 후
                 if args.mode == "viva" and total_steps > 30 and \
@@ -944,22 +1156,25 @@ def main():
                     elapsed = time.time() - t_start
                     hz = total_steps / elapsed if elapsed > 0 else 0
                     skill_str = orch.current_skill.value if args.mode == "viva" else "single"
-                    stop_str = " [SAFETY]" if stopped else ""
-                    # 9D action: [arm5, grip1, base_vx, base_vy, base_wz]
                     a = action
-                    arm_str = f"[{a[0]:+.2f},{a[1]:+.2f},{a[2]:+.2f},{a[3]:+.2f},{a[4]:+.2f}]"
-                    base_str = f"[vx={a[6]:+.3f},vy={a[7]:+.3f},wz={a[8]:+.3f}]"
-                    # 실제 base velocity
-                    act_vx = env.robot.data.root_lin_vel_b[0, 0].item()
-                    act_vy = env.robot.data.root_lin_vel_b[0, 1].item()
-                    act_wz = env.robot.data.root_ang_vel_b[0, 2].item()
-                    actual_str = f"act=[vx={act_vx:+.3f},vy={act_vy:+.3f},wz={act_wz:+.3f}]"
-                    print(f"    [t={total_steps:4d} {elapsed:.0f}s {hz:.1f}Hz] "
-                          f"skill={skill_str} "
+                    s = get_state_9d(env)  # real robot state [arm5, grip, vx, vy, wz]
+                    vla_base = f"base: {a[6]:+.2f}, {a[7]:+.2f}, {a[8]:+.2f}"
+                    vla_arm = f"arm: {a[0]:+.2f}, {a[1]:+.2f}, {a[2]:+.2f}, {a[3]:+.2f}, {a[4]:+.2f}"
+                    vla_grip = f"grip: {a[5]:+.2f}"
+                    real_base = f"base: {s[6]:+.2f}, {s[7]:+.2f}, {s[8]:+.2f}"
+                    real_arm = f"arm: {s[0]:+.2f}, {s[1]:+.2f}, {s[2]:+.2f}, {s[3]:+.2f}, {s[4]:+.2f}"
+                    real_grip = f"grip: {s[5]:+.2f}"
+                    if depth_min is not None:
+                        safe_flag = "X" if depth_min < args.safety_dist else "O"
+                        depth_str = f"depth={depth_min:.2f}m (safe {safe_flag})"
+                    else:
+                        depth_str = "depth=None (safe O)"
+                    print(f"    skill={skill_str} "
                           f"inst=\"{instruction[:40]}\" "
-                          f"vlm={orch.avg_latency*1000:.0f}ms({orch.call_count})"
-                          f"{stop_str}")
-                    print(f"         arm={arm_str} grip={a[5]:+.3f} base={base_str} {actual_str}")
+                          f"vlm={orch.avg_latency*1000:.0f}ms({orch.call_count}) "
+                          f"{depth_str}")
+                    print(f"    VLA  = [{vla_base} | {vla_arm} | {vla_grip}] @{hz:.1f}Hz")
+                    print(f"    REAL = [{real_base} | {real_arm} | {real_grip}]")
 
                 # (k) 에피소드 종료 (환경에서 terminate/truncate)
                 if term.any() or trunc.any():
@@ -1083,6 +1298,10 @@ def main():
     if action_log_f is not None:
         action_log_f.close()
         print(f"  [ActionLog] Saved: {args.action_log}")
+
+    if mem_log_file is not None:
+        mem_log_file.close()
+        print(f"  [MemoryLog] Saved: {args.memory_log}")
 
     simulation_app.close()
 

@@ -51,7 +51,7 @@ parser = argparse.ArgumentParser(description="ProcTHOR Scene 데모 녹화 (텔�
 
 # Mode & Skill
 parser.add_argument("--skill", type=str, default="approach_and_grasp",
-                    choices=["approach_and_grasp", "carry_and_place", "navigate", "combined_s2_s3"],
+                    choices=["approach_and_grasp", "carry_and_place", "navigate", "combined_s2_s3", "full"],
                     help="스킬 선택")
 parser.add_argument("--direction", type=str, default=None,
                     choices=["forward", "backward", "left", "right", "turn_left", "turn_right"],
@@ -104,6 +104,9 @@ parser.add_argument("--arm_input_unit", type=str, default="auto",
 # Explore mode: 키보드로 scene 탐색, 좌표/yaw 출력 (데이터 저장 안 함)
 parser.add_argument("--explore", action="store_true",
                     help="Scene 탐색 모드: WASD+ZX 이동, P=좌표 출력, Q=종료")
+parser.add_argument("--difficulty", type=str, default="easy",
+                    choices=["easy", "hard"],
+                    help="full 모드: easy=같은 방, hard=다른 방")
 
 # Camera
 parser.add_argument("--camera_width", type=int, default=640)
@@ -120,7 +123,7 @@ parser.add_argument("--gripper_contact_prim_path", type=str,
 parser.add_argument("--scene_idx", type=int, default=1302)
 parser.add_argument("--scene_usd", type=str, default="")
 parser.add_argument("--scene_install_dir", type=str, default="~/molmospaces/assets/usd")
-parser.add_argument("--scene_scale", type=float, default=0.6)
+parser.add_argument("--scene_scale", type=float, default=1.0)
 parser.add_argument("--scene_floor_z", type=float, default=None)
 parser.add_argument("--scene_object_rest_z", type=float, default=0.033)
 parser.add_argument("--scene_settle_steps", type=int, default=60)
@@ -489,6 +492,10 @@ def setup_env(args):
             cfg.grasp_success_height = 100.0  # env가 lift success로 종료하지 않도록
             cfg.lift_hold_steps = 0
             cfg.episode_length_s = 200.0
+        elif args.skill == "full":
+            # full end-to-end 텔레옵: lift success로 종료하지 않도록
+            cfg.grasp_success_height = 100.0
+            cfg.lift_hold_steps = 0
         else:
             # approach_and_grasp
             cfg.grasp_success_height = 0.05
@@ -521,7 +528,8 @@ def setup_env(args):
             floor_z = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path)
         else:
             floor_z = 0.0
-        cfg.builtin_ground_z = floor_z * args.scene_scale
+        # cube를 room floor mesh보다 0.1m 아래로 내림 (Z-fighting 방지, 물리 backup만)
+        cfg.builtin_ground_z = floor_z * args.scene_scale - 0.1
         cfg.sim.device = args.sim_device if args.sim_device else "cpu"
         print(f"  [Scene] {scene_path}, floor_z={floor_z:.4f}, "
               f"scene_scale={args.scene_scale}, device={cfg.sim.device}")
@@ -843,9 +851,19 @@ for _round in range(4):
             _COMBINED_SCHEDULE.append((_spos, "tucked", _dir))
 _combined_schedule_idx = 0
 
+# Full end-to-end: 로봇 고정 위치+헤딩 스케줄 (explore에서 측정, scale=1.0)
+# (room_id, x, y, yaw_deg)
+_FULL_ROOM_SCHEDULE = [
+    ("room_7",  0.347,  8.090,  -95.4),
+    ("room_9",  1.086, 33.694,  214.4),
+    ("room_6",  7.657,  0.638,  354.9),
+    ("room_8", 16.483, 28.820,   57.1),
+]
+_full_room_idx = 0
+
 
 def reset_with_scene_layout(env, args, scene_path):
-    global _nav_pos_idx, _nav_schedule_idx, _combined_schedule_idx
+    global _nav_pos_idx, _nav_schedule_idx, _combined_schedule_idx, _full_room_idx
     obs, info = env.reset()
     layout = None
     if scene_path is not None:
@@ -911,7 +929,7 @@ def reset_with_scene_layout(env, args, scene_path):
                     floor_z=floor_z,
                 )
         else:
-            if skill in ("approach_and_grasp", "carry_and_place"):
+            if skill in ("approach_and_grasp", "carry_and_place", "full"):
                 ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
                 source_override = SceneSpawnCfg(
                     min_robot_dist=float(getattr(env.cfg, "object_dist_min", 0.8)) / ss,
@@ -921,28 +939,124 @@ def reset_with_scene_layout(env, args, scene_path):
                 robot_faces = True
                 randomize_robot = True
 
-            for _retry in range(20):
-                try:
-                    layout = sample_scene_task_layout(
-                        args.scene_idx, scene_usd=scene_path,
-                        robot_xy=robot_xy, robot_yaw_rad=robot_yaw_rad,
-                        source_rest_z=args.scene_object_rest_z,
-                        floor_z=args.scene_floor_z,
-                        scene_scale=args.scene_scale,
-                        source_spawn_override=source_override,
-                        robot_faces_source=robot_faces,
-                        randomize_robot_xy=randomize_robot,
-                    )
-                    break
-                except RuntimeError:
-                    if _retry < 19:
+            if skill == "full" and scene_path is not None:
+                from procthor_scene import (
+                    _load_floor_regions, _load_support_floor_z,
+                    _load_scene_obstacles, _find_robot_region,
+                    _load_floor_triangles, sample_on_floor_mesh,
+                    SCENE_PRESETS as _PRESETS_F, SceneTaskLayout,
+                )
+
+                def _room_id(fp):
+                    name = fp.path.split("/")[-1]
+                    idx = name.find("_visual_")
+                    return name[:idx] if idx >= 0 else name
+
+                _scene_str = str(scene_path.resolve())
+                _preset_f = _PRESETS_F.get(args.scene_idx)
+                _sfz_f = (_load_support_floor_z(
+                    _scene_str, _preset_f.support_floor_prim_path
+                ) if _preset_f else 0.0)
+                _regions_f = _load_floor_regions(_scene_str, support_floor_z=_sfz_f)
+                _obstacles_f = _load_scene_obstacles(_scene_str)
+                _floor_tris = _load_floor_triangles(_scene_str)
+                _difficulty = getattr(args, "difficulty", "easy")
+
+                # room 그룹핑
+                _room_groups: dict[str, list] = {}
+                for _reg in _regions_f:
+                    _rid = _room_id(_reg)
+                    _room_groups.setdefault(_rid, []).append(_reg)
+
+                # 로봇: 고정 위치+헤딩 스케줄 (num_demos를 방 수로 나눠 한 방씩)
+                _eps_per_room = max(1, args.num_demos // len(_FULL_ROOM_SCHEDULE))
+                _room_slot = (_full_room_idx // _eps_per_room) % len(_FULL_ROOM_SCHEDULE)
+                _entry = _FULL_ROOM_SCHEDULE[_room_slot]
+                _target_room, _rx, _ry, _ryaw_deg = _entry
+
+                # 물체 스폰용 mesh 삼각형 — easy: 로봇 방 / hard: 거실
+                _LIVING = {"room_2", "room_3"}
+                if _difficulty == "easy":
+                    _obj_tris = _floor_tris.get(_target_room, [])
+                else:
+                    _obj_tris = []
+                    for _lr in _LIVING:
+                        _obj_tris.extend(_floor_tris.get(_lr, []))
+
+                _s_scale = float(args.scene_scale)
+                _fz = _sfz_f * _s_scale
+
+                _r_room = _s_room = _d_room = None
+                for _retry in range(200):
+                    _rng = random.Random()
+                    try:
+                        _sxy = sample_on_floor_mesh(
+                            _obj_tris, _obstacles_f, 0.3, _rng)
+                        _dxy = sample_on_floor_mesh(
+                            _obj_tris, _obstacles_f, 0.3, _rng)
+                    except RuntimeError:
                         continue
-                    raise
+                    if math.dist(_sxy, _dxy) < 1.5:
+                        continue
+                    # easy: 로봇과 물체 최소 1.5m 이격
+                    if _difficulty == "easy":
+                        if math.dist((_rx, _ry), _sxy) < 1.5 or math.dist((_rx, _ry), _dxy) < 1.5:
+                            continue
+                    layout = SceneTaskLayout(
+                        robot_xy=(_rx * _s_scale, _ry * _s_scale),
+                        robot_yaw_rad=math.radians(_ryaw_deg),
+                        source_xy=(_sxy[0] * _s_scale, _sxy[1] * _s_scale),
+                        source_yaw_rad=random.uniform(-math.pi, math.pi),
+                        dest_xy=(_dxy[0] * _s_scale, _dxy[1] * _s_scale),
+                        dest_yaw_rad=random.uniform(-math.pi, math.pi),
+                        floor_z=_fz,
+                        source_rest_z=float(args.scene_object_rest_z),
+                    )
+                    _r_room = _find_robot_region((_rx, _ry), _regions_f)
+                    _s_room = _find_robot_region(_sxy, _regions_f)
+                    _d_room = _find_robot_region(_dxy, _regions_f)
+                    break
+                else:
+                    print(f"  [WARN] {_difficulty} 스폰 실패 200회")
+
+                _r_str = _room_id(_r_room) if _r_room else "?"
+                _s_str = _room_id(_s_room) if _s_room else "?"
+                _d_str = _room_id(_d_room) if _d_room else "?"
+                print(f"  [Spawn] {_difficulty} ep{_full_room_idx+1} | "
+                      f"robot={_target_room}({_rx:.1f},{_ry:.1f},{_ryaw_deg:.0f}°) "
+                      f"| src={_s_str} | dest={_d_str}")
+            else:
+                for _retry in range(20):
+                    try:
+                        layout = sample_scene_task_layout(
+                            args.scene_idx, scene_usd=scene_path,
+                            robot_xy=robot_xy, robot_yaw_rad=robot_yaw_rad,
+                            source_rest_z=args.scene_object_rest_z,
+                            floor_z=args.scene_floor_z,
+                            scene_scale=args.scene_scale,
+                            source_spawn_override=source_override,
+                            robot_faces_source=robot_faces,
+                            randomize_robot_xy=randomize_robot,
+                        )
+                        break
+                    except RuntimeError:
+                        if _retry < 19:
+                            continue
+                        raise
+        if layout is None:
+            print(f"  [WARN] layout=None → env.reset() 기본 상태 사용")
+            return obs, info, layout
+
         # 1) 모든 관절 정지 + 텔레포트
         _env_id = torch.tensor([0], device=env.device)
         _zero_vel = torch.zeros(1, env.robot.num_joints, device=env.device)
         env.robot.set_joint_velocity_target(_zero_vel)
         _jp = env.robot.data.default_joint_pos[0:1].clone()
+        # approach_and_grasp / full: navigate tucked pose에서 시작 (S1→S2 전환 상태)
+        if skill in ("approach_and_grasp", "full"):
+            _jp[0, env.arm_idx[:5]] = torch.tensor(
+                NAV_TUCKED_RAW_LIST[:5], dtype=torch.float32, device=env.device)
+            _jp[0, env.arm_idx[5]] = NAV_TUCKED_RAW_LIST[5]
         _jv = torch.zeros_like(_jp)
         env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
         apply_scene_task_layout(env, layout)
@@ -957,6 +1071,15 @@ def reset_with_scene_layout(env, args, scene_path):
 
         # 3) settle 후 다시 텔레포트 (drift 보정)
         apply_scene_task_layout(env, layout)
+        # arm도 다시 쓰기 (settle 중 drift 보정)
+        if skill in ("approach_and_grasp", "full"):
+            _jp2 = env.robot.data.joint_pos[0:1].clone()
+            _jp2[0, env.arm_idx[:5]] = torch.tensor(
+                NAV_TUCKED_RAW_LIST[:5], dtype=torch.float32, device=env.device)
+            _jp2[0, env.arm_idx[5]] = NAV_TUCKED_RAW_LIST[5]
+            _jv2 = torch.zeros_like(_jp2)
+            env.robot.write_joint_state_to_sim(_jp2, _jv2, env_ids=_env_id)
+            env.robot.set_joint_position_target(_jp2, env_ids=_env_id)
         env.robot.set_joint_velocity_target(_zero_vel)
         env.sim.step()
         env.robot.update(env.sim.cfg.dt)
@@ -971,6 +1094,21 @@ def reset_with_scene_layout(env, args, scene_path):
             print(f"  [Layout] robot=({layout.robot_xy[0]:.2f}, {layout.robot_xy[1]:.2f}) "
                   f"src=({layout.source_xy[0]:.2f}, {layout.source_xy[1]:.2f}) "
                   f"carry={_cd} [{_nav_schedule_idx}/{len(_NAV_SCHEDULE)}] obj_dist={obj_dist:.2f}m")
+        elif skill == "full":
+            obj_dist = math.dist(layout.robot_xy, layout.source_xy)
+            dest_dist = math.dist(layout.robot_xy, layout.dest_xy) if layout.dest_xy else 0
+            print(f"  [Layout] {getattr(args, 'difficulty', 'easy')} | "
+                  f"robot=({layout.robot_xy[0]:.2f}, {layout.robot_xy[1]:.2f}) "
+                  f"src=({layout.source_xy[0]:.2f}, {layout.source_xy[1]:.2f}) "
+                  f"dest=({layout.dest_xy[0]:.2f}, {layout.dest_xy[1]:.2f}) "
+                  f"src_dist={obj_dist:.2f}m dest_dist={dest_dist:.2f}m")
+            # 실제 sim 좌표 검증
+            _rp = env.robot.data.root_pos_w[0].tolist()
+            _sp = env.object_rigid.data.root_pos_w[0].tolist() if getattr(env, 'object_rigid', None) else [0,0,0]
+            _dp = env._dest_object_rigid.data.root_pos_w[0].tolist() if getattr(env, '_dest_object_rigid', None) else [0,0,0]
+            print(f"  [Actual] robot=({_rp[0]:.2f},{_rp[1]:.2f}) "
+                  f"src=({_sp[0]:.2f},{_sp[1]:.2f}) "
+                  f"dest=({_dp[0]:.2f},{_dp[1]:.2f})")
         else:
             obj_dist = math.dist(layout.robot_xy, layout.source_xy)
             obj_dist_unscaled = obj_dist / args.scene_scale if args.scene_scale > 0 else obj_dist
@@ -992,7 +1130,7 @@ def new_episode_buffer(instruction: str) -> dict:
     }
 
 
-def record_step(ep_data: dict, base_rgb, wrist_rgb, env, action_np: np.ndarray):
+def record_step(ep_data: dict, base_rgb, wrist_rgb, state_9d, action_np: np.ndarray, env=None):
     if base_rgb is None or wrist_rgb is None:
         return
     ep_data["base_rgb"].append(base_rgb)
@@ -1000,13 +1138,14 @@ def record_step(ep_data: dict, base_rgb, wrist_rgb, env, action_np: np.ndarray):
     if args.skill == "navigate":
         wrist_rgb = np.zeros_like(base_rgb)
     ep_data["wrist_rgb"].append(wrist_rgb)
-    ep_data["state"].append(get_state_9d(env))
+    ep_data["state"].append(state_9d)
     ep_data["action"].append(action_np.astype(np.float32))
-    ep_data["robot_pos_w"].append(env.robot.data.root_pos_w[0].cpu().numpy())
-    if hasattr(env, "object_pos_w"):
-        ep_data["object_pos_w"].append(env.object_pos_w[0].cpu().numpy())
-    if hasattr(env, "dest_object_pos_w"):
-        ep_data["dest_pos_w"].append(env.dest_object_pos_w[0].cpu().numpy())
+    if env is not None:
+        ep_data["robot_pos_w"].append(env.robot.data.root_pos_w[0].cpu().numpy())
+        if hasattr(env, "object_pos_w"):
+            ep_data["object_pos_w"].append(env.object_pos_w[0].cpu().numpy())
+        if hasattr(env, "dest_object_pos_w"):
+            ep_data["dest_pos_w"].append(env.dest_object_pos_w[0].cpu().numpy())
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1053,11 +1192,12 @@ def save_episode(hf, ep_idx, data: dict):
 
 def make_hdf5(output_path: str) -> tuple:
     """HDF5 파일 열기/이어쓰기. (hdf5_file, saved_count) 반환."""
-    global _nav_schedule_idx
+    global _nav_schedule_idx, _full_room_idx
     if args.resume and os.path.isfile(output_path):
         hdf5_file = h5py.File(output_path, "a")
         saved_count = sum(1 for k in hdf5_file.keys() if k.startswith("episode_"))
         _nav_schedule_idx = saved_count  # resume 시 스케줄도 이어서
+        _full_room_idx = saved_count
         print(f"  [Resume] 기존 {saved_count}개 에피소드에서 이어서 녹화 (schedule idx={_nav_schedule_idx})")
     else:
         hdf5_file = h5py.File(output_path, "w")
@@ -1069,6 +1209,8 @@ def make_hdf5(output_path: str) -> tuple:
         hdf5_file.attrs["dest_object_usd"] = str(args.dest_object_usd)
         hdf5_file.attrs["skill"] = args.skill
         hdf5_file.attrs["instruction"] = args.instruction
+        if args.skill == "full":
+            hdf5_file.attrs["difficulty"] = args.difficulty
         saved_count = 0
     return hdf5_file, saved_count
 
@@ -1081,7 +1223,10 @@ def main():
         os.makedirs("demos", exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         tag = "expert" if EXPERT_MODE else "teleop"
-        output_path = f"demos/scene_{tag}_{args.skill}_{timestamp}.hdf5"
+        if args.skill == "full":
+            output_path = f"demos/scene_{tag}_{args.skill}_{args.difficulty}_{timestamp}.hdf5"
+        else:
+            output_path = f"demos/scene_{tag}_{args.skill}_{timestamp}.hdf5"
 
     print(f"\n{'='*60}")
     print(f"  ProcTHOR Scene 데모 녹화 [{mode_str}] [{args.skill}]")
@@ -1089,6 +1234,8 @@ def main():
     print(f"  목표: {args.num_demos} 에피소드")
     print(f"  저장: {output_path}")
     print(f"  scene: idx={args.scene_idx}, scale={args.scene_scale}")
+    if args.skill == "full":
+        print(f"  difficulty: {args.difficulty} ({'같은 방' if args.difficulty == 'easy' else '다른 방'})")
     print(f"  camera: {args.camera_width}x{args.camera_height}")
     print(f"  instruction: \"{args.instruction}\"")
     if EXPERT_MODE:
@@ -1575,12 +1722,13 @@ def _run_expert(env, cams, scene_path, output_path: str):
                 # Action → numpy (저장용)
                 action_np = action[0].cpu().numpy().astype(np.float32)
 
+                # 기록: image + state를 env.step 전에 캡처 (같은 시점)
+                if not EVAL_ONLY:
+                    _pre_state = get_state_9d(env)
+                    record_step(ep_data, base_rgb, wrist_rgb, _pre_state, action_np, env)
+
                 # Env step
                 obs, reward, terminated, truncated, info = env.step(action)
-
-                # 기록 (eval_only일 때 스킵)
-                if not EVAL_ONLY:
-                    record_step(ep_data, base_rgb, wrist_rgb, env, action_np)
 
                 # combined S3 phase 스텝 카운트 + drop 감지 + 제한
                 _is_s3_phase = (is_combined and _combined_phase == "S3")
@@ -1706,6 +1854,7 @@ def _run_expert(env, cams, scene_path, output_path: str):
 
 def _run_teleop(env, cams, scene_path, output_path: str):
     """텔레옵 모드: 리더암+키보드 조작, → 저장 / ← 폐기."""
+    global _full_room_idx
     # 텔레옵 입력
     ROS2_AVAILABLE = False
     try:
@@ -1788,15 +1937,16 @@ def _run_teleop(env, cams, scene_path, output_path: str):
 
             action_t = torch.tensor(action_np, dtype=torch.float32, device=env.device).unsqueeze(0)
 
-            # 카메라 캡처
+            # 카메라 + state 캡처 (env.step 전, image와 같은 시점)
             base_rgb, wrist_rgb = capture(env, cams)
+            _pre_state = get_state_9d(env)
 
             # Env step
             next_obs, reward, terminated, truncated, info = env.step(action_t)
             step_count += 1
 
             # 기록
-            record_step(ep_data, base_rgb, wrist_rgb, env, action_np)
+            record_step(ep_data, base_rgb, wrist_rgb, _pre_state, action_np, env)
 
             # 주기적 상태 출력
             if step_count % 60 == 0:
@@ -1820,6 +1970,8 @@ def _run_teleop(env, cams, scene_path, output_path: str):
                 if n > 10:
                     if save_episode(hdf5_file, saved_count, ep_data):
                         saved_count += 1
+                        if args.skill == "full":
+                            _full_room_idx += 1  # 저장 성공 시에만 다음 방으로
                         print(f"  [{saved_count}/{args.num_demos}] 저장 완료 ({n} steps)")
                     else:
                         print(f"  [Skip] NaN 데이터 → 저장 거부")
