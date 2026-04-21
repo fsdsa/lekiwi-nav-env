@@ -35,6 +35,10 @@ parser.add_argument("--dp_checkpoint", type=str, default="", help="S2 approach&l
 parser.add_argument("--resip_checkpoint", type=str, default="", help="S2 approach&lift ResiP")
 parser.add_argument("--nav_dp_checkpoint", type=str, default="", help="S1 navigate BC")
 parser.add_argument("--nav_resip_checkpoint", type=str, default="", help="S1 navigate ResiP")
+parser.add_argument("--carry_dp_checkpoint", type=str, default="", help="S3 carry BC (39D)")
+parser.add_argument("--carry_resip_checkpoint", type=str, default="", help="S3 carry ResiP")
+parser.add_argument("--place_dp_checkpoint", type=str, default="", help="S4 place BC (55D)")
+parser.add_argument("--place_resip_checkpoint", type=str, default="", help="S4 place ResiP")
 parser.add_argument("--camera_width", type=int, default=1280)
 parser.add_argument("--camera_height", type=int, default=800)
 parser.add_argument("--vlm_interval", type=int, default=30)
@@ -684,6 +688,21 @@ def main():
         else:
             log.warning("[S2 Expert] Failed to load — S2 will use VLA only")
 
+    # ── S3 Carry Expert ──
+    carry_dp, carry_resip, carry_cfg = None, None, None
+    if args.carry_dp_checkpoint:
+        log.info(f"[S3 Expert] Loading BC: {args.carry_dp_checkpoint}")
+        carry_dp, carry_resip, carry_cfg = load_s2_expert(
+            args.carry_dp_checkpoint, args.carry_resip_checkpoint, device
+        )
+        if carry_dp:
+            log.info(f"[S3 Expert] BC loaded (obs={carry_cfg['obs_dim']}D)")
+            if carry_resip:
+                log.info(f"[S3 Expert] ResiP loaded: {args.carry_resip_checkpoint}")
+
+    _carry_per_dim = torch.zeros(9, device=device)
+    _carry_per_dim[0:5] = 0.05; _carry_per_dim[5] = 0.05
+
     # ── 환경 ──
     log.info("Setting up environment...")
     env, cams, scene_path = setup_env(args)
@@ -777,6 +796,10 @@ def main():
     vla_calls_log = []
     t_start = time.time()
 
+    # S3 carry state
+    _carry_init_arm_pose = torch.zeros(1, 6, device=device)
+    _carry_dir_cmd = torch.tensor([0.0, 1.0, 0.0], device=device)
+
     try:
         while total_steps < args.max_total_steps and simulation_app.is_running():
             # ── 키보드 (hold 감지) ──
@@ -863,6 +886,10 @@ def main():
                     _s2_lift_counter = 0
                 if _s2_lift_counter >= 200:
                     log.info(f"[LIFTED] objZ={obj_z:.3f}, hold={_s2_lift_counter} → S3")
+                    # init_arm_pose 캡처 (S3 carry용)
+                    _jp_s3 = env.robot.data.joint_pos[0]
+                    _carry_init_arm_pose[0, :5] = _jp_s3[env.arm_idx[:5]]
+                    _carry_init_arm_pose[0, 5] = _jp_s3[env.arm_idx[5]]
                     orch._transition_to(SkillState.CARRY)
                     _s2_lift_counter = 0
                     _s2_step_counter = 0
@@ -922,7 +949,12 @@ def main():
                 vla.reset_buffer()
                 prev_skill = orch.current_skill
                 # S1/S3: tucked 강제, S2/S4: 해제 (RL expert가 arm 제어)
-                _force_tucked[0] = orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY)
+                if orch.current_skill == SkillState.NAVIGATE:
+                    _force_tucked[0] = True
+                elif orch.current_skill == SkillState.CARRY:
+                    _force_tucked[0] = (carry_dp is None)
+                else:
+                    _force_tucked[0] = False
 
             # ── Action 결정 ──
             instruction = orch.instruction
@@ -949,27 +981,42 @@ def main():
                 "navigate turn right":   [0.0, 0.0, 0.33],
             }
 
-            if skill in (SkillState.NAVIGATE, SkillState.CARRY):
-                # Lookup table base velocity (friction 0.5 호환)
+            if skill == SkillState.NAVIGATE:
+                # S1: lookup table + 키보드 override
                 _base_cmd = _NAV_INST_TO_ACTION.get(instruction, [0.0, 0.5, 0.0])
                 action = np.zeros(9, dtype=np.float32)
-                action[6] = _base_cmd[0]
-                action[7] = _base_cmd[1]
-                action[8] = _base_cmd[2]
-                # 키보드 override
+                action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
                 if abs(kb_vx) > 0 or abs(kb_vy) > 0 or abs(kb_wz) > 0:
                     action[6] = np.clip(kb_vx / MAX_LIN, -1, 1)
                     action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
                     action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
 
-                # VLA 포맷 검증: 100스텝마다 1회 비동기 호출 (별도 스레드)
-                if total_steps % 100 == 0 and total_steps > 0:
-                    def _vla_check():
-                        va = vla.query_action(base_rgb, wrist_rgb, state, instruction)
-                        dim = len(va[0]) if va and len(va) > 0 else 0
-                        log.info(f"[VLA-CHECK] step={total_steps} inst=\"{instruction[:40]}\" "
-                                 f"chunk={len(va)} dim={dim} latency={vla.latency*1000:.0f}ms")
-                    threading.Thread(target=_vla_check, daemon=True).start()
+            elif skill == SkillState.CARRY and carry_dp is not None:
+                # S3: carry BC+ResiP (39D obs)
+                _CARRY_INST_TO_DIR = {
+                    "carry forward": [0, 1, 0], "carry backward": [0, -1, 0],
+                    "carry strafe left": [-1, 0, 0], "carry strafe right": [1, 0, 0],
+                    "carry turn left": [0, 0, 1], "carry turn right": [0, 0, -1],
+                }
+                _dir = _CARRY_INST_TO_DIR.get(instruction, [0, 1, 0])
+                _carry_dir_cmd[:] = torch.tensor(_dir, dtype=torch.float32, device=device)
+                obs_t = obs["policy"].to(device)
+                carry_obs = torch.cat([
+                    obs_t, _carry_dir_cmd.unsqueeze(0), _carry_init_arm_pose,
+                ], dim=-1)
+                action = resip_action(carry_dp, carry_resip, carry_obs, device, _carry_per_dim)
+                action = np.clip(action, -1, 1)
+
+            elif skill == SkillState.CARRY:
+                # S3 expert 없음: lookup table fallback
+                _base_cmd = _NAV_INST_TO_ACTION.get(
+                    instruction.replace("carry", "navigate"), [0.0, 0.5, 0.0])
+                action = np.zeros(9, dtype=np.float32)
+                action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
+                if abs(kb_vx) > 0 or abs(kb_vy) > 0 or abs(kb_wz) > 0:
+                    action[6] = np.clip(kb_vx / MAX_LIN, -1, 1)
+                    action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
+                    action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
 
             elif skill == SkillState.APPROACH_AND_LIFT and dp_agent is not None:
                 # S2: RL expert action
