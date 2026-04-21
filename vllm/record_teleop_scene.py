@@ -168,8 +168,11 @@ import omni.replicator.core as rep
 from lekiwi_skill2_eval import Skill2Env, Skill2EnvCfg
 from lekiwi_robot_cfg import ARM_JOINT_NAMES, WHEEL_JOINT_NAMES, WHEEL_ANGLES_RAD
 
-# Navigate tucked pose (raw rad) — env._nav_apply_action에서도 동일 사용
+# Navigate tucked pose (raw rad) — 레거시, _INIT_ARM_RAW로 대체됨
 NAV_TUCKED_RAW_LIST = [-0.02966, -0.213839, 0.09066, -0.4, 0.058418, -0.201554]  # arm5 + grip1
+# Approach init action (normalized [-1,1]) — navigate/approach 공용 시작 pose
+APPROACH_INIT_ACTION = [-0.00306, -0.89805, 0.94939, 0.87188, -0.5546, -0.71724]  # arm5 + grip1
+_INIT_ARM_RAW = None  # setup_env에서 joint limits로 변환 후 채워짐
 from procthor_scene import (
     SceneSpawnCfg,
     apply_scene_task_layout,
@@ -545,13 +548,19 @@ def setup_env(args):
     if args.skill == "navigate":
         # Skill2Env 사용 (scene_reference_usd 지원)
         env = Skill2Env(cfg=cfg)
-        # Navigate: arm을 그룹 B carry pose로 강제 (카메라 가림 방지)
-        _NAV_TUCKED_ARM_T = torch.tensor(
-            [-0.02966, -0.213839, 0.09066, -0.4, 0.058418], device=env.device)
-        _NAV_TUCKED_GRIP_V = -0.201554
+        # APPROACH_INIT_ACTION → raw rad 변환 (navigate/approach 공용)
+        global _INIT_ARM_RAW
+        _arm_lim = env.robot.data.soft_joint_pos_limits[0, env.arm_idx[:6]]
+        _arm_center = 0.5 * (_arm_lim[..., 0] + _arm_lim[..., 1])
+        _arm_half = 0.5 * (_arm_lim[..., 1] - _arm_lim[..., 0])
+        _init_raw_t = _arm_center + torch.tensor(
+            APPROACH_INIT_ACTION, dtype=torch.float32, device=env.device
+        ) * _arm_half.clamp(min=1e-6)
+        _INIT_ARM_RAW = _init_raw_t.cpu().tolist()
+        print(f"  [InitPose] raw: {[f'{v:+.3f}' for v in _INIT_ARM_RAW]}")
+        # Navigate: arm 강제 (approach init pose)
         _original_apply_nav = env._apply_action
         def _nav_apply_action():
-            # Skill1Env 방식: base→IK→wheel 직접 처리 + arm 강제
             body_vx = env.actions[:, 6] * env.cfg.max_lin_vel
             body_vy = env.actions[:, 7] * env.cfg.max_lin_vel
             body_wz = env.actions[:, 8] * env.cfg.max_ang_vel
@@ -564,8 +573,8 @@ def setup_env(args):
             vel_target[:, env.wheel_idx] = wheel_radps
             env.robot.set_joint_velocity_target(vel_target)
             pos_target = torch.zeros(1, env.robot.num_joints, device=env.device)
-            pos_target[0, env.arm_idx[:5]] = _NAV_TUCKED_ARM_T
-            pos_target[0, env.arm_idx[5]] = _NAV_TUCKED_GRIP_V
+            pos_target[0, env.arm_idx[:5]] = _init_raw_t[:5]
+            pos_target[0, env.arm_idx[5]] = _init_raw_t[5]
             env.robot.set_joint_position_target(pos_target)
         env._apply_action = _nav_apply_action
     elif args.skill == "carry_and_place":
@@ -642,11 +651,12 @@ def setup_env(args):
     arm_hi = arm_lim[..., 1]
     arm_center = 0.5 * (arm_lo + arm_hi)
     arm_half = 0.5 * (arm_hi - arm_lo)
-    nav_tucked_raw = torch.tensor(NAV_TUCKED_RAW_LIST, dtype=torch.float32, device=env.device)
-    nav_tucked_normalized = ((nav_tucked_raw - arm_center) / arm_half.clamp(min=1e-6)).clamp(-1.0, 1.0)
-    cams["_nav_arm_normalized"] = nav_tucked_normalized
-    print(f"  [Navigate] tucked pose raw: {[f'{v:+.3f}' for v in nav_tucked_raw.tolist()]}")
-    print(f"  [Navigate] tucked pose norm: {[f'{v:+.3f}' for v in nav_tucked_normalized.tolist()]}")
+    # navigate arm action = APPROACH_INIT_ACTION (이미 normalized [-1,1])
+    nav_arm_normalized = torch.tensor(APPROACH_INIT_ACTION, dtype=torch.float32, device=env.device)
+    cams["_nav_arm_normalized"] = nav_arm_normalized
+    if _INIT_ARM_RAW is not None:
+        print(f"  [InitPose] raw: {[f'{v:+.3f}' for v in _INIT_ARM_RAW]}")
+        print(f"  [InitPose] action: {[f'{v:+.3f}' for v in APPROACH_INIT_ACTION]}")
 
     return env, cams, scene_path
 
@@ -1052,11 +1062,11 @@ def reset_with_scene_layout(env, args, scene_path):
         _zero_vel = torch.zeros(1, env.robot.num_joints, device=env.device)
         env.robot.set_joint_velocity_target(_zero_vel)
         _jp = env.robot.data.default_joint_pos[0:1].clone()
-        # approach_and_grasp / full: navigate tucked pose에서 시작 (S1→S2 전환 상태)
-        if skill in ("approach_and_grasp", "full"):
+        # approach init pose 적용 (navigate/approach 공용)
+        if _INIT_ARM_RAW is not None and skill in ("approach_and_grasp", "navigate", "full", "combined_s2_place"):
             _jp[0, env.arm_idx[:5]] = torch.tensor(
-                NAV_TUCKED_RAW_LIST[:5], dtype=torch.float32, device=env.device)
-            _jp[0, env.arm_idx[5]] = NAV_TUCKED_RAW_LIST[5]
+                _INIT_ARM_RAW[:5], dtype=torch.float32, device=env.device)
+            _jp[0, env.arm_idx[5]] = _INIT_ARM_RAW[5]
         _jv = torch.zeros_like(_jp)
         env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
         apply_scene_task_layout(env, layout)
@@ -1071,15 +1081,6 @@ def reset_with_scene_layout(env, args, scene_path):
 
         # 3) settle 후 다시 텔레포트 (drift 보정)
         apply_scene_task_layout(env, layout)
-        # arm도 다시 쓰기 (settle 중 drift 보정)
-        if skill in ("approach_and_grasp", "full"):
-            _jp2 = env.robot.data.joint_pos[0:1].clone()
-            _jp2[0, env.arm_idx[:5]] = torch.tensor(
-                NAV_TUCKED_RAW_LIST[:5], dtype=torch.float32, device=env.device)
-            _jp2[0, env.arm_idx[5]] = NAV_TUCKED_RAW_LIST[5]
-            _jv2 = torch.zeros_like(_jp2)
-            env.robot.write_joint_state_to_sim(_jp2, _jv2, env_ids=_env_id)
-            env.robot.set_joint_position_target(_jp2, env_ids=_env_id)
         env.robot.set_joint_velocity_target(_zero_vel)
         env.sim.step()
         env.robot.update(env.sim.cfg.dt)

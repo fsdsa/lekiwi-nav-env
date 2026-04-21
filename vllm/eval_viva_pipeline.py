@@ -48,6 +48,9 @@ parser.add_argument("--scene_idx", type=int, default=0, help="ProcTHOR scene ind
 parser.add_argument("--scene_usd", type=str, default="")
 parser.add_argument("--scene_scale", type=float, default=1.0)
 parser.add_argument("--scene_install_dir", type=str, default="~/molmospaces/assets/usd")
+parser.add_argument("--difficulty", type=str, default="easy",
+                    choices=["easy", "middle", "hard"],
+                    help="easy: room9, middle: room4, hard: room6(로봇)+room3(물체)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -395,7 +398,7 @@ def setup_env(args):
             floor_z = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path)
         else:
             floor_z = 0.0
-        cfg.builtin_ground_z = floor_z * args.scene_scale
+        cfg.builtin_ground_z = floor_z * args.scene_scale - 0.1
         cfg.sim.device = "cpu"
         print(f"  [Scene] {scene_path}, floor_z={floor_z:.4f}, scale={args.scene_scale}, device=cpu")
     else:
@@ -511,54 +514,90 @@ def setup_env(args):
 
 
 def reset_with_scene(env, args, scene_path, log):
-    """env.reset() 후 scene 내부에 로봇/물체 배치 (같은 방 보장)."""
-    from procthor_scene import (
-        sample_scene_task_layout, apply_scene_task_layout, SceneSpawnCfg,
-        _load_floor_regions, _load_support_floor_z, _find_robot_region,
-        SCENE_PRESETS,
-    )
+    """env.reset() 후 difficulty-aware 스폰 (record_teleop_scene/run_full_task와 동일)."""
+    import random as _rng_mod
+
     obs, info = env.reset()
     if scene_path is not None:
-        ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
-        source_override = SceneSpawnCfg(
-            min_robot_dist=float(getattr(env.cfg, "object_dist_min", 0.8)) / ss,
-            max_robot_dist=float(getattr(env.cfg, "object_dist_max", 1.2)) / ss,
-            clearance_radius=0.14,
+        from procthor_scene import (
+            apply_scene_task_layout, SceneTaskLayout,
+            _load_floor_regions, _load_support_floor_z,
+            _load_scene_obstacles, _find_robot_region,
+            _load_floor_triangles, sample_on_floor_mesh,
+            SCENE_PRESETS,
         )
-        _preset = SCENE_PRESETS.get(args.scene_idx)
-        _sfz = _load_support_floor_z(str(scene_path.resolve()), _preset.support_floor_prim_path)
-        _regions = _load_floor_regions(str(scene_path.resolve()), support_floor_z=_sfz)
+        import math as _m
 
-        for _retry in range(50):
+        _DIFFICULTY_MAP = {
+            "easy":   ("room_9",  1.086, 33.694, 214.4, "room_9"),
+            "middle": ("room_4",  3.25,  14.05,  -76.2, "room_4"),
+            "hard":   ("room_6", 10.80,   3.25,   -3.4, "room_3"),
+        }
+
+        def _room_id(fp):
+            name = fp.path.split("/")[-1]
+            idx = name.find("_visual_")
+            return name[:idx] if idx >= 0 else name
+
+        _scene_str = str(scene_path.resolve())
+        preset = SCENE_PRESETS.get(args.scene_idx)
+        sfz = _load_support_floor_z(_scene_str, preset.support_floor_prim_path) if preset else 0.0
+        regions = _load_floor_regions(_scene_str, support_floor_z=sfz)
+        obstacles = _load_scene_obstacles(_scene_str)
+        floor_tris = _load_floor_triangles(_scene_str)
+        ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
+
+        _diff_entry = _DIFFICULTY_MAP[args.difficulty]
+        _target_room, _rx, _ry, _ryaw_deg, _obj_room_id = _diff_entry
+        _obj_tris = floor_tris.get(_obj_room_id, [])
+        _fz = sfz * ss
+
+        layout = None
+        for _spawn_try in range(200):
+            _rng = _rng_mod.Random()
             try:
-                layout = sample_scene_task_layout(
-                    args.scene_idx, scene_usd=scene_path,
-                    scene_scale=args.scene_scale,
-                    source_spawn_override=source_override,
-                    robot_faces_source=True,
-                    randomize_robot_xy=True,
-                )
-                # 같은 방 검증
-                _robot_unscaled = (layout.robot_xy[0] / ss, layout.robot_xy[1] / ss)
-                _source_unscaled = (layout.source_xy[0] / ss, layout.source_xy[1] / ss)
-                _robot_reg = _find_robot_region(_robot_unscaled, _regions)
-                _source_reg = _find_robot_region(_source_unscaled, _regions)
-                if _robot_reg and _source_reg and _robot_reg.path == _source_reg.path:
-                    break
-                if _retry < 49:
-                    continue
+                _sxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
+                _dxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
             except RuntimeError:
-                if _retry < 49:
+                continue
+            if _m.dist(_sxy, _dxy) < 1.5:
+                continue
+            if _obj_room_id == _target_room:
+                if _m.dist((_rx, _ry), _sxy) < 1.5 or _m.dist((_rx, _ry), _dxy) < 1.5:
                     continue
-                raise
-        apply_scene_task_layout(env, layout)
-        for _ in range(10):
+            layout = SceneTaskLayout(
+                robot_xy=(_rx * ss, _ry * ss),
+                robot_yaw_rad=_m.radians(_ryaw_deg),
+                source_xy=(_sxy[0] * ss, _sxy[1] * ss),
+                source_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+                dest_xy=(_dxy[0] * ss, _dxy[1] * ss),
+                dest_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+                floor_z=_fz,
+                source_rest_z=0.033,
+            )
+            break
+        else:
+            log.warning(f"{args.difficulty} 스폰 실패 200회")
+
+        if layout is not None:
+            apply_scene_task_layout(env, layout)
+            _zero_v = torch.zeros(1, env.robot.num_joints, device=env.device)
+            env.robot.set_joint_velocity_target(_zero_v)
+            for _ in range(60):
+                env.sim.step()
+                env.sim.render()
+            apply_scene_task_layout(env, layout)
+            env.robot.set_joint_velocity_target(_zero_v)
             env.sim.step()
-        env.robot.update(env.sim.cfg.dt)
-        log.info(f"[Scene] Robot: ({layout.robot_xy[0]:.2f}, {layout.robot_xy[1]:.2f}), "
-                 f"Source: ({layout.source_xy[0]:.2f}, {layout.source_xy[1]:.2f}), "
-                 f"Dest: ({layout.dest_xy[0]:.2f}, {layout.dest_xy[1]:.2f}), "
-                 f"Room: {_robot_reg.path.split('/')[-1] if _robot_reg else '?'}")
+            env.robot.update(env.sim.cfg.dt)
+
+            _r_room = _find_robot_region((_rx, _ry), regions)
+            _s_room = _find_robot_region(_sxy, regions)
+            _d_room = _find_robot_region(_dxy, regions)
+            log.info(f"[Spawn] {args.difficulty} | "
+                     f"robot={_room_id(_r_room) if _r_room else '?'}({_rx:.1f},{_ry:.1f}) | "
+                     f"src={_room_id(_s_room) if _s_room else '?'} | "
+                     f"dest={_room_id(_d_room) if _d_room else '?'}")
     return obs
 
 
