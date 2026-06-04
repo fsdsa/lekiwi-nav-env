@@ -367,9 +367,9 @@ Typical workflow:
        --instruction "approach and grasp the medicine bottle"
 
   2. Transfer HDF5 to server:
-     scp -P 30179 -i ~/.ssh/private.pem \
+     scp \
        teleop_scene_data/*.hdf5 \
-       jovyan@218.148.55.186:~/data/lekiwi_hdf5/
+       A100:~/data/lekiwi_hdf5/
 
   3. Convert + Train on server:
      bash train_pi0fast.sh all \

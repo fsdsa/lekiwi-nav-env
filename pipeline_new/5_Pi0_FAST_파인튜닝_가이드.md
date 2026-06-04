@@ -26,8 +26,8 @@ Pi0-FAST (2.9B) 모델을 LeKiwi 데이터로 파인튜닝하는 전체 과정�
 
 | 항목 | 값 |
 |------|-----|
-| 서버 | `jovyan@218.148.55.186:30179` |
-| SSH | `ssh -i ~/.ssh/private.pem -p 30179 jovyan@218.148.55.186` |
+| 서버 | `A100` |
+| SSH | `ssh A100` |
 | conda env | `lerobotpi0v2` |
 | conda path | `/home/jovyan/yes/envs/lerobotpi0v2` |
 | Python | 3.12 |
@@ -450,7 +450,7 @@ python vllm/vla_inference_server.py \
 - `--max-model-len 4096`: KV cache 절약 (기본 262144는 OOM)
 - `--dtype bfloat16`: A100 최적
 - VRAM: VLM ~29.8GB + VLA ~8.1GB = ~37.9GB / 40GB
-- **SSH 터널 필수**: `ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 -i ~/.ssh/private.pem -p 30179 jovyan@218.148.55.186`
+- **SSH 터널 필수**: `ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 A100`
 
 ---
 

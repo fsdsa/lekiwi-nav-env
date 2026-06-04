@@ -133,7 +133,7 @@ S2/S4에서 depth < 0.3m 감지 → VLM 비동기 호출 → "OBSTACLE" / "CONTI
 ### 1. 서버 준비 (A100, 최초 1회)
 
 ```bash
-ssh -i ~/.ssh/private.pem jovyan@218.148.55.186 -p 30179
+ssh A100
 
 # VLM 서버
 conda activate vllm
@@ -151,7 +151,7 @@ ssh -f -N \
   -L 8000:localhost:8000 \
   -L 8002:localhost:8002 \
   -i ~/.ssh/private.pem \
-  jovyan@218.148.55.186 -p 30179
+  A100
 ```
 
 ### 3. 전체 파이프라인 실행 (로컬 3090)

@@ -4,11 +4,11 @@
 
 ```
 Host: 218.148.55.186
-Port: 30179
+Port: ~/.ssh/config Host A100 (pod 재시작마다 바뀜)
 User: jovyan
 Key: ~/.ssh/private.pem
 
-ssh -p 30179 -i ~/.ssh/private.pem jovyan@218.148.55.186
+ssh A100
 ```
 
 ---
@@ -36,8 +36,8 @@ Desktop에서 서버로 전송 완료된 파일 목록:
 
 ```bash
 # Desktop → 서버 전체 전송 (최초 1회)
-rsync -avz --progress -e "ssh -i ~/.ssh/private.pem -p 30179" \
-    ~/lekiwi/ jovyan@218.148.55.186:~/lekiwi/
+rsync -avz --progress -e ssh \
+    ~/lekiwi/ A100:~/lekiwi/
 ```
 
 **메쉬가 없으면**: Isaac Sim이 로봇을 로드하지만 PhysX articulation만 생성되고 시각적 메쉬가 없는 "빈 깡통" 상태가 된다. RL 학습(state-only)은 물리 엔진만 사용하므로 **메쉬 없이도 학습은 정상 동작**하지만, 데이터 수집(카메라 렌더링)에서는 메쉬가 필수.
@@ -195,20 +195,20 @@ Pi0-FAST 2.9B (VLA):       ~8.1GB 사용 (lerobot 0.5.0)
 ```
 [Phase 1]
 Desktop → 서버: 프로젝트 코드 전체
-  rsync -avz --progress -e "ssh -i ~/.ssh/private.pem -p 30179" \
+  rsync -avz --progress -e ssh \
       --exclude='*.hdf5' --exclude='logs/' --exclude='__pycache__' --exclude='outputs/' \
       ~/IsaacLab/scripts/lekiwi_nav_env/ \
-      jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/
+      A100:~/IsaacLab/scripts/lekiwi_nav_env/
 
 Desktop → 서버: 텔레옵 HDF5
-  scp -P 30179 -i ~/.ssh/private.pem -r demos/ jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/
+  scp -r demos/ A100:~/IsaacLab/scripts/lekiwi_nav_env/
 
 서버 → Desktop: RL checkpoint
-  scp -P 30179 -i ~/.ssh/private.pem jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/logs/*/checkpoints/best_agent.pt ./
+  scp A100:~/IsaacLab/scripts/lekiwi_nav_env/logs/*/checkpoints/best_agent.pt ./
 
 [Phase 2]
 Desktop → 서버: 수집 HDF5 + 이미지
-  scp -P 30179 -i ~/.ssh/private.pem -r outputs/ jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/
+  scp -r outputs/ A100:~/IsaacLab/scripts/lekiwi_nav_env/
 
 [Phase 4]
 서버에서 LeRobot v3 변환 + VLA 파인튜닝 진행
@@ -480,7 +480,7 @@ Skill별 디렉토리:
 
 ```bash
 # 1. Desktop에서 SSH 터널 + TensorBoard 실행 (한 줄)
-ssh -i ~/.ssh/private.pem -p 30179 -L 6006:localhost:6006 jovyan@218.148.55.186 \
+ssh A100 -L 6006:localhost:6006 \
     "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
      tensorboard --logdir ~/IsaacLab/scripts/lekiwi_nav_env/logs/ --port 6006 --bind_all"
 
@@ -492,8 +492,8 @@ ssh -i ~/.ssh/private.pem -p 30179 -L 6006:localhost:6006 jovyan@218.148.55.186 
 
 ```bash
 # 서버 → Desktop: TensorBoard 파일만 복사 (가벼움, 수십~수백KB)
-scp -P 30179 -i ~/.ssh/private.pem -r \
-    jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate/ \
+scp -r \
+    A100:~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate/ \
     ~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate_server/
 
 # Desktop에서 TensorBoard 실행
@@ -503,7 +503,7 @@ tensorboard --logdir ~/IsaacLab/scripts/lekiwi_nav_env/logs/ --port 6006
 #### Python으로 메트릭 직접 읽기 (SSH 원격)
 
 ```bash
-ssh -i ~/.ssh/private.pem -p 30179 jovyan@218.148.55.186 \
+ssh A100 \
     "source ~/miniconda3/etc/profile.d/conda.sh && conda activate rl_train && \
      python3 -c \"
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
@@ -527,8 +527,8 @@ A100 서버는 headless 전용 (RT Core 없음, 카메라 렌더링 불가). 학
 
 ```bash
 # 서버 → Desktop: best_agent.pt 복사
-scp -P 30179 -i ~/.ssh/private.pem \
-    jovyan@218.148.55.186:~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt \
+scp \
+    A100:~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate/ppo_navigate_scratch/checkpoints/best_agent.pt \
     ~/IsaacLab/scripts/lekiwi_nav_env/logs/ppo_navigate/ppo_navigate_scratch/checkpoints/
 ```
 

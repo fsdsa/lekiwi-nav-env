@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 LOG_LOCAL=/home/yubin11/IsaacLab/scripts/lekiwi_nav_env/resip_s3_36d_v15_stage1g_monitor_$(date +%Y%m%d_%H%M%S).log
-REMOTE=jovyan@218.148.55.186
-SSH_OPTS='-i /home/yubin11/.ssh/private.pem -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p 30179'
+REMOTE=A100   # ~/.ssh/config Host A100 (port는 pod 재시작마다 바뀜 → 하드코딩 금지)
+SSH_OPTS='-o StrictHostKeyChecking=no -o ConnectTimeout=10'
 LOCAL_COPY=/home/yubin11/IsaacLab/scripts/lekiwi_nav_env/logs/resip_s3_36d_v15_stage1g_server.log
 for i in $(seq 1 7); do
   {
