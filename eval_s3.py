@@ -279,13 +279,22 @@ def source_uprightness():
         return obj_up[:, 2].clamp(0.0, 1.0)
     return torch.ones(1, device=dev)
 
-# Phase-wise residual scale (must match train_resip.py main_combined)
-s3_scale_a = torch.zeros(s3_cfg["act_dim"], device=dev)
-s3_scale_a[0:5] = 0.0; s3_scale_a[5] = 0.0; s3_scale_a[6:9] = 0.10
-s3_scale_b = torch.zeros(s3_cfg["act_dim"], device=dev)
-s3_scale_b[0:5] = 0.30; s3_scale_b[5] = 1.20; s3_scale_b[6:9] = 0.20
+# Phase-wise residual scale — 4-phase (must match train_resip.py v19g)
+_AD = s3_cfg["act_dim"]
+s3_scale_a = torch.zeros(_AD, device=dev)
+s3_scale_a[0:5] = 0.0;  s3_scale_a[5] = 0.0;  s3_scale_a[6:9] = 0.40
 
-def get_s3_action(s3_obs, phase_a=True):
+s3_scale_b = torch.zeros(_AD, device=dev)
+s3_scale_b[0:5] = 0.05; s3_scale_b[5] = 0.0;  s3_scale_b[6:9] = 0.10  # grip: conditional (아래에서 적용)
+
+s3_scale_c = torch.zeros(_AD, device=dev)
+s3_scale_c[0:5] = 0.05; s3_scale_c[5] = 0.50; s3_scale_c[6:9] = 0.05
+
+s3_scale_d = torch.zeros(_AD, device=dev)
+s3_scale_d[0:5] = 0.10; s3_scale_d[5] = 0.10; s3_scale_d[6:9] = 0.05  # v19u: arm=0.10, grip=0.10
+
+def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
+                   src_h=None, src_upright=None, bdxy=None):
     with torch.no_grad():
         base_nact = s3_dp.base_action_normalized(s3_obs)
         base_nact = torch.nan_to_num(base_nact, nan=0.0)
@@ -296,14 +305,35 @@ def get_s3_action(s3_obs, phase_a=True):
             _, _, _, _, ra_mean = s3_resip.get_action_and_value(ri)
             ra_mean = torch.clamp(ra_mean, -1.0, 1.0)
             if torch.is_tensor(phase_a):
-                phase_mask = phase_a.to(device=dev, dtype=torch.bool).unsqueeze(-1)
-                s3_scale = torch.where(phase_mask, s3_scale_a.unsqueeze(0), s3_scale_b.unsqueeze(0))
+                N = phase_a.shape[0]
+                _is_a = phase_a.to(device=dev, dtype=torch.bool)
+                _is_d = phase_d.to(device=dev, dtype=torch.bool) if phase_d is not None else torch.zeros(N, dtype=torch.bool, device=dev)
+                _is_c = (phase_c.to(device=dev, dtype=torch.bool) if phase_c is not None else torch.zeros(N, dtype=torch.bool, device=dev)) & (~_is_d)
+                _is_b = (~_is_a) & (~_is_c) & (~_is_d)
+                s3_scale = torch.zeros(N, _AD, device=dev)
+                s3_scale[_is_a] = s3_scale_a
+                s3_scale[_is_b] = s3_scale_b
+                s3_scale[_is_c] = s3_scale_c
+                s3_scale[_is_d] = s3_scale_d
+                # Phase B conditional grip: only allow grip open near floor
+                if src_h is not None and src_upright is not None and bdxy is not None:
+                    _phb_grip_ok = _is_b & (src_h < 0.06) & (src_upright > 0.90) & (bdxy < 0.45)
+                    s3_scale[_phb_grip_ok, 5] = 0.20  # 조건 충족: grip open 허용
+                    # 기본 s3_scale_b[5]=0.0이므로 불충족 시 이미 0.0
             else:
-                s3_scale = s3_scale_a if phase_a else s3_scale_b
+                # single env fallback
+                if phase_d and phase_d is True:
+                    s3_scale = s3_scale_d
+                elif phase_c and phase_c is True:
+                    s3_scale = s3_scale_c
+                elif phase_a:
+                    s3_scale = s3_scale_a
+                else:
+                    s3_scale = s3_scale_b
             nact = base_nact + ra_mean * s3_scale
         else:
             nact = base_nact
-        nact[:, 5] = torch.clamp(nact[:, 5], -0.45, 1.0)  # gripper clamp: grip_pos >= ~0.26 (끼임 방지)
+        nact[:, 5] = torch.clamp(nact[:, 5], -0.45, 1.0)
         action = s3_dp.normalizer(nact, "action", forward=False)
     return action.clamp(-1, 1)
 
@@ -563,6 +593,17 @@ def run_batch_eval():
         release_phase_latch = torch.zeros(n, dtype=torch.bool, device=dev)
         retract_started_latch = torch.zeros(n, dtype=torch.bool, device=dev)
 
+        # Training-consistent obs flag state (matches dataset build logic)
+        obs_phase_a_latch = valid_mask.clone()
+        if args.s3_phase_b_only:
+            obs_phase_a_latch.zero_()
+        obs_arm_rise_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        obs_grip_open_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        obs_retract_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        obs_rest_pose = torch.tensor([-0.070, -0.207, 0.203, 0.121, 0.024], device=dev)  # v21 C→D latch용
+        obs_phase_c_latch = torch.zeros(n, dtype=torch.bool, device=dev)
+        obs_phase_d_latch = torch.zeros(n, dtype=torch.bool, device=dev)
+
         if args.s3_phase_b_only and valid_env_ids.numel() > 0:
             objZ = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
             grip = env.robot.data.joint_pos[:, env.arm_idx[5]]
@@ -610,34 +651,69 @@ def run_batch_eval():
                 phase_a_active[to_phase_b] = False
 
             phase_flag = torch.zeros(n, dtype=torch.float32, device=dev) if args.s3_phase_b_only else phase_a_active.float()
-            if s3_is_motion24:
+            if s3_is_motion24 or s3_is_ee23:
                 release_phase_latch, retract_started_latch = update_motion24_latches(
                     obs_30d, phase_flag, release_phase_latch, retract_started_latch
                 )
+                obs_phase_flag = phase_flag
+                obs_place_flag = place_open_confirmed.float()
             else:
+                # ── 4-phase obs flags (matches training data ABCD) ──
                 arm1_pre = env.robot.data.joint_pos[:, env.arm_idx[1]]
                 grip_pre = env.robot.data.joint_pos[:, env.arm_idx[5]]
-                src_dst_pre = torch.norm(env.object_pos_w[:, :2] - env.dest_object_pos_w[:, :2], dim=-1)
-                phase_b_pre = active & (~phase_a_active)
-                src_h_pre = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
-                cf_pre = env._contact_force_per_env()
-                release_phase_latch |= phase_b_pre & (arm1_pre >= 2.0) & (src_dst_pre <= 0.18)
-                retract_started_latch |= (
-                    release_phase_latch
-                    & (grip_pre >= 0.55)
-                    & (src_dst_pre <= 0.18)
-                    & (src_h_pre <= 0.055)
-                    & (cf_pre <= float(env.cfg.grasp_contact_threshold))
-                )
+                holding_pre = env._contact_force_per_env() > float(env.cfg.grasp_contact_threshold)
+
+                # A→B: arm1 > init+0.10, sustained 5 steps AND base_dst < 0.40
+                arm1_rising = arm1_pre > (init_pose6[:, 1] + 0.10)
+                obs_arm_rise_ct[arm1_rising & obs_phase_a_latch] += 1
+                obs_arm_rise_ct[~arm1_rising] = 0
+                _near_dest_for_phb = base_dst <= 0.40
+                obs_phase_a_latch[(obs_arm_rise_ct >= 5) & _near_dest_for_phb] = False
+                obs_phase_flag = obs_phase_a_latch.float()
+
+                # B→C (v21, train_resip latch와 동일): lowered-complete —
+                #   holding(접촉+닫힘) & 바닥(<0.05) & 목적지 근처(<0.25), sustained 5
+                in_b = (~obs_phase_a_latch) & (~obs_phase_c_latch)
+                _src_h_lat = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+                _sdxy_lat = torch.norm(
+                    env.object_pos_w[:, :2] - env.dest_object_pos_w[:, :2], dim=-1)
+                _grip_closed_lat = grip_pre < float(env.cfg.grasp_gripper_threshold)
+                lowered_done = (in_b & holding_pre & _grip_closed_lat
+                                & (_src_h_lat < 0.05) & (_sdxy_lat < 0.25))
+                obs_grip_open_ct[lowered_done] += 1
+                obs_grip_open_ct[~lowered_done & in_b] = 0
+                obs_phase_c_latch[obs_grip_open_ct >= 5] = True
+
+                # C→D (v21, train_resip latch와 동일): 팔 rest + grip 재폐쇄, sustained 3
+                in_c = obs_phase_c_latch & (~obs_phase_d_latch)
+                _arm5_lat = env.robot.data.joint_pos[:, env.arm_idx[:5]]
+                _rest_lat = torch.norm(_arm5_lat - obs_rest_pose.unsqueeze(0), dim=-1)
+                retract_ready = in_c & (_rest_lat < 0.70) & (grip_pre < 0.05)
+                obs_retract_ct[retract_ready] += 1
+                obs_retract_ct[~retract_ready & in_c] = 0
+                obs_phase_d_latch[obs_retract_ct >= 3] = True
+
+                obs_place_flag = (obs_phase_c_latch | obs_phase_d_latch).float()
+                release_phase_latch = obs_phase_c_latch | obs_phase_d_latch
+                retract_started_latch = obs_phase_d_latch
+
             s3_obs = build_s3_obs(
                 obs_30d,
                 init_pose6,
-                phase_flag,
-                place_open_flag_val=place_open_confirmed.float(),
+                obs_phase_flag,
+                place_open_flag_val=obs_place_flag,
                 release_phase_flag_val=release_phase_latch.float(),
                 retract_started_flag_val=retract_started_latch.float(),
             )
-            action = get_s3_action(s3_obs, phase_a=phase_a_active)
+            _src_h_pre = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+            _upright_pre = source_uprightness()
+            _bdxy_pre = base_dst
+            action = get_s3_action(
+                s3_obs, phase_a=phase_a_active,
+                phase_c=obs_phase_c_latch if not (s3_is_motion24 or s3_is_ee23) else None,
+                phase_d=obs_phase_d_latch if not (s3_is_motion24 or s3_is_ee23) else None,
+                src_h=_src_h_pre, src_upright=_upright_pre, bdxy=_bdxy_pre,
+            )
             action[done] = 0.0
             obs, _, _, _, _ = env.step(action)
 
@@ -1143,6 +1219,15 @@ for ep in range(args.num_episodes):
         release_phase_latch = False
         retract_started_latch = False
 
+        # 4-phase obs flag state (single-env) — matches training data
+        obs_phase_a_flag = not args.s3_phase_b_only
+        obs_arm_rise_count = 0       # A→B: arm1 sustained check
+        obs_grip_open_count = 0      # B→C: grip sustained check
+        obs_retract_count = 0        # C→D: retract sustained check
+        obs_phase_b_flag = False     # B: arm lowering
+        obs_phase_c_flag = False     # C: grip opening
+        obs_phase_d_flag = False     # D: retract
+
         base_dst_start = torch.norm(env.robot.data.root_pos_w[0, :2] - env.dest_object_pos_w[0, :2]).item()
 
         if args.s3_phase_b_only:
@@ -1208,38 +1293,72 @@ for ep in range(args.num_episodes):
                       f"upright={upright_at_trans:.3f} cf={cf_val:.1f}{ghost_str}")
 
             flag_val = 0.0 if args.s3_phase_b_only else (1.0 if phase_a_active else 0.0)
-            if s3_is_motion24:
+            if s3_is_motion24 or s3_is_ee23:
                 _rel = torch.tensor([release_phase_latch], dtype=torch.bool, device=dev)
                 _ret = torch.tensor([retract_started_latch], dtype=torch.bool, device=dev)
                 _phase = torch.tensor([flag_val], dtype=torch.float32, device=dev)
                 _rel, _ret = update_motion24_latches(obs_30d, _phase, _rel, _ret)
                 release_phase_latch = bool(_rel[0].item())
                 retract_started_latch = bool(_ret[0].item())
+                obs_flag_val = flag_val
+                obs_place_val = float(place_open_confirmed)
             else:
                 arm1_pre = env.robot.data.joint_pos[0, env.arm_idx[1]].item()
                 grip_pre = env.robot.data.joint_pos[0, env.arm_idx[5]].item()
-                src_dst_pre = torch.norm(env.object_pos_w[0, :2] - env.dest_object_pos_w[0, :2]).item()
-                src_h_pre = env.object_pos_w[0, 2].item() - env.scene.env_origins[0, 2].item()
-                cf_pre = env._contact_force_per_env()[0].item()
-                if (not phase_a_active) and arm1_pre >= 2.0 and src_dst_pre <= 0.18:
-                    release_phase_latch = True
-                if (
-                    release_phase_latch
-                    and grip_pre >= 0.55
-                    and src_dst_pre <= 0.18
-                    and src_h_pre <= 0.055
-                    and cf_pre <= float(env.cfg.grasp_contact_threshold)
-                ):
-                    retract_started_latch = True
+                holding_pre = env._contact_force_per_env()[0].item() > float(env.cfg.grasp_contact_threshold)
+
+                # A→B: arm1 > init+0.10, sustained 5 steps AND base_dst < 0.40
+                if obs_phase_a_flag:
+                    if arm1_pre > init_pose6[1].item() + 0.10:
+                        obs_arm_rise_count += 1
+                    else:
+                        obs_arm_rise_count = 0
+                    if obs_arm_rise_count >= 5 and base_dst <= 0.40:
+                        obs_phase_a_flag = False
+                        obs_phase_b_flag = True
+                obs_flag_val = 1.0 if obs_phase_a_flag else 0.0
+
+                # B→C: grip > 0.60, sustained 5 steps
+                if obs_phase_b_flag and not obs_phase_c_flag:
+                    if grip_pre > 0.60:
+                        obs_grip_open_count += 1
+                    else:
+                        obs_grip_open_count = 0
+                    if obs_grip_open_count >= 5:
+                        obs_phase_c_flag = True
+                        obs_phase_b_flag = False
+
+                # C→D: grip >= 0.95 & !holding, sustained 3 steps
+                if obs_phase_c_flag and not obs_phase_d_flag:
+                    if grip_pre >= 0.95 and not holding_pre:
+                        obs_retract_count += 1
+                    else:
+                        obs_retract_count = 0
+                    if obs_retract_count >= 3:
+                        obs_phase_d_flag = True
+
+                obs_place_val = 1.0 if (obs_phase_c_flag or obs_phase_d_flag) else 0.0
+                release_phase_latch = obs_phase_c_flag or obs_phase_d_flag
+                retract_started_latch = obs_phase_d_flag
+
             s3_obs = build_s3_obs(
                 obs_30d,
                 init_pose6,
-                flag_val,
-                place_open_flag_val=float(place_open_confirmed),
+                obs_flag_val,
+                place_open_flag_val=obs_place_val,
                 release_phase_flag_val=float(release_phase_latch),
                 retract_started_flag_val=float(retract_started_latch),
             )
-            action = get_s3_action(s3_obs, phase_a=phase_a_active)
+            _src_h_single = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).unsqueeze(0)
+            _upright_single = source_uprightness()[:1]
+            _bdxy_single = torch.tensor([base_dst], device=dev)
+            action = get_s3_action(
+                s3_obs,
+                phase_a=torch.tensor([phase_a_active], device=dev),
+                phase_c=torch.tensor([obs_phase_c_flag if isinstance(obs_phase_c_flag, bool) else bool(obs_phase_c_flag)], device=dev),
+                phase_d=torch.tensor([obs_phase_d_flag if isinstance(obs_phase_d_flag, bool) else bool(obs_phase_d_flag)], device=dev),
+                src_h=_src_h_single, src_upright=_upright_single, bdxy=_bdxy_single,
+            )
             action_np = action[0].cpu().tolist()
 
             # Action delta (smoothness)
