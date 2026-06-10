@@ -46,6 +46,8 @@ parser.add_argument("--trace_jsonl", type=str, default="")
 parser.add_argument("--s3_motion_release_xy", type=float, default=0.16)
 parser.add_argument("--s3_motion_release_ee_z", type=float, default=0.09)
 parser.add_argument("--s3_motion_retract_grip", type=float, default=0.90)
+parser.add_argument("--s3_stochastic", action="store_true",
+                    help="S3 residual을 mean 대신 sampling (train rollout 조건 재현, mean-policy 취약성 진단용)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 launcher = AppLauncher(args)
@@ -291,7 +293,7 @@ s3_scale_c = torch.zeros(_AD, device=dev)
 s3_scale_c[0:5] = 0.05; s3_scale_c[5] = 0.50; s3_scale_c[6:9] = 0.05
 
 s3_scale_d = torch.zeros(_AD, device=dev)
-s3_scale_d[0:5] = 0.10; s3_scale_d[5] = 0.10; s3_scale_d[6:9] = 0.05  # v19u: arm=0.10, grip=0.10
+s3_scale_d[0:5] = 0.10; s3_scale_d[5] = 0.30; s3_scale_d[6:9] = 0.05  # v21 train 미러: D(rest+closed)에서 grip 0.30
 
 def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
                    src_h=None, src_upright=None, bdxy=None):
@@ -302,7 +304,9 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
             nobs = torch.nan_to_num(
                 s3_dp.normalizer(s3_obs, "obs", forward=True).clamp(-3, 3), nan=0.0)
             ri = torch.cat([nobs, base_nact], dim=-1)
-            _, _, _, _, ra_mean = s3_resip.get_action_and_value(ri)
+            ra_smp, _, _, _, ra_mean = s3_resip.get_action_and_value(ri)
+            if args.s3_stochastic:
+                ra_mean = ra_smp  # train rollout과 동일 조건 (sampling)
             ra_mean = torch.clamp(ra_mean, -1.0, 1.0)
             if torch.is_tensor(phase_a):
                 N = phase_a.shape[0]
@@ -317,8 +321,8 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
                 s3_scale[_is_d] = s3_scale_d
                 # Phase B conditional grip: only allow grip open near floor
                 if src_h is not None and src_upright is not None and bdxy is not None:
-                    _phb_grip_ok = _is_b & (src_h < 0.06) & (src_upright > 0.90) & (bdxy < 0.45)
-                    s3_scale[_phb_grip_ok, 5] = 0.20  # 조건 충족: grip open 허용
+                    _phb_grip_ok = _is_b & (src_h < 0.06) & (src_upright > 0.90) & (bdxy < 0.40)
+                    s3_scale[_phb_grip_ok, 5] = 0.50  # v21 train _safe_floor 미러 (0.50, bdxy<0.40)
                     # 기본 s3_scale_b[5]=0.0이므로 불충족 시 이미 0.0
             else:
                 # single env fallback
@@ -333,7 +337,9 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
             nact = base_nact + ra_mean * s3_scale
         else:
             nact = base_nact
-        nact[:, 5] = torch.clamp(nact[:, 5], -0.45, 1.0)
+        # v21: grip 하한 클램프 제거 — 구판 -0.45는 관절 0.263 아래(=닫힘 -0.2)를 차단해
+        # rest 후 gripper close가 물리적으로 불가능했음. 학습 추론엔 클램프 없음 (미러)
+        nact[:, 5] = torch.clamp(nact[:, 5], -1.0, 1.0)
         action = s3_dp.normalizer(nact, "action", forward=False)
     return action.clamp(-1, 1)
 
