@@ -287,7 +287,7 @@ s3_scale_a = torch.zeros(_AD, device=dev)
 s3_scale_a[0:5] = 0.0;  s3_scale_a[5] = 0.0;  s3_scale_a[6:9] = 0.40
 
 s3_scale_b = torch.zeros(_AD, device=dev)
-s3_scale_b[0:5] = 0.05; s3_scale_b[5] = 0.0;  s3_scale_b[6:9] = 0.10  # grip: conditional (아래에서 적용)
+s3_scale_b[0:5] = 0.05; s3_scale_b[5] = 0.0;  s3_scale_b[6:9] = 0.20  # v25: base 0.10→0.20 (train 미러)
 
 s3_scale_c = torch.zeros(_AD, device=dev)
 s3_scale_c[0:5] = 0.05; s3_scale_c[5] = 0.50; s3_scale_c[6:9] = 0.05
@@ -604,6 +604,7 @@ def run_batch_eval():
         if args.s3_phase_b_only:
             obs_phase_a_latch.zero_()
         obs_arm_rise_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        obs_near_dest_ct = torch.zeros(n, dtype=torch.long, device=dev)  # v25 A→B fallback
         obs_grip_open_ct = torch.zeros(n, dtype=torch.long, device=dev)
         obs_retract_ct = torch.zeros(n, dtype=torch.long, device=dev)
         obs_rest_pose = torch.tensor([-0.070, -0.207, 0.203, 0.121, 0.024], device=dev)  # v21 C→D latch용
@@ -674,7 +675,10 @@ def run_batch_eval():
                 obs_arm_rise_ct[arm1_rising & obs_phase_a_latch] += 1
                 obs_arm_rise_ct[~arm1_rising] = 0
                 _near_dest_for_phb = base_dst <= 0.40
-                obs_phase_a_latch[(obs_arm_rise_ct >= 5) & _near_dest_for_phb] = False
+                obs_near_dest_ct[obs_phase_a_latch & (base_dst < 0.45)] += 1
+                obs_near_dest_ct[~(obs_phase_a_latch & (base_dst < 0.45))] = 0
+                obs_phase_a_latch[((obs_arm_rise_ct >= 5) & _near_dest_for_phb)
+                                  | (obs_near_dest_ct >= 300)] = False  # v25: 주차 데드락 fallback (train 미러)
                 obs_phase_flag = obs_phase_a_latch.float()
 
                 # B→C (v21, train_resip latch와 동일): lowered-complete —
@@ -685,7 +689,7 @@ def run_batch_eval():
                     env.object_pos_w[:, :2] - env.dest_object_pos_w[:, :2], dim=-1)
                 _grip_closed_lat = grip_pre < float(env.cfg.grasp_gripper_threshold)
                 lowered_done = (in_b & holding_pre & _grip_closed_lat
-                                & (_src_h_lat < 0.05) & (_sdxy_lat < 0.25))
+                                & (_src_h_lat < 0.058) & (_sdxy_lat < 0.25))  # v25: train 미러
                 obs_grip_open_ct[lowered_done] += 1
                 obs_grip_open_ct[~lowered_done & in_b] = 0
                 obs_phase_c_latch[obs_grip_open_ct >= 5] = True
