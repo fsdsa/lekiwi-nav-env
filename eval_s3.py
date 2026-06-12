@@ -323,6 +323,10 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
                 if src_h is not None and src_upright is not None and bdxy is not None:
                     _phb_grip_ok = _is_b & (src_h < 0.06) & (src_upright > 0.90) & (bdxy < 0.40)
                     s3_scale[_phb_grip_ok, 5] = 0.50  # v21 train _safe_floor 미러 (0.50, bdxy<0.40)
+                # v26: A/B tighten-only grip (train 미러)
+                _tight_rows = _is_a | _is_b
+                s3_scale[_tight_rows, 5] = torch.maximum(
+                    s3_scale[_tight_rows, 5], torch.full_like(s3_scale[_tight_rows, 5], 0.15))
                     # 기본 s3_scale_b[5]=0.0이므로 불충족 시 이미 0.0
             else:
                 # single env fallback
@@ -335,6 +339,9 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
                 else:
                     s3_scale = s3_scale_b
             nact = base_nact + ra_mean * s3_scale
+            if torch.is_tensor(phase_a):
+                nact[:, 5] = torch.where(
+                    _tight_rows, torch.minimum(nact[:, 5], base_nact[:, 5]), nact[:, 5])  # v26 미러
         else:
             nact = base_nact
         # v21: grip 하한 클램프 제거 — 구판 -0.45는 관절 0.263 아래(=닫힘 -0.2)를 차단해
