@@ -341,6 +341,11 @@ def get_s3_action(s3_obs, phase_a=None, phase_c=None, phase_d=None,
         # rest 후 gripper close가 물리적으로 불가능했음. 학습 추론엔 클램프 없음 (미러)
         nact[:, 5] = torch.clamp(nact[:, 5], -1.0, 1.0)
         action = s3_dp.normalizer(nact, "action", forward=False)
+        # v25b: retract(rest) 중 base 정지 — 컵 놓고 팔 접는데 base 움직일 이유 없음.
+        #   trace 진단: retract base 명령 |vx|~0.023(carry 0.014보다 큼) = 명령된 드리프트.
+        #   velocity 명령이라 0 = 정지 + 외력에 버팀 (팔 반작용도 흡수)
+        if torch.is_tensor(phase_d):
+            action[phase_d.to(device=dev, dtype=torch.bool), 6:9] = 0.0
     return action.clamp(-1, 1)
 
 def respawn_dest_for_env_ids(env_ids: torch.Tensor):

@@ -1544,6 +1544,10 @@ def main_combined():
 
             combined = s3_ba_policy + s3_ra * s3_scale
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
+            # v25b: retract(rest) 중 base 정지 — 컵 놓고 팔 접는데 base 움직일 이유 없음.
+            #   eval trace: retract base 명령 |vx|0.023(carry보다 큼)=명령된 드리프트. velocity라 0=정지.
+            #   eval override로 검증됨(act_base 0.023→0.000, 변동 0.0001m). 정책 내재화용으로 학습에도 적용.
+            s3_action[s3_retract_started_latch, 6:9] = 0.0
 
             # grip clamp 불필요:
             # Phase A: grip scale=0 → RL 영향 없음, BC가 carry grip 유지
