@@ -1542,19 +1542,7 @@ def main_combined():
             _safe_floor = _is_b & (src_h_pre < 0.06) & (src_upright_pre > 0.90) & (bdxy < 0.40)
             s3_scale[_safe_floor, 5] = 0.50  # RL에 grip open 선택권 부여 (effective 0.11)
 
-            # v26: 운반/하강(A·B) tighten-only grip 채널 — v25 eval drop 해부:
-            #   하강 중 drop 17건 중 16건이 "grip 닫힌 채 slip" (팔 스윙 관성 > 파지력).
-            #   기존 A/B grip 권한 0 → RL이 '조여서 구출'할 채널 자체가 없었음.
-            #   권한 0.15 부여 + 아래 min()으로 조이는 방향만 허용 (env-side 변환:
-            #   logprob는 s3_ra 기준 그대로 유효, BC 주도 release 열기는 min에 안 걸림)
-            _tight_rows = _is_a | _is_b
-            _ts = s3_scale[:, 5].clone()
-            s3_scale[_tight_rows, 5] = torch.maximum(
-                _ts[_tight_rows], torch.full_like(_ts[_tight_rows], 0.15))
-
             combined = s3_ba_policy + s3_ra * s3_scale
-            combined[:, 5] = torch.where(
-                _tight_rows, torch.minimum(combined[:, 5], s3_ba_policy[:, 5]), combined[:, 5])
             s3_action = s3_dp.normalizer(combined, "action", forward=False)
 
             # grip clamp 불필요:
