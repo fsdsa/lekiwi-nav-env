@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-VIVA 파이프라인 검증 스크립트.
+VLM 지시어 + RL expert 파이프라인 검증 스크립트 (VLA 미사용).
 
-S1: 키보드로 base 이동 + VLM 50스텝 호출 확인
-S2: RL expert (BC+ResiP) 자동 실행 + VLM obstacle 호출 확인
-S3/S4: 키보드 / 자동 (S2→S3 전환 시)
+VLM(Qwen3-VL-8B)이 스킬 전환 + 방향 지시어만 생성하고, 4개 스킬 전부 로컬
+RL expert(BC+ResiP)로 실행한다. VLA 서버 불필요.
 
-VLA는 base 모델이라 action=0이지만, 호출 자체의 입출력 포맷을 검증.
-모든 VLM/VLA 호출을 로그 파일에 기록.
+S1 navigate         : VLM 지시어 → lookup base velocity (arm tucked)
+S2 approach & lift  : RL expert (--dp_checkpoint / --resip_checkpoint)
+S3 carry            : RL expert (--carry_dp_checkpoint / --carry_resip_checkpoint), 39D obs
+S4 approach & place : RL expert (--place_dp_checkpoint / --place_resip_checkpoint),
+                      55D obs + 4-phase(ABCD) 상태머신 (eval_s3.py v21/v25 미러)
+
+난이도: --difficulty easy/middle/hard (scene_idx 1302 기준 _DIFFICULTY_MAP)
 
 Usage:
-    python vllm/eval_viva_pipeline.py \
+    python vllm/eval_vlm_rl.py --difficulty easy \
         --object_usd /path/to/5_HTP/model_clean.usd \
         --dest_object_usd /path/to/ACE_Coffee_Mug/model_clean.usd \
         --dp_checkpoint checkpoints/dp_bc_small/dp_bc_epoch150.pt \
-        --resip_checkpoint backup/appoachandlift/resip64%.pt
+        --resip_checkpoint "backup/appoachandlift/resip64%.pt" \
+        --carry_dp_checkpoint checkpoints/dp_bc_carry_v4/dp_bc_epoch300.pt \
+        --carry_resip_checkpoint checkpoints/resip_carry_v6/resip_carry_iter240.pt \
+        --place_dp_checkpoint checkpoints/dp_bc_skill3_55d_fixed_1e-4/dp_bc_epoch500.pt \
+        --place_resip_checkpoint checkpoints/resip_s3_v25/resip_iter80.pt \
+        --scene_idx 1302 --scene_scale 0.6
 """
 from __future__ import annotations
 
@@ -23,9 +32,8 @@ import os
 import sys
 import time
 
-parser = argparse.ArgumentParser(description="VIVA Pipeline Eval")
+parser = argparse.ArgumentParser(description="VLM instruction + RL expert pipeline eval (no VLA)")
 parser.add_argument("--vlm_server", type=str, default="http://localhost:8000")
-parser.add_argument("--vla_server", type=str, default="http://localhost:8002")
 parser.add_argument("--vlm_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
 parser.add_argument("--user_command", type=str,
     default="find the medicine bottle and place it next to the red cup")
@@ -37,6 +45,10 @@ parser.add_argument("--nav_dp_checkpoint", type=str, default="", help="S1 naviga
 parser.add_argument("--nav_resip_checkpoint", type=str, default="", help="S1 navigate ResiP")
 parser.add_argument("--carry_dp_checkpoint", type=str, default="", help="S3 carry BC (39D obs)")
 parser.add_argument("--carry_resip_checkpoint", type=str, default="", help="S3 carry ResiP")
+parser.add_argument("--place_dp_checkpoint", type=str, default="", help="S4 place BC (55D obs)")
+parser.add_argument("--place_resip_checkpoint", type=str, default="", help="S4 place ResiP")
+parser.add_argument("--place_inference_steps", type=int, default=4,
+    help="place DP diffusion inference steps (학습=4, 미스매치 시 분포 어긋남)")
 parser.add_argument("--difficulty", type=str, default="easy", choices=["easy", "middle", "hard"],
     help="easy/middle=같은 방, hard=다른 방 (scene_idx 1302 기준 _DIFFICULTY_MAP)")
 parser.add_argument("--num_trials", type=int, default=1, help="(참고용; 본 스크립트는 연속 실행)")
@@ -87,73 +99,15 @@ from vlm_orchestrator import (
     classify_user_request, VIVAOrchestrator, SkillState,
     LIFTED_POSE_RANGE, NAVIGATE_COMMANDS, CARRY_COMMANDS,
 )
+# S4 place expert obs builder (sim app 이후 import — isaaclab.utils.math 의존)
+from skill3_bc_obs import (
+    S3_BC_OBS_PHASED55_DIM, build_s3_bc_obs, source_uprightness,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
 #  run_full_task.py에서 가져온 유틸 (import 시 모듈 레벨 코드 실행 방지)
 # ═══════════════════════════════════════════════════════════════════════
-
-class VLAClient:
-    """Pi0-FAST VLA 서버 클라이언트. Action chunk 버퍼링 지원."""
-    def __init__(self, server_url: str, jpeg_quality: int = 80):
-        self.server_url = server_url.rstrip("/")
-        self.jpeg_quality = jpeg_quality
-        self._session = requests.Session()
-        self._action_buffer: list[list[float]] = []
-        self._buffer_idx = 0
-        self._last_latency = 0.0
-
-    def encode_image(self, rgb_array: np.ndarray) -> str:
-        img = Image.fromarray(rgb_array.astype(np.uint8))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=self.jpeg_quality)
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-    def query_action(self, base_rgb, wrist_rgb, state_9d, instruction):
-        t0 = time.perf_counter()
-        payload = {
-            "base_image_b64": self.encode_image(base_rgb),
-            "wrist_image_b64": self.encode_image(wrist_rgb),
-            "state": state_9d,
-            "instruction": instruction,
-        }
-        try:
-            resp = self._session.post(f"{self.server_url}/act", json=payload, timeout=10.0)
-            resp.raise_for_status()
-            self._last_latency = time.perf_counter() - t0
-            return resp.json()["actions"]
-        except Exception as e:
-            print(f"  [VLA] error: {e}")
-            self._last_latency = time.perf_counter() - t0
-            return []
-
-    def get_action_9d(self, base_rgb, wrist_rgb, state_9d, instruction):
-        if self._buffer_idx >= len(self._action_buffer):
-            self._action_buffer = self.query_action(base_rgb, wrist_rgb, state_9d, instruction)
-            self._buffer_idx = 0
-            if not self._action_buffer:
-                return np.zeros(9, dtype=np.float32)
-        raw = np.array(self._action_buffer[self._buffer_idx], dtype=np.float32)
-        self._buffer_idx += 1
-        if len(raw) >= 9:
-            return raw[:9]
-        return np.pad(raw, (0, 9 - len(raw)))
-
-    def reset_buffer(self):
-        self._action_buffer = []
-        self._buffer_idx = 0
-
-    def health_check(self):
-        try:
-            resp = self._session.get(f"{self.server_url}/health", timeout=3.0)
-            return resp.json() if resp.status_code == 200 else None
-        except Exception:
-            return None
-
-    @property
-    def latency(self):
-        return self._last_latency
-
 
 def get_depth_min(depth_image):
     if depth_image is None:
@@ -363,6 +317,193 @@ def resip_action(dp_agent, residual, obs_t, device, per_dim_scale):
         nact = base_nact
     action = dp_agent.normalizer(nact, "action", forward=False)
     return action.squeeze(0).detach().cpu().numpy()
+
+
+def load_place_expert(dp_path: str, resip_path: str, device, inference_steps: int = 4):
+    """S4 place BC(55D) + ResiP 로드. eval_s3.py와 동일한 인자
+    (down_dims=cfg값, ResiP는 action_scale=0.1 / learn_std=True)."""
+    from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
+
+    if not dp_path or not os.path.isfile(dp_path):
+        return None, None, None
+
+    ckpt = torch.load(dp_path, map_location=device, weights_only=False)
+    cfg = ckpt["config"]
+    dp = DiffusionPolicyAgent(
+        obs_dim=cfg["obs_dim"], act_dim=cfg["act_dim"],
+        pred_horizon=cfg["pred_horizon"], action_horizon=cfg["action_horizon"],
+        num_diffusion_iters=cfg["num_diffusion_iters"],
+        inference_steps=inference_steps,
+        down_dims=cfg.get("down_dims", [64, 128, 256]),
+    ).to(device)
+    sd = ckpt["model_state_dict"]
+    dp.model.load_state_dict({k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")})
+    dp.normalizer.load_state_dict(
+        {k[len("normalizer."):]: v for k, v in sd.items() if k.startswith("normalizer.")},
+        device=device)
+    dp.eval()
+    for p in dp.parameters():
+        p.requires_grad = False
+
+    residual = None
+    if resip_path and os.path.isfile(resip_path):
+        rckpt = torch.load(resip_path, map_location=device, weights_only=False)
+        residual = ResidualPolicy(
+            obs_dim=cfg["obs_dim"], action_dim=cfg["act_dim"],
+            action_scale=0.1, learn_std=True,
+        ).to(device)
+        residual.load_state_dict(rckpt["residual_policy_state_dict"])
+        residual.eval()
+
+    return dp, residual, cfg
+
+
+class PlaceExpert:
+    """S4 (Approach & Place) RL expert. eval_s3.py의 55D(PHASED55) obs 경로 +
+    v21/v25 4-phase(ABCD) latch 로직을 그대로 미러. orchestrator가 place skill로
+    전환할 때 reset(env) 호출 → 매 step get_action(env, obs_30d).
+
+    Phase: A 접근 → B 하강(물체 바닥) → C 그리퍼 개방/release → D 팔 retract(base 정지).
+    """
+    PHASE_B_DIST = 0.40
+    REST_POSE = (-0.070, -0.207, 0.203, 0.121, 0.024)   # v21 C→D latch 기준 팔자세
+    REL_XY_THRESH = 0.16
+    REL_EE_Z_THRESH = 0.09
+    RETRACT_GRIP_THRESH = 0.90
+
+    def __init__(self, dp, residual, cfg, device):
+        self.dp = dp
+        self.residual = residual
+        self.cfg = cfg
+        self.device = device
+        self.obs_dim = int(cfg["obs_dim"])
+        ad = int(cfg["act_dim"])
+        # phase별 residual scale (eval_s3 s3_scale_a/b/c/d, v25 미러)
+        self.scale_a = torch.zeros(ad, device=device); self.scale_a[6:9] = 0.40
+        self.scale_b = torch.zeros(ad, device=device); self.scale_b[0:5] = 0.05; self.scale_b[6:9] = 0.20
+        self.scale_c = torch.zeros(ad, device=device); self.scale_c[0:5] = 0.05; self.scale_c[5] = 0.50; self.scale_c[6:9] = 0.05
+        self.scale_d = torch.zeros(ad, device=device); self.scale_d[0:5] = 0.10; self.scale_d[5] = 0.30; self.scale_d[6:9] = 0.05
+        self.rest_pose = torch.tensor(self.REST_POSE, dtype=torch.float32, device=device)
+        self.init_pose6 = None
+
+    def reset(self, env):
+        """place skill 진입 시 호출 — 현재 팔자세(init_pose6) 캡처 + latch 초기화."""
+        dev = self.device
+        jp = env.robot.data.joint_pos
+        self.init_pose6 = torch.cat(
+            [jp[:, env.arm_idx[:5]], jp[:, env.arm_idx[5:6]]], dim=-1).to(dev)
+        n = jp.shape[0]
+        self.phase_a_active = torch.ones(n, dtype=torch.bool, device=dev)   # residual scale용 (거리 기반)
+        self.obs_phase_a_latch = torch.ones(n, dtype=torch.bool, device=dev)  # obs flag용
+        self.obs_phase_c_latch = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.obs_phase_d_latch = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.obs_arm_rise_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        self.obs_near_dest_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        self.obs_grip_open_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        self.obs_retract_ct = torch.zeros(n, dtype=torch.long, device=dev)
+        self.dp.reset()
+
+    def get_action(self, env, obs_30d):
+        dev = self.device
+        n = obs_30d.shape[0]
+        ai = env.arm_idx
+        gct = float(env.cfg.grasp_contact_threshold)
+        ggt = float(env.cfg.grasp_gripper_threshold)
+        jp = env.robot.data.joint_pos
+
+        base_dst = torch.norm(
+            env.robot.data.root_pos_w[:, :2] - env.dest_object_pos_w[:, :2], dim=-1)
+
+        # residual-scale용 phase_a_active: dest 0.40m 이내 도달 시 A 종료 (거리 기반)
+        self.phase_a_active[self.phase_a_active & (base_dst <= self.PHASE_B_DIST)] = False
+
+        # ── obs flag latch (eval_s3 v21/v25 미러) ──
+        arm1_pre = jp[:, ai[1]]
+        grip_pre = jp[:, ai[5]]
+        holding_pre = env._contact_force_per_env() > gct
+        # A→B: arm1 > init+0.10 5스텝 지속 & dest<0.40, 또는 300스텝 주차 fallback
+        arm1_rising = arm1_pre > (self.init_pose6[:, 1] + 0.10)
+        self.obs_arm_rise_ct[arm1_rising & self.obs_phase_a_latch] += 1
+        self.obs_arm_rise_ct[~arm1_rising] = 0
+        near = self.obs_phase_a_latch & (base_dst < 0.45)
+        self.obs_near_dest_ct[near] += 1
+        self.obs_near_dest_ct[~near] = 0
+        self.obs_phase_a_latch[((self.obs_arm_rise_ct >= 5) & (base_dst <= 0.40))
+                               | (self.obs_near_dest_ct >= 300)] = False
+        obs_phase_flag = self.obs_phase_a_latch.float()
+        # B→C: holding & 닫힘 & 물체 바닥(<0.058) & dest 근처(<0.25) 5스텝 지속
+        in_b = (~self.obs_phase_a_latch) & (~self.obs_phase_c_latch)
+        src_h = env.object_pos_w[:, 2] - env.scene.env_origins[:, 2]
+        sdxy = torch.norm(env.object_pos_w[:, :2] - env.dest_object_pos_w[:, :2], dim=-1)
+        grip_closed = grip_pre < ggt
+        lowered = in_b & holding_pre & grip_closed & (src_h < 0.058) & (sdxy < 0.25)
+        self.obs_grip_open_ct[lowered] += 1
+        self.obs_grip_open_ct[~lowered & in_b] = 0
+        self.obs_phase_c_latch[self.obs_grip_open_ct >= 5] = True
+        # C→D: 팔 rest자세 근접(<0.70) & grip 재폐쇄(<0.05) 3스텝 지속
+        in_c = self.obs_phase_c_latch & (~self.obs_phase_d_latch)
+        arm5 = jp[:, ai[:5]]
+        rest_dist = torch.norm(arm5 - self.rest_pose.unsqueeze(0), dim=-1)
+        retract_ready = in_c & (rest_dist < 0.70) & (grip_pre < 0.05)
+        self.obs_retract_ct[retract_ready] += 1
+        self.obs_retract_ct[~retract_ready & in_c] = 0
+        self.obs_phase_d_latch[self.obs_retract_ct >= 3] = True
+
+        release_latch = self.obs_phase_c_latch | self.obs_phase_d_latch
+        retract_latch = self.obs_phase_d_latch
+        obs_place_flag = release_latch.float()
+
+        # ── 55D obs build (eval_s3 build_s3_obs와 동일 호출) ──
+        s3_obs = build_s3_bc_obs(
+            env, obs_30d, self.init_pose6, obs_phase_flag,
+            obs_dim=self.obs_dim,
+            place_open_flag=obs_place_flag,
+            release_phase_flag=release_latch.float(),
+            retract_started_flag=retract_latch.float(),
+            release_xy_thresh=self.REL_XY_THRESH,
+            release_ee_z_thresh=self.REL_EE_Z_THRESH,
+            retract_grip_thresh=self.RETRACT_GRIP_THRESH,
+        )
+
+        # ── action: BC + phase별 residual scale, grip clamp, phase D base 정지 ──
+        upright = source_uprightness(env)
+        with torch.no_grad():
+            base_nact = torch.nan_to_num(self.dp.base_action_normalized(s3_obs), nan=0.0)
+            if self.residual is not None:
+                nobs = torch.nan_to_num(
+                    self.dp.normalizer(s3_obs, "obs", forward=True).clamp(-3, 3), nan=0.0)
+                ri = torch.cat([nobs, base_nact], dim=-1)
+                ra = self.residual.actor_mean(ri).clamp(-1.0, 1.0)
+                _is_a = self.phase_a_active
+                _is_d = self.obs_phase_d_latch
+                _is_c = self.obs_phase_c_latch & (~_is_d)
+                _is_b = (~_is_a) & (~_is_c) & (~_is_d)
+                scale = torch.zeros(n, base_nact.shape[-1], device=dev)
+                scale[_is_a] = self.scale_a
+                scale[_is_b] = self.scale_b
+                scale[_is_c] = self.scale_c
+                scale[_is_d] = self.scale_d
+                # phase B 조건부 grip open (바닥 근처 + upright + dest 근처) — train 미러
+                phb_grip_ok = _is_b & (src_h < 0.06) & (upright > 0.90) & (base_dst < 0.40)
+                scale[phb_grip_ok, 5] = 0.50
+                nact = base_nact + ra * scale
+            else:
+                nact = base_nact
+            nact[:, 5] = torch.clamp(nact[:, 5], -1.0, 1.0)   # grip
+            action = self.dp.normalizer(nact, "action", forward=False)
+            action[self.obs_phase_d_latch, 6:9] = 0.0          # retract 중 base 정지
+            action = action.clamp(-1, 1)
+        return action.squeeze(0).detach().cpu().numpy()
+
+    @property
+    def phase_str(self):
+        if bool(self.obs_phase_d_latch.any()):
+            return "D"
+        if bool(self.obs_phase_c_latch.any()):
+            return "C"
+        if bool(self.phase_a_active.any()):
+            return "A"
+        return "B"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -625,11 +766,10 @@ def main():
     log = setup_logger(log_file)
     log.info(f"Log file: {log_file}")
 
-    # ── 서버 헬스 체크 ──
+    # ── 서버 헬스 체크 (VLM만, VLA 미사용) ──
     log.info("=" * 60)
-    log.info("VIVA Pipeline Eval (manual S1 + RL expert S2)")
+    log.info("VLM instruction + RL expert pipeline eval (no VLA)")
     log.info(f"VLM: {args.vlm_server}")
-    log.info(f"VLA: {args.vla_server}")
 
     try:
         r = requests.get(f"{args.vlm_server}/v1/models", timeout=3)
@@ -637,16 +777,7 @@ def main():
         log.info(f"[CHECK] VLM: OK ({model_id})")
     except Exception as e:
         log.error(f"[CHECK] VLM: FAIL — {e}")
-        log.error("→ ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 ...")
-        simulation_app.close()
-        return
-
-    vla = VLAClient(args.vla_server, jpeg_quality=80)
-    vla_health = vla.health_check()
-    if vla_health:
-        log.info(f"[CHECK] VLA: OK ({vla_health['model']}, {vla_health['gpu_memory_mb']:.0f}MB)")
-    else:
-        log.error("[CHECK] VLA: FAIL")
+        log.error("→ ssh -f -N -L 8000:localhost:8000 A100  (VLM 터널만 필요)")
         simulation_app.close()
         return
 
@@ -694,7 +825,7 @@ def main():
             else:
                 log.info("[S2 Expert] BC only (no residual)")
         else:
-            log.warning("[S2 Expert] Failed to load — S2 will use VLA only")
+            log.warning("[S2 Expert] Failed to load — S2 fallback (hold)")
 
     # ── S3 Carry Expert (BC+ResiP, 39D obs = 30D + dir_cmd 3D + init_arm 6D) ──
     carry_dp_agent, carry_residual, carry_dp_cfg = None, None, None
@@ -726,6 +857,25 @@ def main():
         "carry turn left holding the object":  [0.0, 0.0, 1.0],
         "carry turn right holding the object": [0.0, 0.0, -1.0],
     }
+
+    # ── S4 Place Expert (BC+ResiP, 55D obs + 4-phase ABCD 상태머신) ──
+    place_expert = None
+    if args.place_dp_checkpoint:
+        log.info(f"[S4 Place] Loading BC: {args.place_dp_checkpoint}")
+        _place_dp, _place_residual, _place_cfg = load_place_expert(
+            args.place_dp_checkpoint, args.place_resip_checkpoint, device,
+            inference_steps=args.place_inference_steps,
+        )
+        if _place_dp:
+            place_expert = PlaceExpert(_place_dp, _place_residual, _place_cfg, device)
+            log.info(f"[S4 Place] BC loaded (obs={_place_cfg['obs_dim']}D, act={_place_cfg['act_dim']}D, "
+                     f"inference_steps={args.place_inference_steps})")
+            if _place_residual:
+                log.info(f"[S4 Place] ResiP loaded: {args.place_resip_checkpoint}")
+            else:
+                log.info("[S4 Place] BC only (no residual)")
+        else:
+            log.warning("[S4 Place] Failed to load — place will hold (fallback)")
 
     # ── 환경 ──
     log.info("Setting up environment...")
@@ -832,7 +982,6 @@ def main():
                 elif cmd == 'r':
                     log.info("[USER] Manual reset")
                     obs = reset_with_scene(env, args, scene_path, log)
-                    vla.reset_buffer()
                     orch.reset_for_new_trial()
                     _force_tucked[0] = True
                     prev_skill = SkillState.NAVIGATE
@@ -914,7 +1063,6 @@ def main():
                 if _s2_step_counter >= 700 and obj_z < 0.04:
                     log.info(f"[S2 FAIL] objZ={obj_z:.3f} at {_s2_step_counter} steps → reset")
                     obs = reset_with_scene(env, args, scene_path, log)
-                    vla.reset_buffer()
                     orch.reset_for_new_trial()
                     _force_tucked[0] = True
                     prev_skill = SkillState.NAVIGATE
@@ -926,7 +1074,6 @@ def main():
                 if obj_z < 0.026 and _s2_step_counter > 10:
                     log.info(f"[S2 TOPPLE] objZ={obj_z:.3f} → reset")
                     obs = reset_with_scene(env, args, scene_path, log)
-                    vla.reset_buffer()
                     orch.reset_for_new_trial()
                     _force_tucked[0] = True
                     prev_skill = SkillState.NAVIGATE
@@ -962,7 +1109,6 @@ def main():
             # ── 스킬 전환 감지 ──
             if prev_skill != orch.current_skill:
                 log.info(f"[SKILL] {prev_skill.value} → {orch.current_skill.value}")
-                vla.reset_buffer()
                 prev_skill = orch.current_skill
                 _cur = orch.current_skill
                 if _cur == SkillState.NAVIGATE:
@@ -977,12 +1123,17 @@ def main():
                         carry_dp_agent.reset()
                         log.info(f"[→Carry] init_arm 캡처: "
                                  f"{[round(float(v), 3) for v in _carry_init_arm[0].tolist()]}")
+                elif _cur == SkillState.APPROACH_AND_PLACE:
+                    # place expert가 arm 제어 → tucked 해제 + init_pose6 캡처 + phase machine reset
+                    _force_tucked[0] = False
+                    if place_expert is not None:
+                        place_expert.reset(env)
+                        log.info("[→Place] init_pose6 캡처 + 4-phase(ABCD) latch reset")
                 else:
-                    _force_tucked[0] = False           # S2/S4: VLA/expert가 arm 제어
+                    _force_tucked[0] = False           # S2: expert가 arm 제어
 
             # ── Action 결정 ──
             instruction = orch.instruction
-            state = get_state_9d(env)
             skill = orch.current_skill
 
             # VLM instruction → direction_cmd 매핑 (navigate expert용)
@@ -1019,6 +1170,15 @@ def main():
                     log.info(f"[S3 Carry-RL] step={total_steps} dir=\"{instruction[:30]}\" "
                              f"obs={carry_obs.shape[1]}D base=[{action[6]:.3f},{action[7]:.3f},{action[8]:.3f}]")
 
+            elif skill == SkillState.APPROACH_AND_PLACE and place_expert is not None:
+                # ── S4: place RL expert (55D obs + 4-phase ABCD 상태머신) ──
+                obs_t = obs["policy"].to(device) if isinstance(obs, dict) else obs.to(device)
+                action = place_expert.get_action(env, obs_t)
+                action = np.clip(action, -1, 1)
+                if total_steps % 100 == 0:
+                    log.info(f"[S4 Place-RL] step={total_steps} phase={place_expert.phase_str} "
+                             f"grip={action[5]:.2f} base=[{action[6]:.3f},{action[7]:.3f},{action[8]:.3f}]")
+
             elif skill in (SkillState.NAVIGATE, SkillState.CARRY):
                 # NAVIGATE, 또는 carry expert 없을 때 fallback: lookup base velocity
                 _base_cmd = _NAV_INST_TO_ACTION.get(instruction, [0.0, 0.5, 0.0])
@@ -1032,37 +1192,18 @@ def main():
                     action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
                     action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
 
-                # VLA 포맷 검증: 100스텝마다 1회 비동기 호출 (별도 스레드)
-                if total_steps % 100 == 0 and total_steps > 0:
-                    def _vla_check():
-                        va = vla.query_action(base_rgb, wrist_rgb, state, instruction)
-                        dim = len(va[0]) if va and len(va) > 0 else 0
-                        log.info(f"[VLA-CHECK] step={total_steps} inst=\"{instruction[:40]}\" "
-                                 f"chunk={len(va)} dim={dim} latency={vla.latency*1000:.0f}ms")
-                    threading.Thread(target=_vla_check, daemon=True).start()
-
             elif skill == SkillState.APPROACH_AND_LIFT and dp_agent is not None:
                 # S2: RL expert action
                 obs_t = obs["policy"].to(device)
                 action = resip_action(dp_agent, residual, obs_t, device, _s2_per_dim)
                 action = np.clip(action, -1, 1)
 
-                # VLA 포맷 검증: 100스텝마다 비동기
-                if total_steps % 100 == 0:
-                    def _vla_check_s2():
-                        va = vla.query_action(base_rgb, wrist_rgb, state, instruction)
-                        dim = len(va[0]) if va and len(va) > 0 else 0
-                        log.info(f"[VLA-S2] step={total_steps} inst=\"{instruction[:40]}\" "
-                                 f"chunk={len(va)} dim={dim}")
-                    threading.Thread(target=_vla_check_s2, daemon=True).start()
-
             else:
-                # S2 expert 없거나 S3/S4: VLA action 그대로
-                action = vla.get_action_9d(base_rgb, wrist_rgb, state, instruction)
-                if total_steps % 10 == 0:
-                    log.debug(f"[VLA] step={total_steps} skill={skill.value} "
-                              f"inst=\"{instruction[:40]}\" "
-                              f"action={[round(float(a),4) for a in action[:9]]}")
+                # expert 미로드(체크포인트 누락 등): 안전하게 정지 (현재 자세 유지)
+                action = np.zeros(9, dtype=np.float32)
+                if total_steps % 100 == 0:
+                    log.warning(f"[HOLD] step={total_steps} skill={skill.value} "
+                                f"— expert 미로드로 정지. 해당 스킬 체크포인트 인자를 확인하세요.")
 
             # ── Safety layer ──
             stopped = False
@@ -1104,7 +1245,6 @@ def main():
             if term.any() or trunc.any():
                 log.info(f"[EPISODE END] step={total_steps}")
                 obs = reset_with_scene(env, args, scene_path, log)
-                vla.reset_buffer()
 
     except KeyboardInterrupt:
         log.info("[Ctrl+C] Stopping")
