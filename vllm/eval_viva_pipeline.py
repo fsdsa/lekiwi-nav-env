@@ -35,10 +35,11 @@ parser.add_argument("--dp_checkpoint", type=str, default="", help="S2 approach&l
 parser.add_argument("--resip_checkpoint", type=str, default="", help="S2 approach&lift ResiP")
 parser.add_argument("--nav_dp_checkpoint", type=str, default="", help="S1 navigate BC")
 parser.add_argument("--nav_resip_checkpoint", type=str, default="", help="S1 navigate ResiP")
-parser.add_argument("--carry_dp_checkpoint", type=str, default="", help="S3 carry BC (39D)")
+parser.add_argument("--carry_dp_checkpoint", type=str, default="", help="S3 carry BC (39D obs)")
 parser.add_argument("--carry_resip_checkpoint", type=str, default="", help="S3 carry ResiP")
-parser.add_argument("--place_dp_checkpoint", type=str, default="", help="S4 place BC (55D)")
-parser.add_argument("--place_resip_checkpoint", type=str, default="", help="S4 place ResiP")
+parser.add_argument("--difficulty", type=str, default="easy", choices=["easy", "middle", "hard"],
+    help="easy/middle=같은 방, hard=다른 방 (scene_idx 1302 기준 _DIFFICULTY_MAP)")
+parser.add_argument("--num_trials", type=int, default=1, help="(참고용; 본 스크립트는 연속 실행)")
 parser.add_argument("--camera_width", type=int, default=1280)
 parser.add_argument("--camera_height", type=int, default=800)
 parser.add_argument("--vlm_interval", type=int, default=30)
@@ -52,9 +53,6 @@ parser.add_argument("--scene_idx", type=int, default=0, help="ProcTHOR scene ind
 parser.add_argument("--scene_usd", type=str, default="")
 parser.add_argument("--scene_scale", type=float, default=1.0)
 parser.add_argument("--scene_install_dir", type=str, default="~/molmospaces/assets/usd")
-parser.add_argument("--difficulty", type=str, default="easy",
-                    choices=["easy", "middle", "hard"],
-                    help="easy: room9, middle: room4, hard: room6(로봇)+room3(물체)")
 
 from isaaclab.app import AppLauncher
 AppLauncher.add_app_launcher_args(parser)
@@ -402,7 +400,7 @@ def setup_env(args):
             floor_z = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path)
         else:
             floor_z = 0.0
-        cfg.builtin_ground_z = floor_z * args.scene_scale - 0.1
+        cfg.builtin_ground_z = floor_z * args.scene_scale
         cfg.sim.device = "cpu"
         print(f"  [Scene] {scene_path}, floor_z={floor_z:.4f}, scale={args.scene_scale}, device=cpu")
     else:
@@ -517,91 +515,101 @@ def setup_env(args):
     return env, cams, scene_path
 
 
+_DIFFICULTY_MAP = {
+    # difficulty: (target_room, robot_x, robot_y, robot_yaw_deg, obj_room)
+    #   easy/middle = robot·obj 같은 방, hard = obj 다른 방 (scene_idx 1302 기준)
+    "easy":   ("room_9", 1.086, 33.694, 214.4, "room_9"),
+    "middle": ("room_6", 7.657,  0.638, 354.9, "room_6"),
+    "hard":   ("room_4", 3.25,  14.05,  -76.2, "room_3"),
+}
+
+
 def reset_with_scene(env, args, scene_path, log):
-    """env.reset() 후 difficulty-aware 스폰 (record_teleop_scene/run_full_task와 동일)."""
+    """env.reset() 후 difficulty별로 robot/source/dest 배치.
+    run_full_task.py의 _DIFFICULTY_MAP 스폰 로직을 그대로 포팅 (robot 고정 pose,
+    source/dest는 obj_room 바닥 mesh에 샘플)."""
+    import math as _m
     import random as _rng_mod
-
+    from procthor_scene import (
+        apply_scene_task_layout, SceneTaskLayout,
+        _load_floor_regions, _load_support_floor_z, _find_robot_region,
+        _load_scene_obstacles, _load_floor_triangles, sample_on_floor_mesh,
+        SCENE_PRESETS,
+    )
     obs, info = env.reset()
-    if scene_path is not None:
-        from procthor_scene import (
-            apply_scene_task_layout, SceneTaskLayout,
-            _load_floor_regions, _load_support_floor_z,
-            _load_scene_obstacles, _find_robot_region,
-            _load_floor_triangles, sample_on_floor_mesh,
-            SCENE_PRESETS,
+    if scene_path is None:
+        return obs
+
+    _scene_str = str(scene_path.resolve())
+    _preset = SCENE_PRESETS.get(args.scene_idx)
+    _sfz = _load_support_floor_z(_scene_str, _preset.support_floor_prim_path) if _preset else 0.0
+    _regions = _load_floor_regions(_scene_str, support_floor_z=_sfz)
+    _obstacles = _load_scene_obstacles(_scene_str)
+    _floor_tris = _load_floor_triangles(_scene_str)
+    ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
+
+    _target_room, _rx, _ry, _ryaw_deg, _obj_room = _DIFFICULTY_MAP[args.difficulty]
+    _obj_tris = _floor_tris.get(_obj_room, [])
+    _fz = _sfz * ss
+
+    layout = None
+    _sxy = _dxy = None
+    for _try in range(200):
+        _rng = _rng_mod.Random()
+        try:
+            _sxy = sample_on_floor_mesh(_obj_tris, _obstacles, 0.3, _rng)
+            _dxy = sample_on_floor_mesh(_obj_tris, _obstacles, 0.3, _rng)
+        except RuntimeError:
+            continue
+        if _m.dist(_sxy, _dxy) < 1.5:
+            continue
+        if _obj_room == _target_room:
+            if _m.dist((_rx, _ry), _sxy) < 1.5 or _m.dist((_rx, _ry), _dxy) < 1.5:
+                continue
+        layout = SceneTaskLayout(
+            robot_xy=(_rx * ss, _ry * ss),
+            robot_yaw_rad=_m.radians(_ryaw_deg),
+            source_xy=(_sxy[0] * ss, _sxy[1] * ss),
+            source_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+            dest_xy=(_dxy[0] * ss, _dxy[1] * ss),
+            dest_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
+            floor_z=_fz,
+            source_rest_z=0.033,
         )
-        import math as _m
+        break
+    if layout is None:
+        log.warning(f"[Spawn] {args.difficulty} 200회 실패 — reset 상태로 진행")
+        return obs
 
-        _DIFFICULTY_MAP = {
-            "easy":   ("room_9",  1.086, 33.694, 214.4, "room_9"),
-            "middle": ("room_4",  3.25,  14.05,  -76.2, "room_4"),
-            "hard":   ("room_6", 10.80,   3.25,   -3.4, "room_3"),
-        }
+    apply_scene_task_layout(env, layout)
 
-        def _room_id(fp):
-            name = fp.path.split("/")[-1]
-            idx = name.find("_visual_")
-            return name[:idx] if idx >= 0 else name
+    # arm → nav tucked pose + settle + re-teleport (settle drift 보정)
+    _env_id = torch.tensor([0], device=env.device)
+    _NAV_TUCKED = [-0.02966, -0.213839, 0.09066, -0.4, 0.058418, -0.201554]
+    _jp = env.robot.data.joint_pos[0:1].clone()
+    _jp[0, env.arm_idx[:5]] = torch.tensor(_NAV_TUCKED[:5], dtype=torch.float32, device=env.device)
+    _jp[0, env.gripper_idx] = _NAV_TUCKED[5]
+    _jp[0, env.wheel_idx] = 0.0
+    _jv = torch.zeros_like(_jp)
+    env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
+    env.robot.set_joint_position_target(_jp, env_ids=_env_id)
+    for _ in range(60):
+        env.sim.step()
+        env.sim.render()
+    apply_scene_task_layout(env, layout)
+    env.robot.write_joint_state_to_sim(_jp, _jv, env_ids=_env_id)
+    env.robot.set_joint_position_target(_jp, env_ids=_env_id)
+    env.sim.step()
+    env.robot.update(env.sim.cfg.dt)
 
-        _scene_str = str(scene_path.resolve())
-        preset = SCENE_PRESETS.get(args.scene_idx)
-        sfz = _load_support_floor_z(_scene_str, preset.support_floor_prim_path) if preset else 0.0
-        regions = _load_floor_regions(_scene_str, support_floor_z=sfz)
-        obstacles = _load_scene_obstacles(_scene_str)
-        floor_tris = _load_floor_triangles(_scene_str)
-        ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
-
-        _diff_entry = _DIFFICULTY_MAP[args.difficulty]
-        _target_room, _rx, _ry, _ryaw_deg, _obj_room_id = _diff_entry
-        _obj_tris = floor_tris.get(_obj_room_id, [])
-        _fz = sfz * ss
-
-        layout = None
-        for _spawn_try in range(200):
-            _rng = _rng_mod.Random()
-            try:
-                _sxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
-                _dxy = sample_on_floor_mesh(_obj_tris, obstacles, 0.3, _rng)
-            except RuntimeError:
-                continue
-            if _m.dist(_sxy, _dxy) < 1.5:
-                continue
-            if _obj_room_id == _target_room:
-                if _m.dist((_rx, _ry), _sxy) < 1.5 or _m.dist((_rx, _ry), _dxy) < 1.5:
-                    continue
-            layout = SceneTaskLayout(
-                robot_xy=(_rx * ss, _ry * ss),
-                robot_yaw_rad=_m.radians(_ryaw_deg),
-                source_xy=(_sxy[0] * ss, _sxy[1] * ss),
-                source_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
-                dest_xy=(_dxy[0] * ss, _dxy[1] * ss),
-                dest_yaw_rad=_rng_mod.uniform(-_m.pi, _m.pi),
-                floor_z=_fz,
-                source_rest_z=0.033,
-            )
-            break
-        else:
-            log.warning(f"{args.difficulty} 스폰 실패 200회")
-
-        if layout is not None:
-            apply_scene_task_layout(env, layout)
-            _zero_v = torch.zeros(1, env.robot.num_joints, device=env.device)
-            env.robot.set_joint_velocity_target(_zero_v)
-            for _ in range(60):
-                env.sim.step()
-                env.sim.render()
-            apply_scene_task_layout(env, layout)
-            env.robot.set_joint_velocity_target(_zero_v)
-            env.sim.step()
-            env.robot.update(env.sim.cfg.dt)
-
-            _r_room = _find_robot_region((_rx, _ry), regions)
-            _s_room = _find_robot_region(_sxy, regions)
-            _d_room = _find_robot_region(_dxy, regions)
-            log.info(f"[Spawn] {args.difficulty} | "
-                     f"robot={_room_id(_r_room) if _r_room else '?'}({_rx:.1f},{_ry:.1f}) | "
-                     f"src={_room_id(_s_room) if _s_room else '?'} | "
-                     f"dest={_room_id(_d_room) if _d_room else '?'}")
+    def _rn(reg):
+        return reg.path.split('/')[-1] if reg else '?'
+    _r_reg = _find_robot_region((_rx, _ry), _regions)
+    _s_reg = _find_robot_region(_sxy, _regions)
+    _d_reg = _find_robot_region(_dxy, _regions)
+    log.info(f"[Spawn] {args.difficulty} | robot=({_rx:.1f},{_ry:.1f}) {_rn(_r_reg)} | "
+             f"src={_rn(_s_reg)} | dest={_rn(_d_reg)} | "
+             f"obj_room={_obj_room} ({'다른 방' if _obj_room != _target_room else '같은 방'})")
     return obs
 
 
@@ -688,20 +696,36 @@ def main():
         else:
             log.warning("[S2 Expert] Failed to load — S2 will use VLA only")
 
-    # ── S3 Carry Expert ──
-    carry_dp, carry_resip, carry_cfg = None, None, None
+    # ── S3 Carry Expert (BC+ResiP, 39D obs = 30D + dir_cmd 3D + init_arm 6D) ──
+    carry_dp_agent, carry_residual, carry_dp_cfg = None, None, None
     if args.carry_dp_checkpoint:
-        log.info(f"[S3 Expert] Loading BC: {args.carry_dp_checkpoint}")
-        carry_dp, carry_resip, carry_cfg = load_s2_expert(
+        log.info(f"[S3 Carry] Loading BC: {args.carry_dp_checkpoint}")
+        carry_dp_agent, carry_residual, carry_dp_cfg = load_s2_expert(
             args.carry_dp_checkpoint, args.carry_resip_checkpoint, device
         )
-        if carry_dp:
-            log.info(f"[S3 Expert] BC loaded (obs={carry_cfg['obs_dim']}D)")
-            if carry_resip:
-                log.info(f"[S3 Expert] ResiP loaded: {args.carry_resip_checkpoint}")
+        if carry_dp_agent:
+            log.info(f"[S3 Carry] BC loaded (obs={carry_dp_cfg['obs_dim']}D, act={carry_dp_cfg['act_dim']}D)")
+            if carry_residual:
+                log.info(f"[S3 Carry] ResiP loaded: {args.carry_resip_checkpoint}")
+            else:
+                log.info("[S3 Carry] BC only (no residual)")
+        else:
+            log.warning("[S3 Carry] Failed to load — carry will use lookup fallback")
 
+    # carry RL 변수 (run_full_task rl_hybrid과 동일)
     _carry_per_dim = torch.zeros(9, device=device)
-    _carry_per_dim[0:5] = 0.05; _carry_per_dim[5] = 0.05
+    _carry_per_dim[0:5] = 0.05   # arm residual
+    _carry_per_dim[5] = 0.05     # gripper residual (base[6:9]=0 → DP base_action 그대로)
+    _carry_init_arm = torch.zeros(1, 6, device=device)
+    _carry_dir_cmd = torch.tensor([0.0, 1.0, 0.0], device=device)
+    _CARRY_INST_TO_DIR = {
+        "carry forward holding the object":    [0.0, 1.0, 0.0],
+        "carry backward holding the object":   [0.0, -1.0, 0.0],
+        "carry left holding the object":       [-1.0, 0.0, 0.0],
+        "carry right holding the object":      [1.0, 0.0, 0.0],
+        "carry turn left holding the object":  [0.0, 0.0, 1.0],
+        "carry turn right holding the object": [0.0, 0.0, -1.0],
+    }
 
     # ── 환경 ──
     log.info("Setting up environment...")
@@ -796,10 +820,6 @@ def main():
     vla_calls_log = []
     t_start = time.time()
 
-    # S3 carry state
-    _carry_init_arm_pose = torch.zeros(1, 6, device=device)
-    _carry_dir_cmd = torch.tensor([0.0, 1.0, 0.0], device=device)
-
     try:
         while total_steps < args.max_total_steps and simulation_app.is_running():
             # ── 키보드 (hold 감지) ──
@@ -886,10 +906,6 @@ def main():
                     _s2_lift_counter = 0
                 if _s2_lift_counter >= 200:
                     log.info(f"[LIFTED] objZ={obj_z:.3f}, hold={_s2_lift_counter} → S3")
-                    # init_arm_pose 캡처 (S3 carry용)
-                    _jp_s3 = env.robot.data.joint_pos[0]
-                    _carry_init_arm_pose[0, :5] = _jp_s3[env.arm_idx[:5]]
-                    _carry_init_arm_pose[0, 5] = _jp_s3[env.arm_idx[5]]
                     orch._transition_to(SkillState.CARRY)
                     _s2_lift_counter = 0
                     _s2_step_counter = 0
@@ -948,13 +964,21 @@ def main():
                 log.info(f"[SKILL] {prev_skill.value} → {orch.current_skill.value}")
                 vla.reset_buffer()
                 prev_skill = orch.current_skill
-                # S1/S3: tucked 강제, S2/S4: 해제 (RL expert가 arm 제어)
-                if orch.current_skill == SkillState.NAVIGATE:
-                    _force_tucked[0] = True
-                elif orch.current_skill == SkillState.CARRY:
-                    _force_tucked[0] = (carry_dp is None)
+                _cur = orch.current_skill
+                if _cur == SkillState.NAVIGATE:
+                    _force_tucked[0] = True            # nav: 팔 접기
+                elif _cur == SkillState.CARRY:
+                    # carry expert 있으면 arm을 expert가 제어 → tucked 해제 + init_arm 캡처
+                    _force_tucked[0] = (carry_dp_agent is None)
+                    if carry_dp_agent is not None:
+                        _jp_c = env.robot.data.joint_pos[0]
+                        _carry_init_arm[0, :5] = _jp_c[env.arm_idx[:5]]
+                        _carry_init_arm[0, 5] = _jp_c[env.gripper_idx]
+                        carry_dp_agent.reset()
+                        log.info(f"[→Carry] init_arm 캡처: "
+                                 f"{[round(float(v), 3) for v in _carry_init_arm[0].tolist()]}")
                 else:
-                    _force_tucked[0] = False
+                    _force_tucked[0] = False           # S2/S4: VLA/expert가 arm 제어
 
             # ── Action 결정 ──
             instruction = orch.instruction
@@ -981,42 +1005,41 @@ def main():
                 "navigate turn right":   [0.0, 0.0, 0.33],
             }
 
-            if skill == SkillState.NAVIGATE:
-                # S1: lookup table + 키보드 override
+            if skill == SkillState.CARRY and carry_dp_agent is not None:
+                # ── S3: carry RL expert (39D obs = 30D + dir_cmd 3D + init_arm 6D) ──
+                _dir = _CARRY_INST_TO_DIR.get(instruction, [0.0, 1.0, 0.0])
+                _carry_dir_cmd[:] = torch.tensor(_dir, dtype=torch.float32, device=device)
+                obs_t = obs["policy"].to(device) if isinstance(obs, dict) else obs.to(device)
+                carry_obs = torch.cat([
+                    obs_t, _carry_dir_cmd.unsqueeze(0), _carry_init_arm,
+                ], dim=-1)  # (1, 39)
+                action = resip_action(carry_dp_agent, carry_residual, carry_obs, device, _carry_per_dim)
+                action = np.clip(action, -1, 1)
+                if total_steps % 100 == 0:
+                    log.info(f"[S3 Carry-RL] step={total_steps} dir=\"{instruction[:30]}\" "
+                             f"obs={carry_obs.shape[1]}D base=[{action[6]:.3f},{action[7]:.3f},{action[8]:.3f}]")
+
+            elif skill in (SkillState.NAVIGATE, SkillState.CARRY):
+                # NAVIGATE, 또는 carry expert 없을 때 fallback: lookup base velocity
                 _base_cmd = _NAV_INST_TO_ACTION.get(instruction, [0.0, 0.5, 0.0])
                 action = np.zeros(9, dtype=np.float32)
-                action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
+                action[6] = _base_cmd[0]
+                action[7] = _base_cmd[1]
+                action[8] = _base_cmd[2]
+                # 키보드 override
                 if abs(kb_vx) > 0 or abs(kb_vy) > 0 or abs(kb_wz) > 0:
                     action[6] = np.clip(kb_vx / MAX_LIN, -1, 1)
                     action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
                     action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
 
-            elif skill == SkillState.CARRY and carry_dp is not None:
-                # S3: carry BC+ResiP (39D obs)
-                _CARRY_INST_TO_DIR = {
-                    "carry forward": [0, 1, 0], "carry backward": [0, -1, 0],
-                    "carry strafe left": [-1, 0, 0], "carry strafe right": [1, 0, 0],
-                    "carry turn left": [0, 0, 1], "carry turn right": [0, 0, -1],
-                }
-                _dir = _CARRY_INST_TO_DIR.get(instruction, [0, 1, 0])
-                _carry_dir_cmd[:] = torch.tensor(_dir, dtype=torch.float32, device=device)
-                obs_t = obs["policy"].to(device)
-                carry_obs = torch.cat([
-                    obs_t, _carry_dir_cmd.unsqueeze(0), _carry_init_arm_pose,
-                ], dim=-1)
-                action = resip_action(carry_dp, carry_resip, carry_obs, device, _carry_per_dim)
-                action = np.clip(action, -1, 1)
-
-            elif skill == SkillState.CARRY:
-                # S3 expert 없음: lookup table fallback
-                _base_cmd = _NAV_INST_TO_ACTION.get(
-                    instruction.replace("carry", "navigate"), [0.0, 0.5, 0.0])
-                action = np.zeros(9, dtype=np.float32)
-                action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
-                if abs(kb_vx) > 0 or abs(kb_vy) > 0 or abs(kb_wz) > 0:
-                    action[6] = np.clip(kb_vx / MAX_LIN, -1, 1)
-                    action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
-                    action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
+                # VLA 포맷 검증: 100스텝마다 1회 비동기 호출 (별도 스레드)
+                if total_steps % 100 == 0 and total_steps > 0:
+                    def _vla_check():
+                        va = vla.query_action(base_rgb, wrist_rgb, state, instruction)
+                        dim = len(va[0]) if va and len(va) > 0 else 0
+                        log.info(f"[VLA-CHECK] step={total_steps} inst=\"{instruction[:40]}\" "
+                                 f"chunk={len(va)} dim={dim} latency={vla.latency*1000:.0f}ms")
+                    threading.Thread(target=_vla_check, daemon=True).start()
 
             elif skill == SkillState.APPROACH_AND_LIFT and dp_agent is not None:
                 # S2: RL expert action
