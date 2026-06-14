@@ -3,7 +3,7 @@
 > 세 모델 **모두 서버(A100)에 있음**. 노트북은 sim 실행 + SSH 터널로 서버에 요청.
 > **연결**: `ssh A100` 별칭 사용 (포트는 `~/.ssh/config`; pod 재시작마다 바뀌니 `-p 30179`/`30628` 하드코딩 금지).
 > **GUI로 실행** (`--headless` 금지 — 카메라 크래시).
-> 난이도: **easy**=room_9, **middle**=room_4, **hard**=room_6→room_3. scene_idx 1302 고정, `--difficulty`만 바꾸면 됨.
+> 난이도(3개 파이프라인 공통, scene_idx 1302): **easy**=room_9(같은 방), **middle**=room_6(같은 방), **hard**=room_4→obj room_3(다른 방). 약병(source)=0.7, 컵(dest)=0.56. `--difficulty`만 바꾸면 됨.
 
 ## 공통 preamble (노트북, 셸마다 1회)
 ```bash
