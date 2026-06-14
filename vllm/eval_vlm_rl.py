@@ -524,6 +524,9 @@ def setup_env(args):
     cfg.episode_length_s = 600.0
     cfg.object_usd = os.path.expanduser(args.object_usd)
     cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
+    # 약병(source)=0.7, 컵(dest)=0.56 — place expert(eval_s3) 학습조건 + 3개 파이프라인 통일
+    cfg.object_scale = 0.7
+    cfg.dest_object_scale = 0.56
     if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
         cfg.arm_limit_json = args.arm_limit_json
     cfg.gripper_contact_prim_path = args.gripper_contact_prim_path

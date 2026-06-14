@@ -20,7 +20,7 @@ VLM + VLA 전체 태스크 실행기
 
 Usage:
     # SSH 터널 먼저
-    ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 jovyan@218.148.55.186 -p 30179
+    ssh -f -N -L 8000:localhost:8000 -L 8002:localhost:8002 A100   # 포트는 ~/.ssh/config Host A100 사용 (pod 재시작마다 바뀜, 하드코딩 금지)
 
     python run_full_task.py \
         --user_command "약병을 찾아서 빨간 컵 옆에 놓아" \
@@ -79,7 +79,7 @@ parser.add_argument("--safety_dist", type=float, default=0.3)
 parser.add_argument("--enable_safety", action="store_true", default=True)
 
 # Timing
-parser.add_argument("--vlm_interval", type=int, default=50,
+parser.add_argument("--vlm_interval", type=int, default=30,
                     help="VLM 호출 시도 간격 (steps, 비동기 _pending으로 자동 throttle)")
 parser.add_argument("--max_total_steps", type=int, default=6000,
                     help="최대 스텝 (6000 = 10분 at 10Hz)")
@@ -97,14 +97,20 @@ parser.add_argument("--memory_log", type=str, default="",
 
 # Mode
 parser.add_argument("--mode", type=str, default="viva",
-                    choices=["viva", "single_vla"],
-                    help="viva: VIVA 구조 (VLM+VLA), single_vla: 비교군 ①-B")
+                    choices=["viva", "single_vla", "rl_hybrid"],
+                    help="viva: VLM+VLA 전체, single_vla: VLA only, rl_hybrid: S1/S3=RL expert + S2/S4=VLA")
+
+# RL hybrid mode: S1/S3 expert checkpoints
+parser.add_argument("--nav_dp_checkpoint", type=str, default="", help="rl_hybrid: S1 navigate BC")
+parser.add_argument("--nav_resip_checkpoint", type=str, default="", help="rl_hybrid: S1 navigate ResiP")
+parser.add_argument("--carry_dp_checkpoint", type=str, default="", help="rl_hybrid: S3 carry BC")
+parser.add_argument("--carry_resip_checkpoint", type=str, default="", help="rl_hybrid: S3 carry ResiP")
 
 # Skill timeouts (VIVA mode)
-parser.add_argument("--navigate_timeout", type=int, default=200000)
-parser.add_argument("--approach_lift_timeout", type=int, default=1000)
-parser.add_argument("--carry_timeout", type=int, default=200000)
-parser.add_argument("--approach_place_timeout", type=int, default=1000)
+parser.add_argument("--navigate_timeout", type=int, default=20000000)
+parser.add_argument("--approach_lift_timeout", type=int, default=10000)
+parser.add_argument("--carry_timeout", type=int, default=20000000)
+parser.add_argument("--approach_place_timeout", type=int, default=10000)
 
 # S2/S4 재시도 제한
 parser.add_argument("--s2_max_attempts", type=int, default=3,
@@ -337,11 +343,16 @@ def setup_env(args):
     cfg.enable_domain_randomization = False
     cfg.arm_limit_write_to_sim = False
     cfg.episode_length_s = 600.0
+    cfg.max_dist_from_origin = 50.0  # ProcTHOR scene 탐색용 (default 6.0m은 너무 좁음)
+    cfg.grasp_success_height = 100.0  # env의 자동 task_success 비활성화 (VIVA orchestrator가 스킬 전환 판단)
 
     if args.object_usd:
         cfg.object_usd = os.path.expanduser(args.object_usd)
     if args.dest_object_usd:
         cfg.dest_object_usd = os.path.expanduser(args.dest_object_usd)
+    # 약병(source)=0.7, 컵(dest)=0.56 — 3개 파이프라인(VIVA/only-VLA/VLM+RL) task 통일
+    cfg.object_scale = 0.7
+    cfg.dest_object_scale = 0.56
     if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
         cfg.arm_limit_json = args.arm_limit_json
     cfg.gripper_contact_prim_path = args.gripper_contact_prim_path
@@ -469,8 +480,14 @@ def setup_env(args):
     _APPROACH_INIT_ACTION = [-0.00306, -0.89805, 0.94939, 0.87188, -0.5546, -0.71724]
     _approach_init_action = np.array(_APPROACH_INIT_ACTION, dtype=np.float32)
 
+    # Carry 데모 첫 프레임 ACTION 평균 (432 에피소드 = 6 task × 72 ep)
+    # S2→S3 BRAKE에서 사용: lift 직후 arm을 carry init에 stabilize → 물체 안정 + 급작 모션 방지
+    _CARRY_INIT_ACTION = [0.02683, -0.99449, 0.99222, 0.02763, -0.57562, -0.37261]
+    _carry_init_action = np.array(_CARRY_INIT_ACTION, dtype=np.float32)
+
     print(f"  [Tucked]       action: {[f'{v:+.3f}' for v in _tucked_action.tolist()]}")
     print(f"  [ApproachInit] action: {[f'{v:+.3f}' for v in _approach_init_action.tolist()]}")
+    print(f"  [CarryInit]    action: {[f'{v:+.3f}' for v in _carry_init_action.tolist()]}")
 
     cams = {
         "base_rgb": base_rgb_annot,        # 1280x800 VLM용
@@ -483,6 +500,7 @@ def setup_env(args):
         "_set_rp_enabled": _set_rp_enabled,
         "_tucked_action": _tucked_action,
         "_approach_init_action": _approach_init_action,
+        "_carry_init_action": _carry_init_action,
     }
     return env, cams, scene_path
 
@@ -602,8 +620,7 @@ def main():
         env.sim.render()
 
     # ── 3. Orchestrator 생성 ──
-    if args.mode == "viva":
-        memory_interval = args.memory_update_interval if args.memory_update_interval > 0 else args.vlm_interval
+    if args.mode in ("viva", "rl_hybrid"):
         orch = VIVAOrchestrator(
             vlm_server=args.vlm_server,
             vlm_model=args.vlm_model,
@@ -618,8 +635,6 @@ def main():
             stop_at_carry=args.stop_at_carry,
             s2_max_attempts=args.s2_max_attempts,
             s4_max_attempts=args.s4_max_attempts,
-            memory_max_entries=args.memory_max_entries,
-            memory_update_interval=memory_interval,
         )
     elif args.mode == "single_vla":
         orch = RelativePlacementOrchestrator(
@@ -631,7 +646,93 @@ def main():
             jpeg_quality=args.jpeg_quality,
         )
 
-    prev_skill = orch.current_skill if args.mode == "viva" else None
+    prev_skill = orch.current_skill if args.mode in ("viva", "rl_hybrid") else None
+
+    # ── RL Hybrid: S1/S3 expert 로드 ──
+    _rl_nav_dp = _rl_nav_resip = _rl_carry_dp = _rl_carry_resip = None
+    _rl_nav_cfg = _rl_carry_cfg = None
+    if args.mode == "rl_hybrid":
+        from diffusion_policy import DiffusionPolicyAgent, ResidualPolicy
+
+        def _load_expert(dp_path, resip_path):
+            if not dp_path or not os.path.isfile(dp_path):
+                return None, None, None
+            ckpt = torch.load(dp_path, map_location=device, weights_only=False)
+            cfg = ckpt["config"]
+            agent = DiffusionPolicyAgent(
+                obs_dim=cfg["obs_dim"], act_dim=cfg["act_dim"],
+                pred_horizon=cfg["pred_horizon"], action_horizon=cfg["action_horizon"],
+                num_diffusion_iters=cfg["num_diffusion_iters"], inference_steps=4,
+                down_dims=cfg.get("down_dims", [256, 512, 1024]),
+            ).to(device)
+            sd = ckpt["model_state_dict"]
+            agent.model.load_state_dict({k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")})
+            agent.normalizer.load_state_dict(
+                {k[len("normalizer."):]: v for k, v in sd.items() if k.startswith("normalizer.")}, device=device)
+            agent.eval()
+            for p in agent.parameters():
+                p.requires_grad = False
+            resip = None
+            if resip_path and os.path.isfile(resip_path):
+                rckpt = torch.load(resip_path, map_location=device, weights_only=False)
+                resip = ResidualPolicy(
+                    obs_dim=cfg["obs_dim"], action_dim=cfg["act_dim"],
+                    action_scale=0.1, learn_std=True,
+                ).to(device)
+                resip.load_state_dict(rckpt["residual_policy_state_dict"])
+                resip.eval()
+            return agent, resip, cfg
+
+        if args.nav_dp_checkpoint:
+            _rl_nav_dp, _rl_nav_resip, _rl_nav_cfg = _load_expert(
+                args.nav_dp_checkpoint, args.nav_resip_checkpoint)
+            if _rl_nav_dp:
+                print(f"  [RL-Hybrid] S1 Navigate: {args.nav_dp_checkpoint} (obs={_rl_nav_cfg['obs_dim']}D)")
+        if args.carry_dp_checkpoint:
+            _rl_carry_dp, _rl_carry_resip, _rl_carry_cfg = _load_expert(
+                args.carry_dp_checkpoint, args.carry_resip_checkpoint)
+            if _rl_carry_dp:
+                print(f"  [RL-Hybrid] S3 Carry: {args.carry_dp_checkpoint} (obs={_rl_carry_cfg['obs_dim']}D)")
+
+        # Per-dim scales
+        _rl_carry_per_dim = torch.zeros(9, device=device)
+        _rl_carry_per_dim[0:5] = 0.05; _rl_carry_per_dim[5] = 0.05
+
+        # S3 state
+        _rl_carry_init_arm = torch.zeros(1, 6, device=device)
+        _rl_carry_dir_cmd = torch.tensor([0.0, 1.0, 0.0], device=device)
+
+        # Navigate lookup table — v5 학습 task label(full-form) 기준.
+        # VLM/VLA 간 instruction이 "with arm tucked" / "holding the object" 접미사를
+        # 포함하므로 키도 full-form으로 매칭.
+        _NAV_INST_TO_ACTION = {
+            "navigate forward with arm tucked":      [0.0, 0.5, 0.0],
+            "navigate backward with arm tucked":     [0.0, -0.5, 0.0],
+            "navigate strafe left with arm tucked":  [-0.5, 0.0, 0.0],
+            "navigate strafe right with arm tucked": [0.5, 0.0, 0.0],
+            "navigate turn left with arm tucked":    [0.0, 0.0, -0.33],
+            "navigate turn right with arm tucked":   [0.0, 0.0, 0.33],
+        }
+        _CARRY_INST_TO_DIR = {
+            "carry forward holding the object":      [0, 1, 0],
+            "carry backward holding the object":     [0, -1, 0],
+            "carry left holding the object":         [-1, 0, 0],
+            "carry right holding the object":        [1, 0, 0],
+            "carry turn left holding the object":    [0, 0, 1],
+            "carry turn right holding the object":   [0, 0, -1],
+        }
+
+        # carry → nav 매핑 (rl_hybrid S3 expert 없을 때 fallback 용도).
+        # "carry X holding the object" → "navigate X' with arm tucked"
+        # 단, carry "left/right"는 navigate "strafe left/right" 에 대응.
+        _CARRY_TO_NAV_INST = {
+            "carry forward holding the object":    "navigate forward with arm tucked",
+            "carry backward holding the object":   "navigate backward with arm tucked",
+            "carry left holding the object":       "navigate strafe left with arm tucked",
+            "carry right holding the object":      "navigate strafe right with arm tucked",
+            "carry turn left holding the object":  "navigate turn left with arm tucked",
+            "carry turn right holding the object": "navigate turn right with arm tucked",
+        }
 
     # Ground-truth 결과 집계
     trial_results = []  # list of dict: {s1, s2, s3, full, steps, time}
@@ -651,7 +752,7 @@ def main():
     print(f"  Camera VLM={args.vlm_width}x{args.vlm_height} VLA={args.vla_width}x{args.vla_height}")
     print(f"  Safety: {args.safety_dist}m, VLM interval: {args.vlm_interval} steps")
     print(f"  Max steps: {args.max_total_steps}")
-    if args.mode == "viva":
+    if args.mode in ("viva", "rl_hybrid"):
         print(f"  Timeouts: nav={args.navigate_timeout}, lift={args.approach_lift_timeout}, "
               f"carry={args.carry_timeout}, place={args.approach_place_timeout}")
         print(f"  Max attempts: S2={args.s2_max_attempts}, S4={args.s4_max_attempts}")
@@ -661,7 +762,7 @@ def main():
 
     # ★ Memory log (데이터 수집용)
     mem_log_file = None
-    if args.mode == "viva" and args.memory_log:
+    if args.mode in ("viva", "rl_hybrid") and args.memory_log:
         mem_log_file = open(args.memory_log, "w", buffering=1)
         mem_log_file.write("trial\tstep\tskill\tinstruction\tmem_count\tmem_entries\n")
         print(f"  Memory log: {args.memory_log}")
@@ -678,9 +779,9 @@ def main():
         obs, _ = env.reset()
 
         # Trial 시작 시 orchestrator 상태 리셋 (multi-trial에서 이전 trial 상태 잔류 방지)
-        if args.mode == "viva":
+        if args.mode in ("viva", "rl_hybrid"):
             orch.reset_for_new_trial()
-        prev_skill = orch.current_skill if args.mode == "viva" else None
+        prev_skill = orch.current_skill if args.mode in ("viva", "rl_hybrid") else None
 
         # ── Difficulty-aware 스폰 (record_teleop_scene.py와 동일) ──
         if scene_path is not None:
@@ -696,8 +797,8 @@ def main():
 
             _DIFFICULTY_MAP = {
                 "easy":   ("room_9",  1.086, 33.694, 214.4, "room_9"),
-                "middle": ("room_4",  3.25,  14.05,  -76.2, "room_4"),
-                "hard":   ("room_6", 10.80,   3.25,   -3.4, "room_3"),
+                "middle": ("room_6",  7.657,  0.638, 354.9, "room_6"),
+                "hard":   ("room_4",  3.25,  14.05,  -76.2, "room_3"),
             }
 
             def _room_id(fp):
@@ -818,7 +919,7 @@ def main():
                 #     큰 RGB 필요 조건: VLA buffer 비었거나, VLM 호출 예정
                 vla_buffer_empty = (vla._buffer_idx >= len(vla._action_buffer))
                 vlm_will_call = False
-                if args.mode == "viva":
+                if args.mode in ("viva", "rl_hybrid"):
                     if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
                         vlm_will_call = (total_steps % args.vlm_interval == 0)
                     # S2/S4의 obstacle check VLM 호출은 depth 본 후 결정 → 일단 우선순위 낮음
@@ -850,7 +951,7 @@ def main():
                 depth_min = get_depth_min(depth)
 
                 # (c) 로봇 상태 수집 + orchestrator에 전달 (VIVA 모드만)
-                if args.mode == "viva":
+                if args.mode in ("viva", "rl_hybrid"):
                     contact = get_contact_detected(env)
                     robot_status = build_robot_status(env, contact, depth_min)
                     orch.update_robot_status(robot_status)
@@ -918,17 +1019,19 @@ def main():
                             cached_base_rgb = b
                             cached_wrist_rgb = w
 
-                if args.mode == "viva":
+                if args.mode in ("viva", "rl_hybrid"):
                     if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
-                        # S1/S3:
-                        # (a) depth < safety_dist 이고 obstacle_cleared=False → obstacle check 우선
-                        #     (behind-arm 판단 포함). CONTINUE 받으면 forward 허용.
-                        # (b) 그 외 일반적 vlm_interval마다 regular navigate/carry query
+                        # S1/S3: NAVIGATE / CARRY 프롬프트가 safety-layer + TARGET_FOUND을
+                        # 이미 인지하고 있으므로 depth_close 조건에서도 regular query를 돌린다.
+                        # (이전 구현은 depth_close → query_obstacle_check_async 호출했는데
+                        #  이 함수는 S2/S4-only noop이라 VLM이 영영 불리지 않아 stuck 발생)
                         depth_close = (depth_min is not None and depth_min < args.safety_dist)
-                        if depth_close and not orch.obstacle_cleared:
-                            _ensure_fresh_rgb()
-                            orch.query_obstacle_check_async(base_rgb)
-                        elif total_steps % args.vlm_interval == 0:
+                        # depth_close 최초 진입 시 즉시 1회 query (interval 기다리지 않음)
+                        should_query = (total_steps % args.vlm_interval == 0) or \
+                                       (depth_close and not getattr(orch, "_last_depth_close_flag", False))
+                        # 다음 step을 위한 depth_close 상태 저장 (edge trigger)
+                        setattr(orch, "_last_depth_close_flag", depth_close)
+                        if should_query:
                             _ensure_fresh_rgb()
                             orch.query_async(base_rgb)
                     elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
@@ -947,7 +1050,7 @@ def main():
                 if orch.is_done:
                     print(f"\n  [DONE] Task complete at step {total_steps}")
                     break
-                if args.mode == "viva" and orch.is_timed_out:
+                if args.mode in ("viva", "rl_hybrid") and orch.is_timed_out:
                     print(f"\n  [TIMEOUT] Skill timed out at step {total_steps}")
                     break
 
@@ -958,43 +1061,99 @@ def main():
                 # S2/S4: VLA state를 데모 초기 분포에 맞추기
                 # base velocity: 0으로 강제 (데모는 정지 상태에서 시작)
                 # arm state: 실제 물리 state 사용 (BRAKE가 approach init으로 이동시켰으므로)
-                if args.mode == "viva" and orch.current_skill in (
+                if args.mode in ("viva", "rl_hybrid") and orch.current_skill in (
                     SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE
                 ):
                     state[6] = 0.0  # vx
                     state[7] = 0.0  # vy
                     state[8] = 0.0  # wz
 
-                base_rgb_vla = downscale_for_vla(base_rgb, args.vla_width, args.vla_height)
-
-                # Skill-adaptive n_use: chunk=50 예측을 받되
-                #   Navigate/Carry: 30개 사용
-                #   Approach_and_lift/place: 50개 전부 사용 → 긴 horizon planning으로 grasp 정밀도
-                if args.mode == "viva" and orch.current_skill in (
+                # [DIAG 2026-04-20] NAV/CARRY에서 VLA 입력 state의 arm[0:5]를
+                # 데이터셋 tucked raw 값으로 고정. autoregressive drift가
+                # 원인이면 output이 안정돼야 하고, image/text 기반 drift면
+                # 고정해도 drift 유지됨. grip은 실제값 유지 (approach 전이 시
+                # grip closed 신호가 필요하므로).
+                # NAV tucked raw (dataset): _NAV_TUCKED 하단 참조
+                #   [-0.030, -0.214, +0.091, -0.4, +0.058]
+                if args.mode in ("viva", "rl_hybrid") and orch.current_skill in (
                     SkillState.NAVIGATE, SkillState.CARRY
                 ):
-                    n_use = 30
-                else:
-                    n_use = 50
+                    _TUCKED_STATE_ARM = [-0.02966, -0.213839, 0.09066, -0.4, 0.058418]
+                    for _i in range(5):
+                        state[_i] = _TUCKED_STATE_ARM[_i]
 
-                _t_vla0 = time.perf_counter()
-                action = vla.get_action_9d(base_rgb_vla, wrist_rgb, state, instruction, n_use=n_use)
-                _t_vla_sum += time.perf_counter() - _t_vla0
-                _t_vla_n += 1
+                # ── rl_hybrid: S1/S3 → RL expert, S2/S4 → VLA ──
+                _used_rl_expert = False
+                if args.mode == "rl_hybrid" and orch.current_skill == SkillState.NAVIGATE:
+                    # S1: lookup table base + arm tucked
+                    _base_cmd = _NAV_INST_TO_ACTION.get(instruction, [0.0, 0.5, 0.0])
+                    action = np.zeros(9, dtype=np.float32)
+                    # arm = NAV_TUCKED_ACTION (dataset navigate 평균 액션 — 카메라 self-occlusion
+                    # 최소화). 이전엔 APPROACH_INIT 사용 → 팔이 프런트 카메라에 들어와서
+                    # depth=~0.3m 오탐 → safety layer가 base 차단 → stuck 문제 발생.
+                    action[0:6] = cams["_tucked_action"]
+                    action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
+                    _used_rl_expert = True
+
+                elif args.mode == "rl_hybrid" and orch.current_skill == SkillState.CARRY and _rl_carry_dp is not None:
+                    # S3: carry BC+ResiP (39D obs)
+                    _dir = _CARRY_INST_TO_DIR.get(instruction, [0, 1, 0])
+                    _rl_carry_dir_cmd[:] = torch.tensor(_dir, dtype=torch.float32, device=device)
+                    obs_t = obs["policy"].to(device) if isinstance(obs, dict) else obs.to(device)
+                    carry_obs = torch.cat([
+                        obs_t, _rl_carry_dir_cmd.unsqueeze(0), _rl_carry_init_arm,
+                    ], dim=-1)
+                    with torch.no_grad():
+                        base_nact = _rl_carry_dp.base_action_normalized(carry_obs)
+                        if _rl_carry_resip is not None:
+                            nobs = _rl_carry_dp.normalizer(carry_obs, "obs", forward=True).clamp(-3, 3)
+                            nobs = torch.nan_to_num(nobs, nan=0.0)
+                            ri = torch.cat([nobs, base_nact], dim=-1)
+                            ra = _rl_carry_resip.actor_mean(ri).clamp(-1, 1)
+                            nact = base_nact + ra * _rl_carry_per_dim
+                        else:
+                            nact = base_nact
+                        act_t = _rl_carry_dp.normalizer(nact, "action", forward=False).clamp(-1, 1)
+                    action = act_t.squeeze(0).cpu().numpy()
+                    _used_rl_expert = True
+
+                elif args.mode == "rl_hybrid" and orch.current_skill == SkillState.CARRY:
+                    # S3 expert 없음: lookup table fallback
+                    _nav_equiv = _CARRY_TO_NAV_INST.get(instruction, "navigate forward with arm tucked")
+                    _base_cmd = _NAV_INST_TO_ACTION.get(_nav_equiv, [0.0, 0.5, 0.0])
+                    action = np.zeros(9, dtype=np.float32)
+                    action[0:6] = [-0.00306, -0.89805, 0.94939, 0.87188, -0.5546, -0.71724]
+                    action[6] = _base_cmd[0]; action[7] = _base_cmd[1]; action[8] = _base_cmd[2]
+                    _used_rl_expert = True
+
+                if not _used_rl_expert:
+                    # VLA action (viva / single_vla / rl_hybrid S2,S4)
+                    base_rgb_vla = downscale_for_vla(base_rgb, args.vla_width, args.vla_height)
+
+                    if args.mode in ("viva", "rl_hybrid") and orch.current_skill in (
+                        SkillState.NAVIGATE, SkillState.CARRY
+                    ):
+                        n_use = 10
+                    else:
+                        n_use = 50
+
+                    _t_vla0 = time.perf_counter()
+                    action = vla.get_action_9d(base_rgb_vla, wrist_rgb, state, instruction, n_use=n_use)
+                    _t_vla_sum += time.perf_counter() - _t_vla0
+                    _t_vla_n += 1
 
                 # Clamp 제거 (2026-04-17): ±0.95 clamp가 학습 분포(~±1.35)를 잘라내서
                 # gripper grasp 불가 + arm motion 제한. Env 내부의 torch.clamp(arm_targets,
                 # arm_lo, arm_hi)가 joint 한계 내에서 최종 safety 담당.
                 # action[:6] = np.clip(action[:6], -0.95, 0.95)  # REMOVED
 
-                # Navigate/Carry base scaling (2026-04-17, updated):
-                # 0.7 → 0.5로 축소. VLM obstacle check 지연(~1.5s) 동안 충돌 방지 위해
-                # 로봇 속도 절반으로. 0.5 × 0.5 m/s = 0.25 m/s 기준 → 1.5s 동안 0.24m 이동 (< 0.3m trigger).
-                # Approach_and_lift/place는 정밀 grasp 위해 스케일링 없음.
-                if args.mode == "viva" and orch.current_skill in (
-                    SkillState.NAVIGATE, SkillState.CARRY
-                ):
-                    action[6:9] *= 0.5
+                # Navigate/Carry base scaling — VLM obstacle check 지연(~1.5s) 동안 충돌 방지.
+                # 0.5 × 0.5 m/s = 0.25 m/s → 1.5s 동안 0.24m 이동 (< 0.3m trigger).
+                # S2/S4 (Approach/Place)는 VLA가 학습 분포대로 base/arm 협응해야 하므로
+                # scaling 적용 안 함 — 기존 0.3x 때문에 base 움직임이 과도하게 죽는 문제 있었음.
+                if args.mode in ("viva", "rl_hybrid"):
+                    if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
+                        action[6:9] *= 0.5
 
                 # (g) Safety layer — 스킬별 분기 (2026-04-17 updated)
                 #     S1/S3: depth < safety_dist 시 VLM obstacle check 기반 판단
@@ -1005,7 +1164,7 @@ def main():
                 #            BUT: VLM obstacle check pending 중이면 전진 감속 (충돌 방지)
                 stopped = False
                 if args.enable_safety and depth_min is not None and depth_min < args.safety_dist:
-                    if args.mode == "viva":
+                    if args.mode in ("viva", "rl_hybrid"):
                         if orch.safety_layer_active:
                             # S1/S3: VLM-based judgment
                             if not orch.obstacle_cleared and float(action[7]) > 0:
@@ -1015,16 +1174,9 @@ def main():
                                 stopped = True
                                 safety_stops += 1
                             # obstacle_cleared=True 면 VLM이 OK 판정 → 전진 허용
-                        # S2/S4: VLM 응답 대기 중이고 obstacle 의심 시 전진 감속
-                        elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
-                            if orch.is_pending and not orch.obstacle_cleared and float(action[7]) > 0:
-                                action = action.copy()
-                                if depth_min < 0.2:
-                                    action[7] = 0.0   # 매우 가까움 → 완전 정지
-                                else:
-                                    action[7] *= 0.1   # 0.2~0.3m → 강하게 감속
-                                stopped = True
-                                safety_stops += 1
+                        # S2/S4: safety layer 비활성 (목표물에 접근해야 하므로)
+                        # elif orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
+                        #     pass
                     elif args.mode == "single_vla":
                         if float(action[7]) > 0:
                             action = action.copy()
@@ -1035,7 +1187,12 @@ def main():
                 # (h) 스킬 전환 감지 → VLA buffer 리셋
                 #     중요: 스킬이 바뀌면 이전 스킬의 action chunk가 남아있을 수 있다.
                 #     특히 S2→S3 전환 시 S2의 arm action이 남아있으면 물체를 놓아버린다.
-                if args.mode == "viva" and prev_skill != orch.current_skill:
+                if args.mode in ("viva", "rl_hybrid") and prev_skill != orch.current_skill:
+                    # rl_hybrid: S2→S3 전환 시 carry init arm pose 캡처
+                    if args.mode == "rl_hybrid" and orch.current_skill == SkillState.CARRY:
+                        _jp_c = env.robot.data.joint_pos[0]
+                        _rl_carry_init_arm[0, :5] = _jp_c[env.arm_idx[:5]]
+                        _rl_carry_init_arm[0, 5] = _jp_c[env.arm_idx[5]]
                     vla.reset_buffer()
 
                     # Navigate → Approach/Place 전환 시: 로봇 정지 (데모 초기조건 맞추기)
@@ -1043,12 +1200,11 @@ def main():
                     # navigate에서 전환 시 잔여 속도가 있으면 VLA가 그 속도를 유지해버림.
                     if prev_skill in (SkillState.NAVIGATE, SkillState.CARRY) and \
                        orch.current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
-                        # BRAKE: base 정지만 (arm은 현재 상태 유지)
+                        # BRAKE: base 정지 + arm을 approach 초기 action으로
                         _BRAKE_STEPS = 15
-                        _cur = get_state_9d(env)
                         _stop = np.zeros(9, dtype=np.float32)
-                        _stop[:6] = _cur[:6]  # arm+grip 현재 유지
-                        print(f"  [BRAKE] base stop ({_BRAKE_STEPS} steps)")
+                        _stop[:6] = cams["_approach_init_action"]
+                        print(f"  [BRAKE] arm → approach_init, base stop ({_BRAKE_STEPS} steps)")
                         for _br in range(_BRAKE_STEPS):
                             action_t = torch.tensor(_stop, dtype=torch.float32,
                                                     device=device).unsqueeze(0)
@@ -1056,6 +1212,25 @@ def main():
                             env.sim.render()
                             total_steps += 1
                         print(f"  [BRAKE] complete")
+                        prev_skill = orch.current_skill
+                        continue  # 루프 재시작: 새 이미지 + 새 instruction으로 VLA 호출
+
+                    # S2 → S3 (carry) 전환: arm을 carry init에 stabilize
+                    # 학습 데이터의 carry 첫 프레임 action 평균으로 10 step 유지
+                    # → 물체 안정 + VLA 첫 chunk가 학습 분포 외 값 출력해도 급작 모션 방지
+                    if prev_skill == SkillState.APPROACH_AND_LIFT and \
+                       orch.current_skill == SkillState.CARRY:
+                        _BRAKE_STEPS = 10
+                        _stop = np.zeros(9, dtype=np.float32)
+                        _stop[:6] = cams["_carry_init_action"]  # [+0.027, -0.994, +0.992, +0.028, -0.576, -0.373]
+                        print(f"  [BRAKE] S2→S3 arm → carry_init, base stop ({_BRAKE_STEPS} steps)")
+                        for _br in range(_BRAKE_STEPS):
+                            action_t = torch.tensor(_stop, dtype=torch.float32,
+                                                    device=device).unsqueeze(0)
+                            obs, rew, term, trunc, info = env.step(action_t)
+                            env.sim.render()
+                            total_steps += 1
+                        print(f"  [BRAKE] S2→S3 complete")
                         prev_skill = orch.current_skill
                         continue  # 루프 재시작: 새 이미지 + 새 instruction으로 VLA 호출
 
@@ -1075,7 +1250,7 @@ def main():
                     act_vx = env.robot.data.root_lin_vel_b[0, 0].item()
                     act_vy = env.robot.data.root_lin_vel_b[0, 1].item()
                     act_wz_real = env.robot.data.root_ang_vel_b[0, 2].item()
-                    sk = orch.current_skill.value if args.mode == "viva" else "single"
+                    sk = orch.current_skill.value if args.mode in ("viva", "rl_hybrid") else "single"
                     inst_escaped = instruction.replace("\t", " ").replace("\n", " ")
                     action_log_f.write(
                         f"{trial+1}\t{total_steps}\t{sk}\t{inst_escaped}\t"
@@ -1090,7 +1265,7 @@ def main():
                 if _frame_save_dir is not None and total_steps % args.frame_save_interval == 0:
                     _trial_dir = os.path.join(_frame_save_dir, f"trial_{trial+1}")
                     os.makedirs(_trial_dir, exist_ok=True)
-                    sk = orch.current_skill.value if args.mode == "viva" else "single"
+                    sk = orch.current_skill.value if args.mode in ("viva", "rl_hybrid") else "single"
                     _fname = f"step_{total_steps:05d}_{sk}"
                     if base_rgb is not None:
                         Image.fromarray(base_rgb).save(os.path.join(_trial_dir, f"{_fname}_base.jpg"), quality=90)
@@ -1108,7 +1283,7 @@ def main():
                     )
 
                 # (i') Stuck 감지 — navigate / carry 중에만, warmup 30 step 후
-                if args.mode == "viva" and total_steps > 30 and \
+                if args.mode in ("viva", "rl_hybrid") and total_steps > 30 and \
                    orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
                     cmd_speed = abs(float(action[6])) + abs(float(action[7])) + abs(float(action[8]))
                     actual_lin = env.robot.data.root_lin_vel_b[0, :2]
@@ -1155,7 +1330,7 @@ def main():
                 if total_steps % 10 == 0:
                     elapsed = time.time() - t_start
                     hz = total_steps / elapsed if elapsed > 0 else 0
-                    skill_str = orch.current_skill.value if args.mode == "viva" else "single"
+                    skill_str = orch.current_skill.value if args.mode in ("viva", "rl_hybrid") else "single"
                     a = action
                     s = get_state_9d(env)  # real robot state [arm5, grip, vx, vy, wz]
                     vla_base = f"base: {a[6]:+.2f}, {a[7]:+.2f}, {a[8]:+.2f}"
@@ -1189,7 +1364,7 @@ def main():
 
         # Trial 요약 + ground-truth 결과
         elapsed = time.time() - t_start
-        skill_str = orch.current_skill.value if args.mode == "viva" else "single"
+        skill_str = orch.current_skill.value if args.mode in ("viva", "rl_hybrid") else "single"
 
         # Stuck fail 반영
         if s1_stuck_fail:
@@ -1198,7 +1373,7 @@ def main():
             gt_s3_success = False
 
         # S3 success: drop 없이 carry 단계 끝까지 진행 (또는 carry 도달 후 done)
-        if args.mode == "viva":
+        if args.mode in ("viva", "rl_hybrid"):
             # carry까지 진입했고 drop/stuck 안 났으면 S3 성공
             if seen_skill_s3 and not s3_drop_detected and not s3_stuck_fail:
                 # 추가 조건: trial 종료 시점에 여전히 물체 들고있어야 함
@@ -1230,8 +1405,8 @@ def main():
             "s1_stuck": s1_stuck_fail,
             "s3_stuck": s3_stuck_fail,
             "final_skill": skill_str,
-            "timed_out": orch.is_timed_out if args.mode == "viva" else False,
-            "s2_attempts": orch.s2_attempt_count if args.mode == "viva" else 0,
+            "timed_out": orch.is_timed_out if args.mode in ("viva", "rl_hybrid") else False,
+            "s2_attempts": orch.s2_attempt_count if args.mode in ("viva", "rl_hybrid") else 0,
         })
 
         print(f"  Trial {trial+1} summary: {total_steps} steps, {elapsed:.0f}s, "
