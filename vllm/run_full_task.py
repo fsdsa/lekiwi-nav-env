@@ -1148,11 +1148,12 @@ def main():
                 # action[:6] = np.clip(action[:6], -0.95, 0.95)  # REMOVED
 
                 # Navigate/Carry base scaling — VLM obstacle check 지연(~1.5s) 동안 충돌 방지.
-                # 0.5 × 0.5 m/s = 0.25 m/s → 1.5s 동안 0.24m 이동 (< 0.3m trigger).
-                # S2/S4 (Approach/Place)는 VLA가 학습 분포대로 base/arm 협응해야 하므로
-                # scaling 적용 안 함 — 기존 0.3x 때문에 base 움직임이 과도하게 죽는 문제 있었음.
+                # navigate 0.5→0.8 상향(0.25→0.4 m/s, ~1.6x). carry는 물체 운반이라 0.5 유지.
+                # S2/S4 (Approach/Place)는 VLA가 학습 분포대로 base/arm 협응해야 하므로 미적용.
                 if args.mode in ("viva", "rl_hybrid"):
-                    if orch.current_skill in (SkillState.NAVIGATE, SkillState.CARRY):
+                    if orch.current_skill == SkillState.NAVIGATE:
+                        action[6:9] *= 0.8
+                    elif orch.current_skill == SkillState.CARRY:
                         action[6:9] *= 0.5
 
                 # (g) Safety layer — 스킬별 분기 (2026-04-17 updated)

@@ -1180,11 +1180,10 @@ def main():
 
             # Lookup table: VLM instruction → 고정 base velocity (normalized action)
             _NAV_INST_TO_ACTION = {
-                # 선형 이동 0.5→0.9 (속도 0.25→0.45 m/s, ~1.8x). turn 세기(0.33)는 유지.
-                "navigate forward":      [0.0, 0.9, 0.0],
-                "navigate backward":     [0.0, -0.9, 0.0],
-                "navigate strafe left":  [-0.9, 0.0, 0.0],
-                "navigate strafe right": [0.9, 0.0, 0.0],
+                "navigate forward":      [0.0, 0.5, 0.0],
+                "navigate backward":     [0.0, -0.5, 0.0],
+                "navigate strafe left":  [-0.5, 0.0, 0.0],
+                "navigate strafe right": [0.5, 0.0, 0.0],
                 "navigate turn left":    [0.0, 0.0, -0.33],
                 "navigate turn right":   [0.0, 0.0, 0.33],
             }
