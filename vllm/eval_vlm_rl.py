@@ -939,6 +939,8 @@ def main():
     safety_stops = 0
     _s2_lift_counter = 0
     _s2_step_counter = 0
+    _drop_ct = 0      # carry/place 드롭 연속 카운터
+    _topple_ct = 0    # S2 approach 중 객체 topple 연속 카운터
     vlm_calls_log = []
     vla_calls_log = []
     t_start = time.time()
@@ -1033,11 +1035,10 @@ def main():
             grip_pos = jp[env.gripper_idx].item()
 
             # S2: lift 판정 + 실패 시 리셋 (train_resip combined 기준)
+            # ── S2 lift 성공 판정 (objZ>0.05 + contact 200step 유지 → CARRY) ──
             if orch.current_skill == SkillState.APPROACH_AND_LIFT:
                 obj_z = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
                 _s2_step_counter += 1
-
-                # lift 성공: objZ>0.05 + contact + 200step 유지 → S3
                 if contact and obj_z > 0.05:
                     _s2_lift_counter += 1
                 else:
@@ -1048,20 +1049,54 @@ def main():
                     _s2_lift_counter = 0
                     _s2_step_counter = 0
 
-                # ★ 조기 리셋 제거: "lift 실패"(700step)로 리셋하지 않음 →
-                #   15분 attempt 타임아웃까지 계속 시도. (사용자 요청)
-                # 물체가 바닥 밑으로 관통/소실(회복 불가)된 경우만 즉시 재스폰.
-                #   (objZ<-0.15: 정상 바닥 물체 objZ~0.03은 트리거 안 됨)
-                if obj_z < -0.15 and _s2_step_counter > 10:
-                    log.info(f"[S2 LOST] objZ={obj_z:.3f} (바닥 관통/소실) → 재스폰")
-                    obs = reset_with_scene(env, args, scene_path, log)
-                    orch.reset_for_new_trial()
-                    _force_tucked[0] = True
-                    prev_skill = SkillState.NAVIGATE
-                    _attempt_start = time.time()
-                    _s2_lift_counter = 0
-                    _s2_step_counter = 0
-                    continue
+            # ── 실패 감지: 죽은 시도(회복 불가)는 15분 안 기다리고 즉시 재스폰 ──
+            #   eval_carry/eval_s3 임계값 미러 (topple objZ<0.026, drop objZ<0.03).
+            #   단, "아직 못 잡음"(lift 진행중)은 실패 아님 → 15분 attempt까지 계속 시도.
+            #   각 조건 ~20 연속(=약 2s)이어야 트리거 (순간 dip 오발동 방지).
+            _sk = orch.current_skill
+            _fail = None
+            if _sk in (SkillState.APPROACH_AND_LIFT, SkillState.CARRY,
+                       SkillState.APPROACH_AND_PLACE):
+                _obz = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+                if _obz < -0.15:                                    # (1) 바닥 관통/소실
+                    _fail = f"객체 소실(objZ={_obz:.3f})"
+                    _drop_ct = _topple_ct = 0
+                elif _sk == SkillState.APPROACH_AND_LIFT:           # (2) 파지 전 topple(못 잡음)
+                    _topple_ct = _topple_ct + 1 if (_obz < 0.026 and _s2_step_counter > 20) else 0
+                    _drop_ct = 0
+                    if _topple_ct >= 20:
+                        _fail = f"approach 중 객체 topple(objZ={_obz:.3f})"
+                elif _sk == SkillState.CARRY:                       # (3) carry 중 드롭(벽 충돌 등)
+                    _drop_ct = _drop_ct + 1 if (_obz < 0.03) else 0
+                    _topple_ct = 0
+                    if _drop_ct >= 20:
+                        _fail = f"carry 중 드롭(objZ={_obz:.3f})"
+                else:                                               # (4) place 중 드롭(dest에서 먼 곳)
+                    _topple_ct = 0
+                    if _obz < 0.03:
+                        _sd = torch.norm(env.object_pos_w[0, :2]
+                                         - env.dest_object_pos_w[0, :2]).item()
+                        # dest 근처(<0.5m) 드롭 = 정상 place 시도(성공은 orchestrator가 판정)
+                        _drop_ct = _drop_ct + 1 if _sd > 0.5 else 0
+                        if _drop_ct >= 20:
+                            _fail = f"place 실패: dest에서 {_sd:.2f}m 떨어진 곳에 드롭"
+                    else:
+                        _drop_ct = 0
+            else:                                                   # navigate 등: 카운터 클리어
+                _drop_ct = _topple_ct = 0
+
+            if _fail is not None:
+                log.info(f"[FAIL] {_fail} → easy 재스폰")
+                obs = reset_with_scene(env, args, scene_path, log)
+                orch.reset_for_new_trial()
+                _force_tucked[0] = True
+                prev_skill = SkillState.NAVIGATE
+                _attempt_start = time.time()
+                _drop_ct = 0
+                _topple_ct = 0
+                _s2_lift_counter = 0
+                _s2_step_counter = 0
+                continue
 
             # arm/grip 캐시 갱신 (OBSTACLE 시 _is_actually_lifted()에 필요)
             orch.check_lifted_complete(arm_joints, grip_pos, contact)
