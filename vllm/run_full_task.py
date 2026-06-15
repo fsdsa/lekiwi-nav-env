@@ -892,6 +892,7 @@ def main():
         gt_s2_lift_counter = 0
         gt_s2_lift_hold = 200  # eval_s3.py 동일
         s3_drop_detected = False
+        topple_counter = 0     # 약병 topple(objZ<0.022) 연속 카운터
         seen_skill_s2 = False
         seen_skill_s3 = False
         # Stuck 감지 (navigate / carry)
@@ -978,6 +979,18 @@ def main():
                         objZ = 0.0
                     grip_closed = grip_pos < float(env.cfg.grasp_gripper_threshold)
                     held = grip_closed and contact and (objZ > 0.05)
+
+                    # 약병 topple → 즉시 respawn (어느 스킬이든). objZ<0.022 = 완전히 쓰러짐
+                    # (서있음 0.033, 쓰러짐 0.020). carry-only인 drop(0.04)과 별개로
+                    # approach/place에서 로봇이 약병 치어 쓰러뜨린 경우를 잡음. 15연속(노이즈 방지).
+                    if 0.0 < objZ < 0.022:
+                        topple_counter += 1
+                        if topple_counter >= 15:
+                            s3_drop_detected = True
+                            print(f"  [GT] 약병 topple (objZ={objZ:.3f}) at step {total_steps} → respawn")
+                            break
+                    else:
+                        topple_counter = 0
 
                     # S1 success: navigate → S2 전환 (한 번이라도)
                     if orch.current_skill == SkillState.APPROACH_AND_LIFT and not seen_skill_s2:
