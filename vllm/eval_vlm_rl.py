@@ -214,7 +214,15 @@ def setup_logger(log_file: str):
 #  Keyboard (pynput — hold 감지 지원)
 # ═══════════════════════════════════════════════════════════════════════
 
-from pynput import keyboard as pynput_kb
+try:
+    from pynput import keyboard as pynput_kb
+    _HAS_KB = True
+except Exception as _kb_e:   # 미설치(ModuleNotFound) 또는 X(DISPLAY) 미연결 등
+    pynput_kb = None
+    _HAS_KB = False
+    print(f"  [KB] pynput 사용 불가 ({type(_kb_e).__name__}) → 키보드 제어 비활성화. "
+          f"자동 진행(실패감지+15분 재스폰), 종료는 Ctrl+C. "
+          f"키보드 쓰려면 'pip install pynput' + DISPLAY 설정.")
 
 _pressed: dict[str, bool] = {}
 _commands: list[str] = []  # one-shot 명령 (q, t, 1-4)
@@ -245,9 +253,16 @@ def _on_release(k):
 _kb_listener = None
 
 def kb_setup():
-    global _kb_listener
-    _kb_listener = pynput_kb.Listener(on_press=_on_press, on_release=_on_release)
-    _kb_listener.start()
+    global _kb_listener, _HAS_KB
+    if not _HAS_KB:
+        return
+    try:
+        _kb_listener = pynput_kb.Listener(on_press=_on_press, on_release=_on_release)
+        _kb_listener.start()
+    except Exception as e:   # X 연결 실패 등 → 키보드 없이 자동 진행
+        _HAS_KB = False
+        _kb_listener = None
+        print(f"  [KB] 리스너 시작 실패 ({type(e).__name__}) → 키보드 비활성화 (자동 진행)")
 
 def kb_restore():
     if _kb_listener:
