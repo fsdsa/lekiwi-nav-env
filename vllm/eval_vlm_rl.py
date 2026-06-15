@@ -55,7 +55,10 @@ parser.add_argument("--num_trials", type=int, default=1, help="(참고용; 본 �
 parser.add_argument("--camera_width", type=int, default=1280)
 parser.add_argument("--camera_height", type=int, default=800)
 parser.add_argument("--vlm_interval", type=int, default=30)
-parser.add_argument("--max_total_steps", type=int, default=6000)
+parser.add_argument("--max_total_steps", type=int, default=500000,
+    help="전체 run 상한(스텝). 기본=사실상 무제한(여러 attempt 연속). 종료는 'q' 키.")
+parser.add_argument("--attempt_timeout_min", type=float, default=15.0,
+    help="한 attempt(스폰) 최대 시간(분). 이 시간 안에 성공 못하면 재스폰. (조기 리셋 방지)")
 parser.add_argument("--safety_dist", type=float, default=0.0)
 parser.add_argument("--log_file", type=str, default="")
 parser.add_argument("--arm_limit_json", type=str, default="calibration/arm_limits_measured.json")
@@ -569,52 +572,10 @@ def setup_env(args):
         return terminated, truncated
     env._get_dones = _no_terminate_get_dones
 
-    # _reset_idx 패치: 매 리셋마다 scene 안에 스폰 (같은 방 검증)
-    if use_scene:
-        from procthor_scene import (
-            _load_floor_regions, _load_support_floor_z, _find_robot_region,
-            SCENE_PRESETS,
-        )
-        _preset = SCENE_PRESETS.get(args.scene_idx)
-        _sfz = _load_support_floor_z(str(scene_path.resolve()), _preset.support_floor_prim_path)
-        _regions = _load_floor_regions(str(scene_path.resolve()), support_floor_z=_sfz)
-
-        _original_reset_idx = env._reset_idx
-        def _scene_reset_idx(env_ids):
-            _original_reset_idx(env_ids)
-            if 0 in env_ids:
-                ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
-                _src_ov = SceneSpawnCfg(
-                    min_robot_dist=float(getattr(env.cfg, "object_dist_min", 0.8)) / ss,
-                    max_robot_dist=float(getattr(env.cfg, "object_dist_max", 1.2)) / ss,
-                    clearance_radius=0.14,
-                )
-                for _r in range(50):
-                    try:
-                        _layout = sample_scene_task_layout(
-                            args.scene_idx, scene_usd=scene_path,
-                            scene_scale=args.scene_scale,
-                            source_spawn_override=_src_ov,
-                            robot_faces_source=True,
-                            randomize_robot_xy=True,
-                        )
-                        # 같은 방 검증: 로봇과 source가 같은 room에 있는지
-                        _robot_unscaled = (_layout.robot_xy[0] / ss, _layout.robot_xy[1] / ss)
-                        _source_unscaled = (_layout.source_xy[0] / ss, _layout.source_xy[1] / ss)
-                        _robot_reg = _find_robot_region(_robot_unscaled, _regions)
-                        _source_reg = _find_robot_region(_source_unscaled, _regions)
-                        if _robot_reg and _source_reg and _robot_reg.path == _source_reg.path:
-                            break  # 같은 방 OK
-                        # 다른 방이면 재시도
-                        if _r < 49:
-                            continue
-                    except RuntimeError:
-                        if _r < 49: continue
-                        raise
-                apply_scene_task_layout(env, _layout)
-                print(f"  [Scene] Robot room: {_robot_reg.path if _robot_reg else '?'}, "
-                      f"Source room: {_source_reg.path if _source_reg else '?'}")
-        env._reset_idx = _scene_reset_idx
+    # ★ _reset_idx 패치 제거 (구 eval_viva_pipeline의 random same-room 스폰):
+    #   재리셋 때마다 난이도와 무관한 random 위치로 스폰돼 "맵 밖/easy 아님" 버그 유발.
+    #   run_full_task.py / run_only_vla.py처럼 패치 없이 env.reset()(기본) + reset_with_scene의
+    #   _DIFFICULTY_MAP 스폰만 사용 → 항상 난이도 위치(easy=room_9)로 재스폰됨.
 
     # Ground cuboid를 검정색으로 변경 (visual material만, physics는 건드리지 않음)
     import omni.usd
@@ -884,6 +845,7 @@ def main():
     log.info("Setting up environment...")
     env, cams, scene_path = setup_env(args)
     obs = reset_with_scene(env, args, scene_path, log)
+    _attempt_start = time.time()   # attempt(스폰) 시작 시각 — 15분 타임아웃 기준
 
     # DP action buffer reset
     if nav_dp_agent:
@@ -948,6 +910,11 @@ def main():
         vlm_server=args.vlm_server, vlm_model=args.vlm_model,
         source_object=source, dest_object=dest,
         user_request=args.user_command, jpeg_quality=80,
+        # 15분 attempt 동안 계속 재시도하도록 스킬 timeout·재시도 상한을 크게
+        # (orchestrator가 조기에 give-up/transition 막아 reset_with_scene만 리셋 담당)
+        navigate_timeout=999999, approach_lift_timeout=999999,
+        carry_timeout=999999, approach_place_timeout=999999,
+        s2_max_attempts=999, s4_max_attempts=999,
     )
 
     # ── 키보드 ──
@@ -988,6 +955,9 @@ def main():
                     orch.reset_for_new_trial()
                     _force_tucked[0] = True
                     prev_skill = SkillState.NAVIGATE
+                    _attempt_start = time.time()
+                    _s2_lift_counter = 0
+                    _s2_step_counter = 0
                     continue
                 elif cmd == 't':
                     log.info("[USER] Force TARGET_FOUND")
@@ -1004,6 +974,19 @@ def main():
                 elif cmd == '4':
                     log.info("[USER] Force → S4 Approach & Place")
                     orch._transition_to(SkillState.APPROACH_AND_PLACE)
+
+            # ── attempt 타임아웃: 지정 시간(기본 15분) 안에 성공 못하면 재스폰 ──
+            if time.time() - _attempt_start >= args.attempt_timeout_min * 60.0:
+                _el = (time.time() - _attempt_start) / 60.0
+                log.info(f"[ATTEMPT TIMEOUT] {_el:.1f}분 경과, 미성공 → easy 재스폰")
+                obs = reset_with_scene(env, args, scene_path, log)
+                orch.reset_for_new_trial()
+                _force_tucked[0] = True
+                prev_skill = SkillState.NAVIGATE
+                _attempt_start = time.time()
+                _s2_lift_counter = 0
+                _s2_step_counter = 0
+                continue
 
             # 연속 입력 (hold)
             kb_vx = kb_vy = kb_wz = 0.0
@@ -1062,24 +1045,17 @@ def main():
                     _s2_lift_counter = 0
                     _s2_step_counter = 0
 
-                # 실패: 700step 내 lift 못하면 (objZ<0.04) 리셋
-                if _s2_step_counter >= 700 and obj_z < 0.04:
-                    log.info(f"[S2 FAIL] objZ={obj_z:.3f} at {_s2_step_counter} steps → reset")
+                # ★ 조기 리셋 제거: "lift 실패"(700step)로 리셋하지 않음 →
+                #   15분 attempt 타임아웃까지 계속 시도. (사용자 요청)
+                # 물체가 바닥 밑으로 관통/소실(회복 불가)된 경우만 즉시 재스폰.
+                #   (objZ<-0.15: 정상 바닥 물체 objZ~0.03은 트리거 안 됨)
+                if obj_z < -0.15 and _s2_step_counter > 10:
+                    log.info(f"[S2 LOST] objZ={obj_z:.3f} (바닥 관통/소실) → 재스폰")
                     obs = reset_with_scene(env, args, scene_path, log)
                     orch.reset_for_new_trial()
                     _force_tucked[0] = True
                     prev_skill = SkillState.NAVIGATE
-                    _s2_lift_counter = 0
-                    _s2_step_counter = 0
-                    continue
-
-                # topple: objZ<0.026 → 리셋
-                if obj_z < 0.026 and _s2_step_counter > 10:
-                    log.info(f"[S2 TOPPLE] objZ={obj_z:.3f} → reset")
-                    obs = reset_with_scene(env, args, scene_path, log)
-                    orch.reset_for_new_trial()
-                    _force_tucked[0] = True
-                    prev_skill = SkillState.NAVIGATE
+                    _attempt_start = time.time()
                     _s2_lift_counter = 0
                     _s2_step_counter = 0
                     continue
@@ -1251,6 +1227,9 @@ def main():
             if term.any() or trunc.any():
                 log.info(f"[EPISODE END] step={total_steps}")
                 obs = reset_with_scene(env, args, scene_path, log)
+                _attempt_start = time.time()
+                _s2_lift_counter = 0
+                _s2_step_counter = 0
 
     except KeyboardInterrupt:
         log.info("[Ctrl+C] Stopping")
