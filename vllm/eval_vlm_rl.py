@@ -547,7 +547,10 @@ def setup_env(args):
             floor_z = _load_support_floor_z(str(scene_path.resolve()), preset.support_floor_prim_path)
         else:
             floor_z = 0.0
-        cfg.builtin_ground_z = floor_z * args.scene_scale
+        # -0.1: 검정 ground cuboid를 procthor 바닥보다 0.1m 아래로 내림 → 진짜
+        #   텍스처 바닥이 보임. (안 내리면 ground가 바닥과 z-fighting → "바닥 검정" 버그.
+        #   run_full_task.py / run_only_vla.py와 동일)
+        cfg.builtin_ground_z = floor_z * args.scene_scale - 0.1
         cfg.sim.device = "cpu"
         print(f"  [Scene] {scene_path}, floor_z={floor_z:.4f}, scale={args.scene_scale}, device=cpu")
     else:

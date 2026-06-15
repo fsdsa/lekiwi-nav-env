@@ -84,6 +84,16 @@ def classify_user_request(
         if "dest_object" not in result:
             result["dest_object"] = ""
 
+        # v5 학습 라벨과 형식 일치: lowercase + 공백 정규화.
+        # 예: "Medicine Bottle" / "medicine_bottle" / "  medicine  bottle  " 모두
+        # "medicine bottle"로 정규화 → S2 instruction이 v5 task 라벨과 exact match.
+        def _normalize_obj(s: str) -> str:
+            s = str(s).lower().replace("_", " ").replace("-", " ")
+            return " ".join(s.split()).strip()
+
+        result["source_object"] = _normalize_obj(result["source_object"])
+        result["dest_object"] = _normalize_obj(result["dest_object"])
+
         return result
 
     except Exception as e:
@@ -249,19 +259,43 @@ LIFTED_POSE_RANGE = {
 }
 
 
+# v5 학습 task label과 완전 일치 — VLM이 이 문자열을 그대로 출력하도록 프롬프트됨.
 NAVIGATE_COMMANDS = {
-    "navigate forward", "navigate backward",
-    "navigate strafe left", "navigate strafe right",
-    "navigate turn left", "navigate turn right",
+    "navigate forward with arm tucked",
+    "navigate backward with arm tucked",
+    "navigate strafe left with arm tucked",
+    "navigate strafe right with arm tucked",
+    "navigate turn left with arm tucked",
+    "navigate turn right with arm tucked",
     "TARGET_FOUND",
 }
 
 CARRY_COMMANDS = {
-    "carry forward", "carry backward",
-    "carry strafe left", "carry strafe right",
-    "carry turn left", "carry turn right",
+    "carry forward holding the object",
+    "carry backward holding the object",
+    "carry left holding the object",
+    "carry right holding the object",
+    "carry turn left holding the object",
+    "carry turn right holding the object",
     "TARGET_FOUND",
 }
+
+# v5 dataset에서 학습된 approach-and-lift task 대상 object (현재 단일).
+# VLM classify가 "blue medicine bottle" 같이 수식어를 붙여와도 canonical name으로 정규화해서
+# S2 instruction = "approach and lift the medicine bottle" 이 되도록 함.
+S2_TRAINED_OBJECTS = ["medicine bottle"]
+
+
+def canonicalize_approach_target(source_object: str) -> str:
+    """source_object 안에 학습된 canonical label이 포함되어 있으면 그 label을 반환.
+    없으면 원본 반환 (fallback — OOD 경고는 호출 측에서).
+    underscore/hyphen/중복공백도 방어적으로 정규화."""
+    s = source_object.lower().replace("_", " ").replace("-", " ")
+    s = " ".join(s.split()).strip()
+    for canonical in S2_TRAINED_OBJECTS:
+        if canonical in s:
+            return canonical
+    return source_object
 
 
 class SkillState(Enum):
@@ -330,7 +364,7 @@ class VIVAOrchestrator:
 
         # VLM 비동기 상태
         self._lock = threading.Lock()
-        self._latest_instruction = "navigate forward"
+        self._latest_instruction = "navigate forward with arm tucked"
         self._pending = False
         self._done = False
         self._timed_out = False
@@ -345,6 +379,20 @@ class VIVAOrchestrator:
         self._obstacle_cleared = False
         # depth 변화 추적: CONTINUE 후 한번 멀어졌다가 다시 가까워지면 새 장애물로 간주
         self._prev_depth_clear = False
+        # 최신 depth_min — VLM TARGET_FOUND 거리 guard에 사용
+        self._latest_depth_min: float | None = None
+        # TARGET_FOUND 수용 거리 (m). VLM이 먼 거리의 object에 premature TARGET_FOUND
+        # 반환해도 guard에서 reject. 학습 approach 시작 거리 분포 고려해 1.2m로 설정.
+        self._target_found_max_depth = 1.2
+        # TARGET_FOUND reject 이후 다음 VLM 호출에 피드백 주기 위한 flag.
+        # Orchestrator가 거절했다는 사실 + 실제 거리를 다음 프롬프트에 추가해서
+        # VLM이 반복 TARGET_FOUND 내지 않고 방향 명령 내도록 유도.
+        self._last_target_reject_depth: float | None = None
+        # TARGET_FOUND 디바운스: 전환 전 N회 연속 TARGET_FOUND 요구.
+        # =1 → 디바운스 사실상 OFF (strict 프롬프트에 맡김). 단발 오인식 재발 시 ↑.
+        # 주의: vlm_interval이 크면 streak 대기 중 로봇이 직전 명령으로 계속 전진 → 오버슈트.
+        self._target_found_streak = 0
+        self._target_found_required = 1
 
         # S4 place complete 연속 카운터
         self._place_complete_count = 0
@@ -430,8 +478,10 @@ class VIVAOrchestrator:
 
     def update_depth_status(self, depth_min: float | None):
         """run_full_task.py에서 매 스텝 호출.
-        CONTINUE(obstacle_cleared=True) 후 depth가 한번 멀어졌다가(>0.5m) 다시
-        가까워지면(<0.3m) 새로운 장애물로 간주하고 obstacle_cleared 리셋."""
+        (1) 최신 depth 저장 → TARGET_FOUND guard에 사용.
+        (2) CONTINUE(obstacle_cleared=True) 후 depth가 한번 멀어졌다가(>0.5m) 다시
+            가까워지면(<0.3m) 새로운 장애물로 간주하고 obstacle_cleared 리셋."""
+        self._latest_depth_min = depth_min
         if not self._obstacle_cleared or depth_min is None:
             return
         if depth_min > 0.5:
@@ -476,7 +526,13 @@ class VIVAOrchestrator:
 
         # S2/S4 진입 시 VLA instruction 고정 + obstacle_cleared 리셋
         if next_skill == SkillState.APPROACH_AND_LIFT:
-            self._latest_instruction = f"approach and lift the {self.source_object}"
+            # source_object("blue medicine bottle" 등) → canonical label("medicine bottle")로
+            # 정규화 → v5 학습 task 문자열과 정확 일치.
+            canonical = canonicalize_approach_target(self.source_object)
+            if canonical != self.source_object.lower().strip():
+                print(f"  [S2] source_object='{self.source_object}' → canonical='{canonical}' "
+                      f"(v5 학습 label 일치)")
+            self._latest_instruction = f"approach and lift the {canonical}"
             self._obstacle_cleared = False
             self._prev_depth_clear = False
         elif next_skill == SkillState.APPROACH_AND_PLACE:
@@ -486,10 +542,10 @@ class VIVAOrchestrator:
             self._place_complete_count = 0
         # S1 진입 시 초기 instruction (S2 OBSTACLE 복귀 시 이전 instruction 잔류 방지)
         elif next_skill == SkillState.NAVIGATE:
-            self._latest_instruction = "navigate forward"
+            self._latest_instruction = "navigate forward with arm tucked"
         # S3 진입 시 초기 instruction
         elif next_skill == SkillState.CARRY:
-            self._latest_instruction = "carry forward"
+            self._latest_instruction = "carry forward holding the object"
 
         print(f"  [SKILL] {prev.value} → {next_skill.value} "
               f"(S2={self._s2_attempt_count}/{self._s2_max_attempts}, "
@@ -519,7 +575,22 @@ class VIVAOrchestrator:
 
     def _handle_target_found(self):
         """navigate/carry에서 VLM이 "TARGET_FOUND" 판단 시 호출.
-        장애물 회피 중이었으면 원래 스킬로 복귀, 아니면 다음 스킬로 전환."""
+        장애물 회피 중이었으면 원래 스킬로 복귀, 아니면 다음 스킬로 전환.
+
+        Depth guard: VLM이 먼 거리 object에 premature TARGET_FOUND를 내는 경우가 있음
+        (Qwen3-VL-8B spatial reasoning 한계). 최신 depth_min이 threshold보다 멀면
+        TARGET_FOUND을 reject하고 현재 skill 유지.
+        """
+        d = self._latest_depth_min
+        if d is not None and d > self._target_found_max_depth:
+            print(f"  [VLM] TARGET_FOUND rejected — depth={d:.2f}m > "
+                  f"{self._target_found_max_depth}m (object still far). "
+                  f"Keep {self._current_skill.value}.")
+            # 다음 NAVIGATE/CARRY 프롬프트에 이 사실을 주입해서 VLM이 TARGET_FOUND
+            # 대신 방향 명령을 내도록 유도.
+            self._last_target_reject_depth = d
+            return
+
         if self._interrupted_skill is not None:
             # 장애물 회피 후 원래 스킬로 복귀
             restored = self._interrupted_skill
@@ -539,7 +610,7 @@ class VIVAOrchestrator:
         self._current_skill = SkillState.NAVIGATE
         self._interrupted_skill = None
         self._skill_step_count = 0
-        self._latest_instruction = "navigate forward"
+        self._latest_instruction = "navigate forward with arm tucked"
         # _pending은 건드리지 않음 — 이전 trial의 async worker가 finally로 해제.
         # 여기서 False로 설정하면 old worker의 finally가 새 trial의 pending을 잘못 해제함.
         self._done = False
@@ -551,6 +622,7 @@ class VIVAOrchestrator:
         self._obstacle_cleared = False
         self._prev_depth_clear = False
         self._place_complete_count = 0
+        self._target_found_streak = 0
         self._s2_attempt_count = 0
         self._s4_attempt_count = 0
         self._generation += 1  # stale async 응답 무시
@@ -571,6 +643,22 @@ class VIVAOrchestrator:
         skill = self._current_skill
         rs = self._robot_status_text
 
+        # TARGET_FOUND reject 직전 call → 이번 프롬프트에 피드백 주입 (1회용)
+        target_reject_hint = ""
+        if self._last_target_reject_depth is not None:
+            d = self._last_target_reject_depth
+            target_reject_hint = (
+                f"\n\nCRITICAL FEEDBACK FROM LAST CALL: You output TARGET_FOUND, but the "
+                f"depth sensor measured {d:.2f}m to the nearest object — too far to start "
+                f"approach (threshold {self._target_found_max_depth}m). "
+                f"DO NOT output TARGET_FOUND this turn. Instead, give a directional "
+                f"navigation command to get the robot CLOSER to the target before declaring "
+                f"TARGET_FOUND. Only output TARGET_FOUND when the target is clearly large in "
+                f"the frame and the depth reads close (< {self._target_found_max_depth}m)."
+            )
+            # 한 번만 피드백 주고 소비 — 다음 call은 깨끗한 프롬프트
+            self._last_target_reject_depth = None
+
         if skill == SkillState.NAVIGATE:
             target = self.source_object
             system_prompt = VIVA_NAVIGATE_SYSTEM_PROMPT.format(
@@ -586,6 +674,7 @@ class VIVAOrchestrator:
                     "Try a different direction first (turn left/right or strafe), "
                     "then approach from a new angle."
                 )
+            system_prompt += target_reject_hint
             user_text = VIVA_NAVIGATE_USER_TEMPLATE
 
         elif skill == SkillState.CARRY:
@@ -604,6 +693,7 @@ class VIVAOrchestrator:
                     "Try a different direction first (turn left/right or strafe), "
                     "then approach from a new angle."
                 )
+            system_prompt += target_reject_hint
             user_text = VIVA_CARRY_USER_TEMPLATE
 
         elif skill == SkillState.APPROACH_AND_LIFT:
@@ -640,54 +730,98 @@ class VIVAOrchestrator:
 
     def _process_vlm_response(self, raw: str) -> str:
         """VLM 응답 파싱 + 스킬 전환 트리거 처리.
-        Chain-of-thought: 여러 줄 응답에서 명령어 추출."""
+
+        S2/S4: "CONTINUE" 또는 "OBSTACLE" 단어 검출 (case-sensitive, word-boundary).
+        S1/S3: 전체 응답에서 v5 학습 task label과 정확히 일치하는 문자열 탐색.
+                - brackets[], 각 줄, raw 전체를 순회하며
+                  (1) exact match (대소문자 무시, 주변 구두점/따옴표 제거)
+                  (2) substring match (최장 일치, 대소문자 무시)
+                  순으로 시도.
+        키워드(TARGET_FOUND/OBSTACLE/CONTINUE)는 프롬프트가 대문자로 출력하도록 지시하므로
+        case-sensitive 매칭 — 자연어 설명에 lowercase "obstacle" 등이 섞여도 오발동 안 함.
+        """
         import re
 
-        cleaned = raw.strip()
-        cleaned_upper = cleaned.upper()
+        raw_stripped = raw.strip()
 
-        # 1. 키워드 우선 검색 (위치/포맷 무관, 대소문자 무시)
-        if "TARGET_FOUND" in cleaned_upper:
-            self._handle_target_found()
+        # 명령은 프롬프트 규약상 "마지막 줄"에 옴. VLM이 reasoning(앞 줄들)에서
+        # "...not close enough to be TARGET_FOUND" 처럼 키워드를 부정문으로 언급해도
+        # 오발동하지 않도록, 마지막 비어있지 않은 줄이 '정확히' TARGET_FOUND일 때만 인정.
+        _ne_lines = [ln.strip() for ln in raw_stripped.splitlines() if ln.strip()]
+        _cmd_line = _ne_lines[-1] if _ne_lines else raw_stripped
+        _cmd_norm = (_cmd_line.strip().strip('"').strip("'").strip('`')
+                     .strip('*').rstrip('.,;:!?').strip())
+
+        # ── 1. TARGET_FOUND (마지막 줄 = 실제 명령이 정확히 TARGET_FOUND일 때만) ──
+        #     디바운스: N회 연속 TARGET_FOUND여야 실제 전환 (단발 오인식 차단).
+        #     확인 대기 중에는 직전 방향 명령을 유지하므로 로봇은 계속 접근함.
+        if _cmd_norm.upper() == "TARGET_FOUND":
+            self._target_found_streak += 1
+            if self._target_found_streak >= self._target_found_required:
+                self._handle_target_found()
+            else:
+                print(f"  [VLM] TARGET_FOUND {self._target_found_streak}/{self._target_found_required} "
+                      f"(연속 확인 필요) — keep {self._current_skill.value}, 계속 접근")
             return self._latest_instruction
+        # TARGET_FOUND가 아닌 응답 → 연속성 깨짐 → streak 리셋
+        self._target_found_streak = 0
 
-        # OBSTACLE: S2/S4에서만 트리거. S1/S3에서는 VLM이 자연어 설명에
-        # "obstacle"을 포함할 수 있으므로 키워드 매칭하지 않음 (명령어 파싱으로 진행).
-        if "OBSTACLE" in cleaned_upper and \
-           self._current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
-            self._handle_obstacle()
-            return self._latest_instruction
-
-        # 2. 대괄호 파싱 (마지막 매치 사용)
-        matches = re.findall(r'\[([^\]]+)\]', cleaned)
-        if matches:
-            cleaned = matches[-1].strip()
-        else:
-            # 3. 마지막 줄에서 추출 (chain-of-thought)
-            lines = [l.strip().strip('"').strip("'") for l in cleaned.split('\n') if l.strip()]
-            cleaned = lines[-1] if lines else cleaned
-
-        cleaned = cleaned.strip('"').strip("'")
-
-        # S2/S4에서는 CONTINUE → obstacle_cleared 설정, instruction 변경 안 함
+        # ── 2. S2/S4 OBSTACLE/CONTINUE 판별 (case-sensitive) ──
         if self._current_skill in (SkillState.APPROACH_AND_LIFT, SkillState.APPROACH_AND_PLACE):
-            if "CONTINUE" in cleaned.upper():
+            if re.search(r'\bOBSTACLE\b', raw_stripped):
+                self._handle_obstacle()
+                return self._latest_instruction
+            if re.search(r'\bCONTINUE\b', raw_stripped):
                 self._obstacle_cleared = True
             else:
-                # VLM이 OBSTACLE/CONTINUE 키워드 없이 자연어 응답한 경우
-                # 안전한 기본값: CONTINUE 처리 (목표물 접근 중이므로 정지보다 진행이 낫다)
-                print(f"  [VLM] S2/S4 obstacle check: unrecognized response '{cleaned[:60]}' "
-                      f"→ treating as CONTINUE")
+                # 키워드 미검출 → 안전한 기본값 CONTINUE (목표물 접근 중 정지보다 진행)
+                print(f"  [VLM] S2/S4 obstacle check: unrecognized response "
+                      f"'{raw_stripped[:60]}' → treating as CONTINUE")
                 self._obstacle_cleared = True
             return self._latest_instruction
 
-        # S1/S3에서는 유효 명령어 검증 후 instruction으로 사용
+        # ── 3. S1/S3: v5 task label 추출 ──
         valid = self._get_valid_commands()
-        if valid is not None and cleaned not in valid:
-            print(f"  [VLM] Invalid command '{cleaned}' for {self._current_skill.value}, "
-                  f"raw='{raw[:80]}', keeping previous")
+        if valid is None:
             return self._latest_instruction
-        return cleaned
+
+        def _norm(s: str) -> str:
+            """Strip wrapping quotes/backticks and trailing punctuation."""
+            s = s.strip().strip('"').strip("'").strip('`').strip('*').strip()
+            s = s.rstrip('.,;:!?')
+            return s.strip()
+
+        # 후보 추출: 최근 출현 우선 (명령은 보통 응답 끝에 옴)
+        # 순서: brackets (last→first) → lines (last→first) → raw 전체
+        candidates = []
+        brackets = re.findall(r'\[([^\]]+)\]', raw_stripped)
+        candidates.extend(reversed(brackets))
+        lines = [l for l in raw_stripped.split('\n') if l.strip()]
+        candidates.extend(reversed(lines))
+        candidates.append(raw_stripped)
+
+        # (a) exact match (대소문자 무시)
+        valid_lower = {v.lower(): v for v in valid}
+        for c in candidates:
+            n = _norm(c)
+            if n.lower() in valid_lower:
+                return valid_lower[n.lower()]
+
+        # (b) substring match (가장 긴 일치 우선, 대소문자 무시)
+        for c in candidates:
+            n_lower = _norm(c).lower()
+            best = None
+            for cmd in valid:
+                if cmd == "TARGET_FOUND":
+                    continue  # 이미 위에서 처리됨
+                if cmd.lower() in n_lower and (best is None or len(cmd) > len(best)):
+                    best = cmd
+            if best is not None:
+                return best
+
+        print(f"  [VLM] Invalid command for {self._current_skill.value}, "
+              f"raw='{raw_stripped[:120]}', keeping previous '{self._latest_instruction}'")
+        return self._latest_instruction
 
     def query_instruction(self, rgb_array: np.ndarray, _gen: int | None = None) -> str:
         """동기 VLM 호출. _gen은 비동기 호출 시 세대 카운터 (stale 응답 방지)."""
