@@ -1184,7 +1184,10 @@ def main():
 
             elif skill in (SkillState.NAVIGATE, SkillState.CARRY):
                 # NAVIGATE, 또는 carry expert 없을 때 fallback: lookup base velocity
-                _base_cmd = _NAV_INST_TO_ACTION.get(instruction, [0.0, 0.5, 0.0])
+                # ★ VLM instruction은 "navigate X with arm tucked" (orchestrator 규약) →
+                #   접미사 제거해야 lookup 매칭. 안 하면 전부 default(forward)로 빠져 직진만 함.
+                _nav_key = instruction.replace(" with arm tucked", "").strip()
+                _base_cmd = _NAV_INST_TO_ACTION.get(_nav_key, [0.0, 0.5, 0.0])
                 action = np.zeros(9, dtype=np.float32)
                 action[6] = _base_cmd[0]
                 action[7] = _base_cmd[1]
