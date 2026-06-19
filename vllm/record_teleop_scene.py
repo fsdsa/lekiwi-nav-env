@@ -51,7 +51,7 @@ parser = argparse.ArgumentParser(description="ProcTHOR Scene 데모 녹화 (텔�
 
 # Mode & Skill
 parser.add_argument("--skill", type=str, default="approach_and_grasp",
-                    choices=["approach_and_grasp", "carry_and_place", "navigate", "combined_s2_s3", "full"],
+                    choices=["approach_and_grasp", "carry_and_place", "navigate", "combined_s2_s3", "combined_s2_place", "full"],
                     help="스킬 선택")
 parser.add_argument("--direction", type=str, default=None,
                     choices=["forward", "backward", "left", "right", "turn_left", "turn_right"],
@@ -73,7 +73,7 @@ parser.add_argument("--bc_checkpoint", type=str, default="",
                     help="DP BC checkpoint 경로 (제공 시 expert 모드 활성화)")
 parser.add_argument("--resip_checkpoint", type=str, default="",
                     help="ResiP checkpoint 경로 (expert 모드)")
-parser.add_argument("--max_episode_steps", type=int, default=2000,
+parser.add_argument("--max_episode_steps", type=int, default=4000,
                     help="Expert 모드: 에피소드 최대 스텝")
 parser.add_argument("--s3_max_steps", type=int, default=150,
                     help="combined_s2_s3: S3 phase 최대 스텝")
@@ -105,8 +105,8 @@ parser.add_argument("--arm_input_unit", type=str, default="auto",
 parser.add_argument("--explore", action="store_true",
                     help="Scene 탐색 모드: WASD+ZX 이동, P=좌표 출력, Q=종료")
 parser.add_argument("--difficulty", type=str, default="easy",
-                    choices=["easy", "hard"],
-                    help="full 모드: easy=같은 방, hard=다른 방")
+                    choices=["easy", "middle", "hard"],
+                    help="full 모드: easy/middle=같은 방, hard=다른 방 (run/eval과 동일 의미)")
 
 # Camera
 parser.add_argument("--camera_width", type=int, default=640)
@@ -490,11 +490,13 @@ def setup_env(args):
             cfg.spawn_heading_noise_std = 0.1
             cfg.spawn_heading_max_rad = 0.26
             cfg.episode_length_s = 100.0
-        elif args.skill == "combined_s2_s3":
+        elif args.skill in ("combined_s2_s3", "combined_s2_place"):
             # approach_and_grasp와 동일 + auto-terminate 방지
             cfg.grasp_success_height = 100.0  # env가 lift success로 종료하지 않도록
             cfg.lift_hold_steps = 0
-            cfg.episode_length_s = 200.0
+            cfg.episode_length_s = 300.0
+            cfg.dest_spawn_dist_min = 0.6
+            cfg.dest_spawn_dist_max = 0.9
         elif args.skill == "full":
             # full end-to-end 텔레옵: lift success로 종료하지 않도록
             cfg.grasp_success_height = 100.0
@@ -939,7 +941,7 @@ def reset_with_scene_layout(env, args, scene_path):
                     floor_z=floor_z,
                 )
         else:
-            if skill in ("approach_and_grasp", "carry_and_place", "full"):
+            if skill in ("approach_and_grasp", "carry_and_place", "full", "combined_s2_place"):
                 ss = float(args.scene_scale) if args.scene_scale > 0 else 1.0
                 source_override = SceneSpawnCfg(
                     min_robot_dist=float(getattr(env.cfg, "object_dist_min", 0.8)) / ss,
@@ -984,9 +986,9 @@ def reset_with_scene_layout(env, args, scene_path):
                 _entry = _FULL_ROOM_SCHEDULE[_room_slot]
                 _target_room, _rx, _ry, _ryaw_deg = _entry
 
-                # 물체 스폰용 mesh 삼각형 — easy: 로봇 방 / hard: 거실
+                # 물체 스폰용 mesh 삼각형 — easy/middle: 로봇 방 / hard: 거실
                 _LIVING = {"room_2", "room_3"}
-                if _difficulty == "easy":
+                if _difficulty in ("easy", "middle"):
                     _obj_tris = _floor_tris.get(_target_room, [])
                 else:
                     _obj_tris = []
@@ -1008,8 +1010,8 @@ def reset_with_scene_layout(env, args, scene_path):
                         continue
                     if math.dist(_sxy, _dxy) < 1.5:
                         continue
-                    # easy: 로봇과 물체 최소 1.5m 이격
-                    if _difficulty == "easy":
+                    # easy/middle: 로봇과 물체 최소 1.5m 이격
+                    if _difficulty in ("easy", "middle"):
                         if math.dist((_rx, _ry), _sxy) < 1.5 or math.dist((_rx, _ry), _dxy) < 1.5:
                             continue
                     layout = SceneTaskLayout(
@@ -1036,7 +1038,19 @@ def reset_with_scene_layout(env, args, scene_path):
                       f"robot={_target_room}({_rx:.1f},{_ry:.1f},{_ryaw_deg:.0f}°) "
                       f"| src={_s_str} | dest={_d_str}")
             else:
-                for _retry in range(20):
+                # combined_s2_place: 같은 방 검증 강제 (재시도 시 약병이 다른 방에 스폰되는 것 방지)
+                _verify_same_room = (skill == "combined_s2_place" and scene_path is not None)
+                if _verify_same_room:
+                    from procthor_scene import (
+                        _load_floor_regions as _lfr2, _load_support_floor_z as _lsfz2,
+                        _find_robot_region as _frr2, SCENE_PRESETS as _SP2,
+                    )
+                    _ssp = _SP2.get(args.scene_idx)
+                    _sfz2 = _lsfz2(str(scene_path.resolve()), _ssp.support_floor_prim_path) if _ssp else 0.0
+                    _regions2 = _lfr2(str(scene_path.resolve()), support_floor_z=_sfz2)
+                    _ssr = float(args.scene_scale) if args.scene_scale > 0 else 1.0
+                _max_retry = 50 if _verify_same_room else 20
+                for _retry in range(_max_retry):
                     try:
                         layout = sample_scene_task_layout(
                             args.scene_idx, scene_usd=scene_path,
@@ -1048,11 +1062,23 @@ def reset_with_scene_layout(env, args, scene_path):
                             robot_faces_source=robot_faces,
                             randomize_robot_xy=randomize_robot,
                         )
-                        break
                     except RuntimeError:
-                        if _retry < 19:
+                        if _retry < _max_retry - 1:
                             continue
                         raise
+                    # combined_s2_place: 약병이 로봇과 같은 방에 있는지 검증
+                    if _verify_same_room:
+                        _rx2 = layout.robot_xy[0] / _ssr
+                        _ry2 = layout.robot_xy[1] / _ssr
+                        _sx2 = layout.source_xy[0] / _ssr
+                        _sy2 = layout.source_xy[1] / _ssr
+                        _rr = _frr2((_rx2, _ry2), _regions2)
+                        _sr = _frr2((_sx2, _sy2), _regions2)
+                        if _rr is None or _sr is None or _rr.path != _sr.path:
+                            if _retry < _max_retry - 1:
+                                continue
+                            print(f"  [WARN] same-room 검증 실패 {_max_retry}회 → 마지막 layout 사용")
+                    break
         if layout is None:
             print(f"  [WARN] layout=None → env.reset() 기본 상태 사용")
             return obs, info, layout
@@ -1236,7 +1262,7 @@ def main():
     print(f"  저장: {output_path}")
     print(f"  scene: idx={args.scene_idx}, scale={args.scene_scale}")
     if args.skill == "full":
-        print(f"  difficulty: {args.difficulty} ({'같은 방' if args.difficulty == 'easy' else '다른 방'})")
+        print(f"  difficulty: {args.difficulty} ({'같은 방' if args.difficulty in ('easy', 'middle') else '다른 방'})")
     print(f"  camera: {args.camera_width}x{args.camera_height}")
     print(f"  instruction: \"{args.instruction}\"")
     if EXPERT_MODE:
@@ -1435,6 +1461,55 @@ def _run_expert(env, cams, scene_path, output_path: str):
     is_navigate = (args.skill == "navigate")
     is_carry = (args.skill == "carry_and_place")
     is_combined = (args.skill == "combined_s2_s3")
+    is_combined_place = (args.skill == "combined_s2_place")
+
+    # combined_s2_place: S3 place BC (55D) + ResiP + phase-wise scales
+    s3_place_dp = None
+    s3_place_resip = None
+    s3_place_cfg = None
+    _s3p_scale_a = _s3p_scale_b = _s3p_scale_c = _s3p_scale_d = None
+    if is_combined_place and args.bc_checkpoint_s3:
+        from diffusion_policy import DiffusionPolicyAgent as _DPA, ResidualPolicy as _RP
+        from skill3_bc_obs import build_s3_bc_obs as _build_s3_bc_obs
+
+        _s3p_ckpt = torch.load(args.bc_checkpoint_s3, map_location=policy_device, weights_only=False)
+        s3_place_cfg = _s3p_ckpt["config"]
+        s3_place_dp = _DPA(
+            obs_dim=s3_place_cfg["obs_dim"], act_dim=s3_place_cfg["act_dim"],
+            pred_horizon=s3_place_cfg["pred_horizon"], action_horizon=s3_place_cfg["action_horizon"],
+            num_diffusion_iters=s3_place_cfg["num_diffusion_iters"],
+            inference_steps=8,
+            down_dims=s3_place_cfg.get("down_dims", [64, 128, 256]),
+        ).to(policy_device)
+        _sd = _s3p_ckpt["model_state_dict"]
+        s3_place_dp.model.load_state_dict({k[len("model."):]: v for k, v in _sd.items() if k.startswith("model.")})
+        s3_place_dp.normalizer.load_state_dict(
+            {k[len("normalizer."):]: v for k, v in _sd.items() if k.startswith("normalizer.")}, device=policy_device)
+        s3_place_dp.eval()
+        for p in s3_place_dp.parameters():
+            p.requires_grad = False
+        print(f"  [Expert] S3 Place BC loaded: {args.bc_checkpoint_s3} (obs={s3_place_cfg['obs_dim']}D)")
+
+        if args.resip_checkpoint_s3 and os.path.isfile(args.resip_checkpoint_s3):
+            _rp_ckpt = torch.load(args.resip_checkpoint_s3, map_location=policy_device, weights_only=False)
+            s3_place_resip = _RP(
+                obs_dim=s3_place_cfg["obs_dim"], action_dim=s3_place_cfg["act_dim"],
+                action_scale=0.1, learn_std=True,
+            ).to(policy_device)
+            s3_place_resip.load_state_dict(_rp_ckpt["residual_policy_state_dict"])
+            s3_place_resip.eval()
+            print(f"  [Expert] S3 Place ResiP loaded: {args.resip_checkpoint_s3}")
+
+        # Phase-wise residual scales (eval_s3.py v19u와 동일)
+        _AD = s3_place_cfg["act_dim"]
+        _s3p_scale_a = torch.zeros(_AD, device=policy_device)
+        _s3p_scale_a[6:9] = 0.40
+        _s3p_scale_b = torch.zeros(_AD, device=policy_device)
+        _s3p_scale_b[0:5] = 0.05; _s3p_scale_b[6:9] = 0.10
+        _s3p_scale_c = torch.zeros(_AD, device=policy_device)
+        _s3p_scale_c[0:5] = 0.05; _s3p_scale_c[5] = 0.50; _s3p_scale_c[6:9] = 0.05
+        _s3p_scale_d = torch.zeros(_AD, device=policy_device)
+        _s3p_scale_d[0:5] = 0.10; _s3p_scale_d[5] = 0.10; _s3p_scale_d[6:9] = 0.05
 
     # combined_s2_s3: S3 BC 로드
     s3_dp_agent = None
@@ -1582,11 +1657,127 @@ def _run_expert(env, cams, scene_path, output_path: str):
 
             ep_data = new_episode_buffer(instruction)
             success = False
-            _combined_phase = "S2" if is_combined else None
+            _combined_phase = "S2" if (is_combined or is_combined_place) else None
             _combined_lift_count = 0
             _active_agent = dp_agent  # navigate: None (lookup table 사용)
+            # combined_s2_place: S3 phase tracking
+            _s3p_init_pose6 = torch.zeros(1, 6, device=policy_device)
+            _s3p_phase_a = True
+            _s3p_phase_b_steps = 0
+            _s3p_release_latch = torch.zeros(1, dtype=torch.bool, device=policy_device)
+            _s3p_retract_latch = torch.zeros(1, dtype=torch.bool, device=policy_device)
+            _s3p_total_steps = 0     # S3 시작 후 누적 step
+            _s3p_placed_confirmed = False  # place 성공 → 600 step 추가 기록
+            _s3p_placed_step = 0     # placed 시점 step
+            _S3P_PLACE_TIMEOUT = 1000   # place까지 1000 step 안 걸리면 실패
+            _S3P_POST_PLACE_STEPS = 600  # placed 후 추가 기록 step
+            _S3P_TOTAL_TIMEOUT = max(args.s3_max_steps, 3000)  # 전체 S3 최대 step
+            # eval_s3.py와 동일한 4-phase ABCD latch (grip 동작 sustained 기반)
+            _s3p_obs_phase_a_latch = torch.ones(1, dtype=torch.bool, device=policy_device)
+            _s3p_obs_phase_c_latch = torch.zeros(1, dtype=torch.bool, device=policy_device)
+            _s3p_obs_phase_d_latch = torch.zeros(1, dtype=torch.bool, device=policy_device)
+            _s3p_arm_rise_ct = torch.zeros(1, dtype=torch.long, device=policy_device)
+            _s3p_grip_open_ct = torch.zeros(1, dtype=torch.long, device=policy_device)
+            _s3p_retract_ct = torch.zeros(1, dtype=torch.long, device=policy_device)
 
             for step in range(args.max_episode_steps):
+                # combined_s2_place: lift 감지 → dest 스폰 → S3 place 전환
+                if is_combined_place and _combined_phase == "S2":
+                    obj_z = env.object_pos_w[0, 2].item() if hasattr(env, "object_pos_w") else 0
+                    grasped = env.object_grasped[0].item() if hasattr(env, "object_grasped") else False
+                    if grasped and obj_z > 0.05:
+                        _combined_lift_count += 1
+                    else:
+                        _combined_lift_count = 0
+                    if _combined_lift_count >= 200 and s3_place_dp is not None:
+                        print(f"    [S2→S3place] Lift success at step {step}!")
+                        # init_arm_pose 캡처
+                        _jp_s3 = env.robot.data.joint_pos[0]
+                        _s3p_init_pose6[0, :5] = _jp_s3[env.arm_idx[:5]]
+                        _s3p_init_pose6[0, 5] = _jp_s3[env.arm_idx[5]]
+                        # dest 스폰 (로봇 전방 0.6~1.2m + 같은 방 검증)
+                        from isaaclab.utils.math import quat_apply as _qa
+                        from procthor_scene import (
+                            _load_floor_regions as _lfr3, _load_support_floor_z as _lsfz3,
+                            _find_robot_region as _frr3, SCENE_PRESETS as _SP3,
+                        )
+                        _env_id_s3 = torch.tensor([0], device=env.device)
+                        rpos = env.robot.data.root_pos_w[0:1]
+                        rquat = env.robot.data.root_quat_w[0:1]
+                        local_fwd = torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float32, device=env.device)
+                        fwd = _qa(rquat, local_fwd)
+                        # 같은 방 검증 준비
+                        _ssp3 = _SP3.get(args.scene_idx) if scene_path is not None else None
+                        _regs3 = None
+                        _r_room_id_3 = None
+                        if _ssp3 is not None and scene_path is not None:
+                            _sfz3 = _lsfz3(str(scene_path.resolve()), _ssp3.support_floor_prim_path)
+                            _regs3 = _lfr3(str(scene_path.resolve()), support_floor_z=_sfz3)
+                            _ssr3 = float(args.scene_scale) if args.scene_scale > 0 else 1.0
+                            _rxy_unscaled = (rpos[0, 0].item() / _ssr3, rpos[0, 1].item() / _ssr3)
+                            _r_reg = _frr3(_rxy_unscaled, _regs3)
+                            _r_room_id_3 = _r_reg.path if _r_reg else None
+                        # 같은 방에 dest 스폰 시도 (50회)
+                        dest_x = dest_y = dest_z = None
+                        _ddist = None
+                        for _dest_try in range(50):
+                            _ddist_try = random.uniform(0.6, 0.9)
+                            _ang_noise = (random.random() * 2 - 1) * 0.5
+                            _cn, _sn = math.cos(_ang_noise), math.sin(_ang_noise)
+                            _fx = fwd[0, 0] * _cn - fwd[0, 1] * _sn
+                            _fy = fwd[0, 0] * _sn + fwd[0, 1] * _cn
+                            _dx_try = (rpos[0, 0] + _fx * _ddist_try).item()
+                            _dy_try = (rpos[0, 1] + _fy * _ddist_try).item()
+                            # 같은 방 검증
+                            if _r_room_id_3 is not None and _regs3 is not None:
+                                _dxy_un = (_dx_try / _ssr3, _dy_try / _ssr3)
+                                _d_reg = _frr3(_dxy_un, _regs3)
+                                if _d_reg is None or _d_reg.path != _r_room_id_3:
+                                    continue
+                            dest_x, dest_y = _dx_try, _dy_try
+                            dest_z = (rpos[0, 2] - 0.03).item()
+                            _ddist = _ddist_try
+                            break
+                        # 같은 방에 dest 스폰 못하면 → 실패 (새 episode)
+                        if dest_x is None:
+                            print(f"    [S3place] dest 같은 방 스폰 50회 실패 → 실패")
+                            success = False
+                            break
+                        dest_rigid = getattr(env, "_dest_object_rigid", None)
+                        if dest_rigid is not None:
+                            _dp = dest_rigid.data.default_root_state[0:1, :7].clone()
+                            _dp[0, 0] = dest_x; _dp[0, 1] = dest_y; _dp[0, 2] = dest_z
+                            _yaw = random.uniform(-math.pi, math.pi)
+                            _dp[0, 3] = math.cos(_yaw * 0.5)
+                            _dp[0, 6] = math.sin(_yaw * 0.5)
+                            dest_rigid.write_root_pose_to_sim(_dp, env_ids=_env_id_s3)
+                            dest_rigid.write_root_velocity_to_sim(
+                                torch.zeros(1, 6, device=env.device), env_ids=_env_id_s3)
+                            env.dest_object_pos_w[0] = torch.tensor(
+                                [dest_x, dest_y, dest_z], device=env.device)
+                            print(f"    [S3place] dest spawn=({dest_x:.2f},{dest_y:.2f}) "
+                                  f"dist={_ddist:.2f}m room=ok")
+                        _combined_phase = "S3"
+                        _s3p_phase_a = True
+                        _s3p_phase_b_steps = 0
+                        _s3p_release_latch[0] = False
+                        _s3p_retract_latch[0] = False
+                        _s3p_total_steps = 0
+                        _s3p_placed_confirmed = False
+                        _s3p_obs_phase_a_latch[0] = True
+                        _s3p_obs_phase_c_latch[0] = False
+                        _s3p_obs_phase_d_latch[0] = False
+                        _s3p_arm_rise_ct[0] = 0
+                        _s3p_grip_open_ct[0] = 0
+                        _s3p_retract_ct[0] = 0
+                        s3_place_dp.reset()
+                        instruction = f"place the {args.source_object_name} next to the red cup"
+                        ep_data = new_episode_buffer(instruction)
+                        # dest write 처리 + 다음 iteration부터 깨끗한 image+state로 기록
+                        env.sim.step()
+                        env.robot.update(env.sim.cfg.dt)
+                        continue
+
                 # combined_s2_s3: lift 성공 감지 → 컵 스폰 → S3 전환
                 if is_combined and _combined_phase == "S2":
                     obj_z = env.object_pos_w[0, 2].item() if hasattr(env, "object_pos_w") else 0
@@ -1669,6 +1860,104 @@ def _run_expert(env, cams, scene_path, output_path: str):
                         action[0, 7] = _base_cmd[1] + random.gauss(0, _NAV_ACTION_NOISE_STD)
                         action[0, 8] = _base_cmd[2] + random.gauss(0, _NAV_ACTION_NOISE_STD)
                         action = action.clamp(-1, 1)
+                elif is_combined_place and _combined_phase == "S3" and s3_place_dp is not None:
+                    # combined_s2_place S3: 55D obs (eval_s3.py와 동일한 4-phase ABCD latch)
+                    # ── obs build 전에 latch 업데이트 ──
+                    _arm1_pre = env.robot.data.joint_pos[0:1, env.arm_idx[1]]
+                    _grip_pre = env.robot.data.joint_pos[0:1, env.arm_idx[5]]
+                    _holding_pre = (env._contact_force_per_env() > float(env.cfg.grasp_contact_threshold))
+                    _base_dst = torch.norm(
+                        env.robot.data.root_pos_w[0:1, :2] - env.dest_object_pos_w[0:1, :2], dim=-1)
+
+                    # A→B: arm1 > init+0.10, sustained 5 steps AND base_dst < 0.40
+                    _arm1_rising = _arm1_pre > (_s3p_init_pose6[0:1, 1] + 0.10)
+                    _s3p_arm_rise_ct = torch.where(
+                        _arm1_rising & _s3p_obs_phase_a_latch, _s3p_arm_rise_ct + 1,
+                        torch.zeros_like(_s3p_arm_rise_ct))
+                    _near_dest = _base_dst <= 0.40
+                    _to_b = (_s3p_arm_rise_ct >= 5) & _near_dest
+                    if _to_b[0] and _s3p_obs_phase_a_latch[0]:
+                        print(f"    [S3place] Phase A→B (arm1 rising + base_dst={_base_dst.item():.2f}) step={step}")
+                    _s3p_obs_phase_a_latch = _s3p_obs_phase_a_latch & ~_to_b
+
+                    # B→C (release): grip > 0.60, sustained 5 steps
+                    _in_b = (~_s3p_obs_phase_a_latch) & (~_s3p_obs_phase_c_latch)
+                    _grip_opening = _in_b & (_grip_pre > 0.60)
+                    _s3p_grip_open_ct = torch.where(
+                        _grip_opening, _s3p_grip_open_ct + 1,
+                        torch.where(_in_b, torch.zeros_like(_s3p_grip_open_ct), _s3p_grip_open_ct))
+                    _to_c = _s3p_grip_open_ct >= 5
+                    if _to_c[0] and not _s3p_obs_phase_c_latch[0]:
+                        print(f"    [S3place] Phase B→C release (grip={_grip_pre.item():.2f}) step={step}")
+                    _s3p_obs_phase_c_latch = _s3p_obs_phase_c_latch | _to_c
+
+                    # C→D (retract): grip >= 0.95 & !holding, sustained 3 steps
+                    _in_c = _s3p_obs_phase_c_latch & (~_s3p_obs_phase_d_latch)
+                    _retract_ready = _in_c & (_grip_pre >= 0.95) & (~_holding_pre)
+                    _s3p_retract_ct = torch.where(
+                        _retract_ready, _s3p_retract_ct + 1,
+                        torch.where(_in_c, torch.zeros_like(_s3p_retract_ct), _s3p_retract_ct))
+                    _to_d = _s3p_retract_ct >= 3
+                    if _to_d[0] and not _s3p_obs_phase_d_latch[0]:
+                        print(f"    [S3place] Phase C→D retract (grip={_grip_pre.item():.2f}) step={step}")
+                    _s3p_obs_phase_d_latch = _s3p_obs_phase_d_latch | _to_d
+
+                    # 외부 latch 동기화 (success/timeout/scale 판정용)
+                    _s3p_release_latch = _s3p_obs_phase_c_latch | _s3p_obs_phase_d_latch
+                    _s3p_retract_latch = _s3p_obs_phase_d_latch.clone()
+                    _s3p_phase_a = _s3p_obs_phase_a_latch[0].item()
+
+                    # obs build with proper latches
+                    _obs_phase_flag = _s3p_obs_phase_a_latch.float()
+                    _obs_place_flag = (_s3p_obs_phase_c_latch | _s3p_obs_phase_d_latch).float()
+                    _s3p_obs = _build_s3_bc_obs(
+                        env, actor_obs, _s3p_init_pose6,
+                        phase_a_flag=_obs_phase_flag,
+                        obs_dim=s3_place_cfg["obs_dim"],
+                        place_open_flag=_obs_place_flag,
+                        release_phase_flag=_s3p_release_latch.float(),
+                        retract_started_flag=_s3p_retract_latch.float(),
+                    )
+                    base_nact = s3_place_dp.base_action_normalized(_s3p_obs)
+                    base_nact = torch.nan_to_num(base_nact, nan=0.0)
+                    if s3_place_resip is not None:
+                        nobs = torch.nan_to_num(
+                            s3_place_dp.normalizer(_s3p_obs, "obs", forward=True).clamp(-3, 3), nan=0.0)
+                        ri = torch.cat([nobs, base_nact], dim=-1)
+                        _, _, _, _, ra_mean = s3_place_resip.get_action_and_value(ri)
+                        ra_mean = torch.clamp(ra_mean, -1.0, 1.0)
+                        _is_d = _s3p_retract_latch[0].item()
+                        _is_c = _s3p_release_latch[0].item() and not _is_d
+                        if _is_d:
+                            _sc = _s3p_scale_d
+                        elif _is_c:
+                            _sc = _s3p_scale_c
+                        elif _s3p_phase_a:
+                            _sc = _s3p_scale_a
+                        else:
+                            # Phase B: 조건부 grip scale (eval_s3.py와 동일)
+                            # 바닥근처 + upright + dest근처 → grip residual 활성화 (BC release 보조)
+                            _sc = _s3p_scale_b.clone()
+                            _src_h_local = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+                            _world_up = torch.tensor([0., 0., 1.], device=env.device)
+                            _obj_quat_local = env.object_rigid.data.root_quat_w[0:1]
+                            from isaaclab.utils.math import quat_apply as _qa_phb
+                            _obj_up_z_local = _qa_phb(_obj_quat_local, _world_up.unsqueeze(0))[0, 2].item()
+                            _bdxy_local = torch.norm(
+                                env.robot.data.root_pos_w[0, :2] - env.dest_object_pos_w[0, :2]
+                            ).item()
+                            if _src_h_local < 0.06 and _obj_up_z_local > 0.90 and _bdxy_local < 0.45:
+                                _sc[5] = 0.20  # eval_s3.py 값 (검증된 동작)
+                        nact = base_nact + ra_mean * _sc
+                    else:
+                        nact = base_nact
+                    nact[:, 5] = torch.clamp(nact[:, 5], -0.45, 1.0)
+                    action = s3_place_dp.normalizer(nact, "action", forward=False).clamp(-1, 1)
+
+                    # phase_b_steps 카운트 (drop 감지용)
+                    if not _s3p_phase_a:
+                        _s3p_phase_b_steps += 1
+
                 else:
                     # combined_s2_s3 S3: carry 39D obs (env 30D + dir_cmd 3D + init_arm_pose 6D)
                     if is_combined and _combined_phase == "S3" and s3_dp_agent is not None:
@@ -1678,20 +1967,20 @@ def _run_expert(env, cams, scene_path, output_path: str):
                             _combined_init_arm_pose.unsqueeze(0),
                         ], dim=-1)  # (1, 39D)
 
-                    # DP base action (normalized)
-                    base_naction = _active_agent.base_action_normalized(actor_obs)
+                    _cur_agent = dp_agent if _combined_phase != "S3" else (s3_dp_agent or dp_agent)
+                    base_naction = _cur_agent.base_action_normalized(actor_obs)
 
                     # Residual
-                    if _combined_phase == "S3" and s3_resip is not None:
+                    if is_combined and _combined_phase == "S3" and s3_resip is not None:
                         # S3 carry ResiP
-                        nobs = _active_agent.normalizer(actor_obs, "obs", forward=True).clamp(-3, 3)
+                        nobs = _cur_agent.normalizer(actor_obs, "obs", forward=True).clamp(-3, 3)
                         nobs = torch.nan_to_num(nobs, nan=0.0)
                         ri = torch.cat([nobs, base_naction], dim=-1)
                         _, _, _, _, ra_mean = s3_resip.get_action_and_value(ri)
                         naction = base_naction + ra_mean * s3_per_dim
                     elif residual_policy is not None and _combined_phase != "S3":
                         # S2 approach ResiP
-                        nobs = _active_agent.normalizer(actor_obs, "obs", forward=True)
+                        nobs = _cur_agent.normalizer(actor_obs, "obs", forward=True)
                         nobs = torch.clamp(nobs, -3, 3)
                         residual_nobs = torch.cat([nobs, base_naction], dim=-1)
                         residual_naction = residual_policy.get_action(residual_nobs)
@@ -1700,7 +1989,7 @@ def _run_expert(env, cams, scene_path, output_path: str):
                         naction = base_naction
 
                     # Denormalize → raw action
-                    action = _active_agent.normalizer(naction, "action", forward=False)
+                    action = _cur_agent.normalizer(naction, "action", forward=False)
 
                 # 카메라 캡처 (eval_only일 때 캡처만 스킵, render는 유지)
                 if not EVAL_ONLY:
@@ -1731,6 +2020,76 @@ def _run_expert(env, cams, scene_path, output_path: str):
                 # Env step
                 obs, reward, terminated, truncated, info = env.step(action)
 
+                # combined_s2_place: place 검증 → release → retract → rest pose 도달 시 SUCCESS
+                if is_combined_place and _combined_phase == "S3":
+                    from isaaclab.utils.math import quat_apply as _qa_check
+                    _s3p_total_steps += 1
+                    _s3_objZ = (env.object_pos_w[0, 2] - env.scene.env_origins[0, 2]).item()
+
+                    # 공통 측정값
+                    _src_pos = env.object_rigid.data.root_pos_w[0, :2]
+                    _dst_pos = env.dest_object_pos_w[0, :2]
+                    _src_dst = torch.norm(_src_pos - _dst_pos).item()
+                    _world_up = torch.tensor([0., 0., 1.], device=env.device)
+                    _obj_quat = env.object_rigid.data.root_quat_w[0:1]
+                    _obj_up_z = _qa_check(_obj_quat, _world_up.unsqueeze(0))[0, 2].item()
+                    _grip_pos = env.robot.data.joint_pos[0, env.arm_idx[5]].item()
+                    _placed_ok = (
+                        _src_dst < 0.25  # 0.18 → 0.25 완화 (BC 정확도 한계 고려)
+                        and 0.029 < _s3_objZ < 0.05
+                        and _obj_up_z > 0.95
+                    )
+
+                    # Drop: Phase A(carry 중)에서만 감지. break → 새 episode 시작 (fresh step counter)
+                    if _s3p_phase_a and _s3_objZ < 0.04:
+                        print(f"    [S3place DROP] objZ={_s3_objZ:.3f} (Phase A carry 중) → 실패")
+                        success = False
+                        break
+
+                    # Place 타임아웃: 1000 step 안에 place 못 찍으면 실패. break → 새 episode
+                    if not _s3p_placed_confirmed and _s3p_total_steps > _S3P_PLACE_TIMEOUT:
+                        print(f"    [S3place TIMEOUT] place 실패 ({_s3p_total_steps} step) "
+                              f"src↔dst={_src_dst:.3f} objZ={_s3_objZ:.3f} upright={_obj_up_z:.3f} → 실패")
+                        success = False
+                        break
+
+                    # Place 진척 모니터링 (60 step마다)
+                    if not _s3p_placed_confirmed and _s3p_total_steps % 60 == 0 and _s3p_total_steps > 0:
+                        print(f"    [S3place check] s3_step={_s3p_total_steps} "
+                              f"src↔dst={_src_dst:.3f}(≤0.18?) objZ={_s3_objZ:.3f}([0.029,0.05]?) "
+                              f"upright={_obj_up_z:.3f}(>0.95?) grip={_grip_pos:.2f}")
+
+                    # Place 확정: place_ok 만으로 즉시 confirmed (retract 안 기다림)
+                    if _placed_ok and not _s3p_placed_confirmed:
+                        _s3p_placed_confirmed = True
+                        _s3p_placed_step = _s3p_total_steps
+                        print(f"    [S3place PLACED] src↔dst={_src_dst:.3f} objZ={_s3_objZ:.3f} "
+                              f"upright={_obj_up_z:.3f} step={_s3p_total_steps} → +{_S3P_POST_PLACE_STEPS} step 추가 기록")
+
+                    # Placed 후 600 step 추가 기록 → 그 시점에 컵(약병)이 여전히 바닥에 서있으면 SUCCESS
+                    if _s3p_placed_confirmed:
+                        _post_steps = _s3p_total_steps - _s3p_placed_step
+                        if _post_steps >= _S3P_POST_PLACE_STEPS:
+                            # 600 step 후 최종 검증: 약병이 여전히 컵 옆에 바닥에 서있어야 함
+                            if _placed_ok:
+                                print(f"    [S3place SUCCESS] placed + {_post_steps} step | "
+                                      f"src↔dst={_src_dst:.3f} objZ={_s3_objZ:.3f} upright={_obj_up_z:.3f}")
+                                success = True
+                            else:
+                                print(f"    [S3place FAIL] 600 step 후 약병 쓰러짐/이탈 | "
+                                      f"src↔dst={_src_dst:.3f} objZ={_s3_objZ:.3f} upright={_obj_up_z:.3f}")
+                                success = False
+                            break
+                        if _s3p_total_steps % 60 == 0:
+                            print(f"    [S3place post-place] {_post_steps}/{_S3P_POST_PLACE_STEPS} step "
+                                  f"placed={_placed_ok} (s3_step={_s3p_total_steps})")
+
+                    # 전체 S3 타임아웃: 3000 step 도달하면 실패
+                    if _s3p_total_steps > _S3P_TOTAL_TIMEOUT:
+                        print(f"    [S3place TIMEOUT-TOTAL] {_s3p_total_steps} step 도달 → 실패")
+                        success = False
+                        break
+
                 # combined S3 phase 스텝 카운트 + drop 감지 + 제한
                 _is_s3_phase = (is_combined and _combined_phase == "S3")
                 if _is_s3_phase:
@@ -1757,7 +2116,8 @@ def _run_expert(env, cams, scene_path, output_path: str):
                         break
 
                 # 물체 넘어짐 감지 → 즉시 에피소드 종료 (approach_and_grasp S2 phase만)
-                if not is_navigate and not is_carry and not _is_s3_phase:
+                _is_s3_place_phase = (is_combined_place and _combined_phase == "S3")
+                if not is_navigate and not is_carry and not _is_s3_phase and not _is_s3_place_phase:
                     obj_z = env.object_pos_w[0, 2].item() if hasattr(env, "object_pos_w") else 999
                     if obj_z < 0.026:
                         print(f"    [Topple] objZ={obj_z:.3f} < 0.026 → skip")
