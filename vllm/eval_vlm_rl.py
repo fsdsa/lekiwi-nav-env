@@ -778,6 +778,11 @@ def main():
     _s2_per_dim[0:5] = 0.20   # arm
     _s2_per_dim[5] = 0.25     # gripper
     _s2_per_dim[6:9] = 0.35   # base
+    # navigate RL 변수 (eval_navigate.py와 동일: base only, init_arm=zeros, lidar=dummy ones)
+    _nav_per_dim = torch.zeros(9, device=device)
+    _nav_per_dim[6:9] = 0.25   # base only (arm/grip=0 → env force_tucked가 팔 고정)
+    _nav_init_arm = torch.zeros(env.num_envs, 6, device=device)  # nav obs init_arm_pose (학습 시 zeros)
+    _nav_prev_key = [""]       # direction 바뀌면 DP chunk 리셋
 
     # ── S1 Navigate Expert ──
     nav_dp_agent, nav_residual, nav_dp_cfg = None, None, None
@@ -1144,7 +1149,10 @@ def main():
                 prev_skill = orch.current_skill
                 _cur = orch.current_skill
                 if _cur == SkillState.NAVIGATE:
-                    _force_tucked[0] = True            # nav: 팔 접기
+                    _force_tucked[0] = True            # nav: 팔 접기 (expert는 base만 제어)
+                    if nav_dp_agent is not None:
+                        nav_dp_agent.reset()
+                        _nav_prev_key[0] = ""
                 elif _cur == SkillState.CARRY:
                     # carry expert 있으면 arm을 expert가 제어 → tucked 해제 + init_arm 캡처
                     _force_tucked[0] = (carry_dp_agent is None)
@@ -1211,8 +1219,35 @@ def main():
                     log.info(f"[S4 Place-RL] step={total_steps} phase={place_expert.phase_str} "
                              f"grip={action[5]:.2f} base=[{action[6]:.3f},{action[7]:.3f},{action[8]:.3f}]")
 
+            elif skill == SkillState.NAVIGATE and nav_dp_agent is not None:
+                # ── S1: navigate RL expert (26D obs, base only — arm은 env force_tucked) ──
+                _nav_key = instruction.replace(" with arm tucked", "").strip()
+                if _nav_key != _nav_prev_key[0]:
+                    nav_dp_agent.reset()
+                    _nav_prev_key[0] = _nav_key
+                _ndir = _NAV_INST_TO_DIR.get(_nav_key, [0.0, 1.0, 0.0])
+                _njp = env.robot.data.joint_pos
+                _nav_obs = torch.cat([
+                    _njp[:, env.arm_idx[:5]],
+                    _njp[:, env.arm_idx[5:6]],
+                    env.robot.data.root_lin_vel_b[:, :2],
+                    env.robot.data.root_ang_vel_b[:, 2:3],
+                    torch.tensor(_ndir, dtype=torch.float32, device=device).unsqueeze(0),
+                    torch.ones(env.num_envs, 8, device=device),
+                    _nav_init_arm,
+                ], dim=-1)  # (1, 26)
+                action = resip_action(nav_dp_agent, nav_residual, _nav_obs, device, _nav_per_dim)
+                action = np.clip(action, -1, 1)
+                if abs(kb_vx) > 0 or abs(kb_vy) > 0 or abs(kb_wz) > 0:
+                    action[6] = np.clip(kb_vx / MAX_LIN, -1, 1)
+                    action[7] = np.clip(kb_vy / MAX_LIN, -1, 1)
+                    action[8] = np.clip(kb_wz / MAX_ANG, -1, 1)
+                if total_steps % 100 == 0:
+                    log.info(f"[S1 Nav-RL] step={total_steps} dir=\"{_nav_key}\" "
+                             f"base=[{action[6]:.3f},{action[7]:.3f},{action[8]:.3f}]")
+
             elif skill in (SkillState.NAVIGATE, SkillState.CARRY):
-                # NAVIGATE, 또는 carry expert 없을 때 fallback: lookup base velocity
+                # NAVIGATE/carry expert 없을 때 fallback: lookup base velocity
                 # ★ VLM instruction은 "navigate X with arm tucked" (orchestrator 규약) →
                 #   접미사 제거해야 lookup 매칭. 안 하면 전부 default(forward)로 빠져 직진만 함.
                 _nav_key = instruction.replace(" with arm tucked", "").strip()
