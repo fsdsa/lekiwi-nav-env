@@ -5,7 +5,8 @@ VLM 지시어 + RL expert 파이프라인 검증 스크립트 (VLA 미사용).
 VLM(Qwen3-VL-8B)이 스킬 전환 + 방향 지시어만 생성하고, 4개 스킬 전부 로컬
 RL expert(BC+ResiP)로 실행한다. VLA 서버 불필요.
 
-S1 navigate         : VLM 지시어 → lookup base velocity (arm tucked)
+S1 navigate         : RL expert (--nav_dp_checkpoint / --nav_resip_checkpoint), 26D obs
+                      (미제공 시 VLM 지시어 → lookup base velocity fallback). arm은 force_tucked
 S2 approach & lift  : RL expert (--dp_checkpoint / --resip_checkpoint)
 S3 carry            : RL expert (--carry_dp_checkpoint / --carry_resip_checkpoint), 39D obs
 S4 approach & place : RL expert (--place_dp_checkpoint / --place_resip_checkpoint),
