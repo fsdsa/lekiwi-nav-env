@@ -41,6 +41,10 @@ huggingface-cli download Qwen/Qwen3-VL-8B-Instruct
 # VLA base (Pi0.5, lerobot/pi05_base, ~14GB) — 파인튜닝 시작점
 huggingface-cli download lerobot/pi05_base --local-dir pi05_base
 
+# 검증 (설치된 버전 출력)
+conda run -n vllm python -c "import vllm; print('  vllm        : vllm', vllm.__version__)" 2>/dev/null || echo "  vllm 확인 실패"
+conda run -n lerobotpi0v2 python -c "import lerobot, torch; print('  lerobotpi0v2: lerobot', lerobot.__version__, '| torch', torch.__version__)" 2>/dev/null || echo "  lerobotpi0v2 확인 실패"
+
 echo "[setup_viva] 완료."
 echo "  파인튜닝:  bash vllm/train_v5.sh"
 echo "  서버 기동: bash launch_servers.sh all --checkpoint <pi05 ckpt>/pretrained_model"
