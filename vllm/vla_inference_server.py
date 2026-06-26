@@ -43,6 +43,8 @@ class VLARequest(BaseModel):
     state: list[float]           # robot state (9D: arm5 + grip1 + base3)
     instruction: str             # language instruction
     action_horizon: int = 10     # how many future steps to predict
+    num_steps: Optional[int] = None  # flow matching integration steps (None → ckpt config default)
+    noise_seed: Optional[int] = None  # fix initial noise for deterministic sampling
 
 
 class VLAResponse(BaseModel):
@@ -134,8 +136,19 @@ def _do_inference_pi05(req: VLARequest) -> VLAResponse:
     batch = _preprocessor(batch)
 
     # Inference: predict_action_chunk returns (B=1, T=chunk_size, action_dim=9)
+    # Optional diagnostics hooks:
+    #   req.num_steps      — override flow matching integration steps
+    #   req.noise_seed     — fix initial noise for reproducible sampling
+    kwargs = {}
+    if req.num_steps is not None:
+        kwargs["num_steps"] = int(req.num_steps)
+    if req.noise_seed is not None:
+        gen = torch.Generator(device=_device).manual_seed(int(req.noise_seed))
+        shape = (1, _policy.config.chunk_size, _policy.config.max_action_dim)
+        kwargs["noise"] = torch.randn(*shape, generator=gen, device=_device,
+                                      dtype=next(_policy.parameters()).dtype)
     with torch.inference_mode():
-        action = _policy.predict_action_chunk(batch)
+        action = _policy.predict_action_chunk(batch, **kwargs)
 
     # Apply postprocessor (unnormalize via QUANTILES, move to cpu)
     action = _postprocessor(action)

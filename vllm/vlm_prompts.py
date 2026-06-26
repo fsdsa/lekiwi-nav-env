@@ -123,33 +123,36 @@ The robot has NOT found the {target_object} yet. Guide the robot to search for i
 
 IMPORTANT — Safety layer behavior:
 - A safety layer monitors the front depth sensor.
-- When an obstacle is closer than 0.3m in front, "navigate forward" will be BLOCKED automatically.
+- When an obstacle is closer than 0.3m in front, "navigate forward with arm tucked" will be BLOCKED automatically.
 - Backward, strafe (left/right), and turn (left/right) commands ALWAYS work even when an obstacle is close.
 - The depth warning may be triggered by the robot's OWN arm/gripper appearing in the camera (self-occlusion), not by a real external obstacle. Verify visually before deciding to retreat.
 - If "Depth warning: CLOSE_OBJECT_DETECTED" appears AND you see a real wall/furniture in the path → use backward, turn, or strafe to escape.
-- If "Depth warning: CLOSE_OBJECT_DETECTED" appears BUT the foreground is just the robot's own arm and the path behind it looks clear → "navigate forward" is still the right choice (the safety layer will only act on real collisions).
+- If "Depth warning: CLOSE_OBJECT_DETECTED" appears BUT the foreground is just the robot's own arm and the path behind it looks clear → "navigate forward with arm tucked" is still the right choice (the safety layer will only act on real collisions).
 
 First, briefly describe what you see in the image (1-2 sentences).
-Then, output ONE of the following commands on the LAST line:
+Then, output ONE of the following commands on the LAST line (copy the string EXACTLY — all seven words are required for the movement commands):
 
-- "navigate forward" — path ahead is clear, go straight (BLOCKED if real obstacle in front)
-- "navigate backward" — back up (use this when stuck or to escape a real obstacle)
-- "navigate strafe left" — strafe left
-- "navigate strafe right" — strafe right
-- "navigate turn left" — rotate left to explore or avoid obstacle
-- "navigate turn right" — rotate right to explore or avoid obstacle
-- "TARGET_FOUND" — the {target_object} is visible AND close enough to reach (the object occupies a significant portion of the frame). Output this even if the object looks synthetic.
+- "navigate forward with arm tucked" — path ahead is clear, go straight (BLOCKED if real obstacle in front)
+- "navigate backward with arm tucked" — back up (use this when stuck or to escape a real obstacle)
+- "navigate strafe left with arm tucked" — strafe left
+- "navigate strafe right with arm tucked" — strafe right
+- "navigate turn left with arm tucked" — rotate left to explore or avoid obstacle
+- "navigate turn right with arm tucked" — rotate right to explore or avoid obstacle
+- "TARGET_FOUND" — Output this ONLY when the {target_object} is CLOSE and roughly CENTERED right in front of the robot. Cues that it is close enough: you see it distinctly with detail (NOT a small speck), it sits LOW in the frame (a nearby object on the floor appears in the lower part of the image, not up near the horizon / far wall), and there is little empty floor between the robot and the object. If it looks small/distant, sits high near the far wall, is surrounded by far-away furniture (e.g. a table/toilet across the room), or is off to one side — it is NOT close enough: keep navigating toward it and turn to center it. Do NOT say TARGET_FOUND.
 
-Decision rules:
-1. If you see the {target_object} (or any bottle/container-like object) close and large in the frame → "TARGET_FOUND"
-2. If you see the {target_object} but it is far away or small → navigate toward it (e.g. "navigate forward")
-3. If "Depth warning: CLOSE_OBJECT_DETECTED" AND a real wall/furniture blocks the path → "navigate backward" or "navigate turn left/right"
-4. If "Depth warning: CLOSE_OBJECT_DETECTED" BUT the foreground is just the robot's own arm with clear space behind it → "navigate forward" is still OK
-5. If path ahead is clear and no target visible → "navigate forward"
-6. If wall or furniture blocks the path → turn toward the side with more open space
-7. If you see a doorway or corridor → turn toward it
-8. If the robot seems stuck (seeing the same wall up close) → "navigate backward" then turn
-9. Prefer exploring new areas over revisiting the same space
+Decision rules (be CONSERVATIVE about TARGET_FOUND — only when the target is close AND centered):
+1. The {target_object} is close and roughly CENTERED in front (low in the frame, distinct, little floor in between) → "TARGET_FOUND".
+2. The {target_object} is visible but small/distant, high near the far wall, or across the room near other furniture → "navigate forward with arm tucked" toward it. Do NOT say TARGET_FOUND yet — it can take many more steps to actually reach it.
+3. The {target_object} is getting close but OFF TO ONE SIDE → "navigate turn left with arm tucked" or "navigate turn right with arm tucked" to bring it to the CENTER first. Do NOT say TARGET_FOUND while it is off-center.
+4. If "Depth warning: CLOSE_OBJECT_DETECTED" AND a real wall/furniture blocks the path → "navigate backward with arm tucked" or "navigate turn left/right with arm tucked"
+5. If "Depth warning: CLOSE_OBJECT_DETECTED" BUT the foreground is just the robot's own arm with clear space behind it → "navigate forward with arm tucked" is still OK
+6. If path ahead is clear and no target visible → "navigate forward with arm tucked"
+7. If wall or furniture blocks the path → turn toward the side with more open space
+8. If you see a doorway or corridor → turn toward it
+9. If the robot seems stuck (seeing the same wall up close) → "navigate backward with arm tucked" then turn
+10. Prefer exploring new areas over revisiting the same space
+
+Output the command VERBATIM — one of the exact strings listed above (including "with arm tucked" where applicable), or "TARGET_FOUND". Do not add, remove, or reorder words.
 
 Previous command: "{prev_command}"
 
@@ -174,32 +177,35 @@ Current task: carry the {source_object} and navigate to find the {dest_object}.
 
 IMPORTANT — Safety layer behavior:
 - A safety layer monitors the front depth sensor.
-- When an obstacle is closer than 0.3m in front, "carry forward" will be BLOCKED automatically.
-- Backward, strafe (left/right), and turn (left/right) commands ALWAYS work even when an obstacle is close.
+- When an obstacle is closer than 0.3m in front, "carry forward holding the object" will be BLOCKED automatically.
+- Backward, sideways (carry left / carry right), and turn (left/right) commands ALWAYS work even when an obstacle is close.
 - The depth warning may be triggered by the robot's OWN arm/gripper or the {source_object} it is currently holding (self-occlusion), not by a real external obstacle. Verify visually before deciding to retreat.
-- If "Depth warning: CLOSE_OBJECT_DETECTED" appears AND you see a real wall/furniture in the path → use backward, turn, or strafe to escape.
-- If "Depth warning: CLOSE_OBJECT_DETECTED" appears BUT the foreground is just the robot's own arm + held {source_object} and the path behind it looks clear → "carry forward" is still the right choice.
+- If "Depth warning: CLOSE_OBJECT_DETECTED" appears AND you see a real wall/furniture in the path → use "carry backward holding the object", "carry turn left/right holding the object", or "carry left/right holding the object" to escape.
+- If "Depth warning: CLOSE_OBJECT_DETECTED" appears BUT the foreground is just the robot's own arm + held {source_object} and the path behind it looks clear → "carry forward holding the object" is still the right choice.
 
 First, briefly describe what you see in the image (1-2 sentences).
-Then, output ONE of the following commands on the LAST line:
+Then, output ONE of the following commands on the LAST line (copy the string EXACTLY — including the "holding the object" suffix for the movement commands):
 
-- "carry forward" — path ahead is clear, go straight (BLOCKED if real obstacle in front)
-- "carry backward" — back up (use this when stuck or to escape a real obstacle)
-- "carry strafe left" — strafe left
-- "carry strafe right" — strafe right
-- "carry turn left" — rotate left to explore or avoid obstacle
-- "carry turn right" — rotate right to explore or avoid obstacle
-- "TARGET_FOUND" — the {dest_object} is visible AND close enough to reach (the object occupies a significant portion of the frame). Output this even if the object looks synthetic.
+- "carry forward holding the object" — path ahead is clear, go straight (BLOCKED if real obstacle in front)
+- "carry backward holding the object" — back up (use this when stuck or to escape a real obstacle)
+- "carry left holding the object" — strafe left
+- "carry right holding the object" — strafe right
+- "carry turn left holding the object" — rotate left to explore or avoid obstacle
+- "carry turn right holding the object" — rotate right to explore or avoid obstacle
+- "TARGET_FOUND" — Output this ONLY when the {dest_object} is CLOSE and roughly CENTERED right in front of the robot. Cues that it is close enough: you see it distinctly with detail (NOT a small speck), it sits LOW in the frame (not up near the horizon / far wall), and there is little empty floor between the robot and it. If it looks small/distant, sits high near the far wall, is surrounded by far-away furniture, or is off to one side — it is NOT close enough: keep moving toward it and turn to center it. Do NOT say TARGET_FOUND.
 
 Decision rules:
-1. If you see the {dest_object} (or any mug/cup-like object) close and large in the frame → "TARGET_FOUND"
-2. If you see the {dest_object} but it is far away or small → navigate toward it (e.g. "carry forward")
-3. If "Depth warning: CLOSE_OBJECT_DETECTED" AND a real wall/furniture blocks the path → "carry backward" or "carry turn left/right"
-4. If "Depth warning: CLOSE_OBJECT_DETECTED" BUT the foreground is just the robot's own arm + held object with clear space behind it → "carry forward" is still OK
-5. If path ahead is clear → "carry forward"
-6. If obstacle blocks the path → turn toward open space
-7. If you see a doorway or corridor → turn toward it
-8. If the robot seems stuck → "carry backward" then turn
+1. The {dest_object} is close and roughly CENTERED in front (low in the frame, distinct, little floor in between) → "TARGET_FOUND".
+2. The {dest_object} is visible but small/distant, high near the far wall, or across the room near other furniture → "carry forward holding the object" toward it. Do NOT say TARGET_FOUND yet.
+3. The {dest_object} is getting close but OFF TO ONE SIDE → "carry turn left holding the object" or "carry turn right holding the object" to center it first. Do NOT say TARGET_FOUND while it is off-center.
+4. If "Depth warning: CLOSE_OBJECT_DETECTED" AND a real wall/furniture blocks the path → "carry backward holding the object", "carry left holding the object", "carry right holding the object", or "carry turn left/right holding the object"
+5. If "Depth warning: CLOSE_OBJECT_DETECTED" BUT the foreground is just the robot's own arm + held object with clear space behind it → "carry forward holding the object" is still OK
+6. If path ahead is clear → "carry forward holding the object"
+7. If obstacle blocks the path → turn toward open space
+8. If you see a doorway or corridor → turn toward it
+9. If the robot seems stuck → "carry backward holding the object" then turn
+
+Output the command VERBATIM — one of the exact strings listed above (including "holding the object" where applicable), or "TARGET_FOUND". Do not add, remove, or reorder words.
 
 Previous command: "{prev_command}"
 
