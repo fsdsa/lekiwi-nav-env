@@ -28,7 +28,7 @@ import os
 # ── Args (AppLauncher args 포함) ──
 parser = argparse.ArgumentParser(description="ResiP Eval in Isaac Sim (GUI)")
 parser.add_argument("--skill", type=str, required=True,
-                    choices=["navigate", "approach_and_grasp", "carry", "carry_and_place"])
+                    choices=["approach_and_grasp", "carry", "carry_and_place"])
 parser.add_argument("--dp_checkpoint", type=str, required=True,
                     help="Path to dp_bc.pt (frozen base policy)")
 parser.add_argument("--resip_checkpoint", type=str, default="",
@@ -176,12 +176,7 @@ if args.demo and os.path.isfile(args.demo):
         print(f"  num_episodes clamped to {args.num_episodes}")
 
 # ── Env 생성 ──
-if args.skill == "navigate":
-    from lekiwi_skill1_env import Skill1Env, Skill1EnvCfg
-    env_cfg = Skill1EnvCfg()
-    env_cfg.scene.num_envs = getattr(args, 'num_envs', 1) or 1
-    env_cfg.force_tucked_pose = True  # arm all-zero로 덮어쓸 예정
-elif args.skill in ("approach_and_grasp", "carry"):
+if args.skill in ("approach_and_grasp", "carry"):
     from lekiwi_skill2_eval import Skill2Env, Skill2EnvCfg
     env_cfg = Skill2EnvCfg()
     env_cfg.scene.num_envs = 1
@@ -241,12 +236,7 @@ env_cfg.gripper_contact_prim_path = args.gripper_contact_prim_path
 if args.arm_limit_json and os.path.isfile(args.arm_limit_json):
     env_cfg.arm_limit_json = args.arm_limit_json
 
-if args.skill == "navigate":
-    env = Skill1Env(cfg=env_cfg)
-    env._tucked_pose = torch.zeros(5, dtype=torch.float32, device=env.device)
-    import lekiwi_skill1_env as _s1mod
-    _s1mod._TUCKED_GRIPPER_RAD = 0.0
-elif args.skill in ("approach_and_grasp", "carry"):
+if args.skill in ("approach_and_grasp", "carry"):
     env = Skill2Env(cfg=env_cfg)
 else:
     env = Skill3Env(cfg=env_cfg)
@@ -339,27 +329,11 @@ def _restore_init_state(ep_data):
     env.object_rigid.update(env.sim.cfg.dt)
 
 
-# ── Navigate 방향 스케줄 ──
-_nav_dir_schedule = None
-if args.skill == "navigate":
-    _nav_dir_schedule = [
-        ([0, 1, 0],  "FORWARD"),
-        ([0, -1, 0], "BACKWARD"),
-        ([-1, 0, 0], "STRAFE LEFT"),
-        ([1, 0, 0],  "STRAFE RIGHT"),
-        ([0, 0, 1],  "TURN LEFT"),
-        ([0, 0, -1], "TURN RIGHT"),
-    ]
-
 # ── 실행 루프 ──
 episode = 0
 successes = 0
 step_count = 0
 obs, _ = env.reset()
-if _nav_dir_schedule and episode < len(_nav_dir_schedule):
-    _cmd, _lbl = _nav_dir_schedule[episode]
-    env._direction_cmd[0] = torch.tensor(_cmd, dtype=torch.float32, device=device)
-    print(f"  [Navigate] direction: {_lbl}")
 
 if demo_episodes:
     _restore_init_state(demo_episodes[0])
@@ -392,10 +366,6 @@ def get_distances():
 
 def get_grasp_debug():
     """Grasp 판정에 쓰이는 모든 값 반환."""
-    if args.skill == "navigate":
-        return {"grip": 0.0, "grip_closed": False, "contact": 0.0, "has_contact": False,
-                "ee_to_obj": 0.0, "between": False, "grasped": False, "gcf": 0.0,
-                "grip_on_ground": False}
     grip = env.robot.data.joint_pos[:, env.gripper_idx].item()
     grip_closed = grip < float(env.cfg.grasp_gripper_threshold)
     # Contact force
@@ -573,7 +543,7 @@ while episode < args.num_episodes and simulation_app.is_running():
                     print(f"  [Carry] direction: {_lbl}")
                 continue
 
-        # ── 기존 모드 (approach_and_grasp, carry_and_place, navigate) ──
+        # ── 기존 모드 (approach_and_grasp, carry_and_place) ──
         else:
             base_naction = dp_agent.base_action_normalized(obs_t)
 
@@ -647,32 +617,19 @@ while episode < args.num_episodes and simulation_app.is_running():
         print(f"    ★ LIFT at t={step_count} | objZ={obj_z:.3f} ee={g['ee_to_obj']:.3f} grip={g['grip']:.3f} sustain={lift_sustain}", flush=True)
 
     if step_count % 50 == 0:
-        if args.skill == "navigate":
-            # Navigate: 방향 + base velocity
-            _dir_cmd = env._direction_cmd[0].cpu().tolist()
-            _labels = {(0,1,0): "FWD", (0,-1,0): "BWD", (-1,0,0): "LEFT",
-                       (1,0,0): "RIGHT", (0,0,1): "TURN_L", (0,0,-1): "TURN_R"}
-            _key = tuple(int(round(x)) for x in _dir_cmd)
-            _dir_str = _labels.get(_key, str(_dir_cmd))
-            _bv = env.robot.data.root_lin_vel_b[0].cpu().tolist()
-            _wz = env.robot.data.root_ang_vel_b[0, 2].item()
-            print(f"    [t={step_count:4d}] dir={_dir_str} vel=(vx={_bv[0]:+.2f} vy={_bv[1]:+.2f} wz={_wz:+.2f})", flush=True)
-        else:
-            status = ""
-            if ep_lifted:
-                status = " [LIFTED]"
-            elif g["grasped"]:
-                status = f" [GRASPED sustain={lift_sustain}]"
-            ground_str = " **GROUND**" if g["grip_on_ground"] else ""
-            print(f"    [t={step_count:4d}] EE={ee_d:.3f} Base={base_d:.3f} grip={grip:.3f} objZ={obj_z:.3f} "
-                  f"eeZ={ee_z:.4f}(min={window_min_ee_z:.4f}) contact={g['contact']:.2f} ee2obj={g['ee_to_obj']:.3f}"
-                  f" gcf={g['gcf']:.2f}{ground_str}{status}", flush=True)
-            window_min_ee_z = 999.0
+        status = ""
+        if ep_lifted:
+            status = " [LIFTED]"
+        elif g["grasped"]:
+            status = f" [GRASPED sustain={lift_sustain}]"
+        ground_str = " **GROUND**" if g["grip_on_ground"] else ""
+        print(f"    [t={step_count:4d}] EE={ee_d:.3f} Base={base_d:.3f} grip={grip:.3f} objZ={obj_z:.3f} "
+              f"eeZ={ee_z:.4f}(min={window_min_ee_z:.4f}) contact={g['contact']:.2f} ee2obj={g['ee_to_obj']:.3f}"
+              f" gcf={g['gcf']:.2f}{ground_str}{status}", flush=True)
+        window_min_ee_z = 999.0
 
-    # 강제 종료: navigate=600, 기타=max_steps
-    if args.skill == "navigate" and step_count >= 600:
-        done = True
-    elif step_count >= args.max_steps:
+    # 강제 종료: max_steps
+    if step_count >= args.max_steps:
         done = True
     else:
         done = terminated.any() or truncated.any()
@@ -699,10 +656,6 @@ while episode < args.num_episodes and simulation_app.is_running():
         lift_sustain = 0
         dp_agent.reset()
         obs, _ = env.reset()
-        if _nav_dir_schedule and episode < len(_nav_dir_schedule):
-            _cmd, _lbl = _nav_dir_schedule[episode]
-            env._direction_cmd[0] = torch.tensor(_cmd, dtype=torch.float32, device=device)
-            print(f"  [Navigate] direction: {_lbl}")
 
         if demo_episodes and episode < len(demo_episodes):
             _restore_init_state(demo_episodes[episode])
