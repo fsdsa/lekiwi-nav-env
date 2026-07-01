@@ -1,0 +1,67 @@
+{
+  "meta": {
+    "created_at": "2026-02-18 10:14:05",
+    "calibration_json": "calibration/calibration_20260218_101329.json",
+    "encoder_calibration_json": "calibration/follower_my_awesome_kiwi.json",
+    "input_unit": "auto",
+    "resolved_unit": "deg",
+    "limit_margin_rad": 0.0,
+    "fallback_scale_rad_per_100": 3.141592653589793
+  },
+  "joint_limits_rad": {
+    "STS3215_03a_v1_2_Revolute_51": {
+      "min": -1.7453292519943295,
+      "max": 1.7266626289783475,
+      "real_key": "arm_elbow_flex.pos",
+      "real_min": -100.0,
+      "real_max": 98.93048128342247,
+      "source": "joint_ranges:arm_elbow_flex.pos",
+      "unit": "deg"
+    },
+    "STS3215_03a_v1_4_Revolute_57": {
+      "min": 0.001313265050409578,
+      "max": 1.7453292519943295,
+      "real_key": "arm_gripper.pos",
+      "real_min": 0.07524454477050413,
+      "real_max": 100.0,
+      "source": "joint_ranges:arm_gripper.pos",
+      "unit": "deg"
+    },
+    "STS3215_03a_v1_1_Revolute_49": {
+      "min": -1.7453292519943295,
+      "max": 1.7453292519943295,
+      "real_key": "arm_shoulder_lift.pos",
+      "real_min": -100.0,
+      "real_max": 100.0,
+      "source": "joint_ranges:arm_shoulder_lift.pos",
+      "unit": "deg"
+    },
+    "STS3215_03a_v1_Revolute_45": {
+      "min": -1.736302798530007,
+      "max": 1.7453292519943295,
+      "real_key": "arm_shoulder_pan.pos",
+      "real_min": -99.48282231252308,
+      "real_max": 100.0,
+      "source": "joint_ranges:arm_shoulder_pan.pos",
+      "unit": "deg"
+    },
+    "STS3215_03a_v1_3_Revolute_53": {
+      "min": -1.7453292519943295,
+      "max": 1.7438526621026251,
+      "real_key": "arm_wrist_flex.pos",
+      "real_min": -100.0,
+      "real_max": 99.91539763113366,
+      "source": "joint_ranges:arm_wrist_flex.pos",
+      "unit": "deg"
+    },
+    "STS3215_03a_Wrist_Roll_v1_Revolute_55": {
+      "min": -1.6720211613122722,
+      "max": 1.578254998811966,
+      "real_key": "arm_wrist_roll.pos",
+      "real_min": -95.7997557997558,
+      "real_max": 90.4273504273504,
+      "source": "joint_ranges:arm_wrist_roll.pos",
+      "unit": "deg"
+    }
+  }
+}

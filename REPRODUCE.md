@@ -127,3 +127,116 @@ PYTHON_BIN=$HOME/miniconda3/envs/lerobotpi0v2/bin/python \
 
 setup 스크립트 자체의 조정용: `CONDA_BASE`, `ISAACLAB_DIR`, `MOLMO_DIR`, `ENV_NAME`, `MODE`, `OLD_HOST`
 (각 스크립트 상단 참조).
+
+---
+
+## BACKUP ASSETS & RESTORE (A100 서버 폐기 대비 — 2026-07-01 최종 감사)
+
+> A100 서버 **폐기 직전** 최종 감사. 새 서버에서 처음부터 재현하는 데 필요한 **서버 전용(git 밖)**
+> 자산을 전부 로컬(`~/IsaacLab/scripts/lekiwi_nav_env/`)로 백업 완료했다. 코드·setup 스크립트·env
+> lockfile·calibration 은 **git 에 있으니 클론만 하면 되고**, 대용량 바이너리(VLA ckpt·hdf5·데이터셋)는
+> `.gitignore` 로 git 밖에 있으므로 새 머신엔 **rsync 로 옮긴다**.
+
+### A. 백업 자산 위치표 (로컬 → 새 서버)
+
+| 자산 | 로컬 위치 | 크기 | 새 서버 배치 | git |
+|------|-----------|------|--------------|-----|
+| **viva VLA ckpt** (배포본 250K) | `vllm/outputs/train/pi05_viva_v5_20260421_071948/checkpoints/250000/` | 23G | 동일 경로 또는 임의(`--checkpoint` 지정) | ✗ `outputs/` |
+| **only_vla VLA ckpt** (end-to-end 064K) | `backup/h100_endtoend/064000/` | 23G | 임의(`--checkpoint` 지정) | ✗ |
+| **lerobot 데이터셋** ×3 | `~/lerobot_data/{lekiwi_viva_v5, combined_aug4x_middle, approach_new_100_local}` | 1.4G/519M/499M | `~/lerobot_data/` | ✗ |
+| **viva 재빌드 source hdf5** | `backup/vla_finetune_source/viva_merged_with_carry.hdf5` | 73G | `~/data/lekiwi_hdf5/` (재빌드 시만) | ✗ `*.hdf5` |
+| **수정 lerobot** (per-task-loss patch) | `backup/lerobot_lerobotpi0v2_modified/lerobot/` | 9.4M | site-packages 위 overlay | ✗ |
+| **Skill-2/3 BC + resip64% ckpt** | `checkpoints/dp_bc_small/dp_bc_epoch150.pt`·`checkpoints/dp_bc_skill3_36d/dp_bc_epoch300.pt`·`backup/appoachandlift/resip64%.pt` | <42M | `checkpoints/` | ✗ `*.pt` |
+| **calibration** (raw + derived) | `calibration/*.json` | ~1.1M | `calibration/` (레포 동봉) | **✓ git** |
+| **only_vla 학습 스크립트/README** | `backup/h100_endtoend/scripts/` | 12K | 참고용 | **✓ git** |
+| **viva 학습 스크립트** | `vllm/train_v5.sh` + `vllm/dataset_tools/` | — | — | **✓ git** |
+| *(아카이브)* 서버 ResiP 실험 ckpt 18종 | `backup/resip_server_archive/` | 18M | 필요시 `checkpoints/resip/` | ✗ |
+| *(아카이브)* 서버 teleop 데모 4종 | `backup/server_demos/` | 18M | `demos*/` | ✗ `*.hdf5` |
+| *(아카이브)* 서버 git stash 11종 | `backup/server_git_stashes/*.patch` | 1.5M | `git apply <patch>` | ✗ |
+
+> ⚠️ 위 `backup/` 대용량은 전부 `.gitignore` 로 제외됨. git 에는 **`backup/h100_endtoend/scripts/` 4개
+> 파일 + `calibration/*.json`** 만 추적된다. 나머지는 로컬 디스크에만 있으므로 새 머신엔 `rsync` 로 옮긴다.
+
+### B. VLA 서빙 (백업 ckpt 로 바로 기동)
+
+`launch_servers.sh` 의 `--checkpoint` 는 **`.../pretrained_model` 디렉터리**를 가리킨다 (config.json 으로 pi05 자동감지).
+
+```bash
+# viva (배포 기본값 — 현재 파이프라인)
+LEROBOT_CONDA_DIR="$HOME/miniconda3" \
+  bash launch_servers.sh vla \
+  --checkpoint vllm/outputs/train/pi05_viva_v5_20260421_071948/checkpoints/250000/pretrained_model
+
+# only_vla (end-to-end 베이스라인 비교용)
+LEROBOT_CONDA_DIR="$HOME/miniconda3" \
+  bash launch_servers.sh vla \
+  --checkpoint backup/h100_endtoend/064000/pretrained_model
+
+# VLM+VLA 동시:  bash launch_servers.sh all --checkpoint <위 경로>
+```
+각 ckpt 는 `pretrained_model/`(model.safetensors 9.35G + config.json + policy_pre/postprocessor{,.json}) +
+`training_state/`(optimizer 15.1G, resume 용) 로 구성. 서빙엔 `pretrained_model/` 만 있으면 된다.
+
+### C. 수정 lerobot 복원 (per-task-loss 패치)
+
+`lerobot 0.5.0` 을 깐 뒤 vendored 트리를 site-packages 위에 덮거나, 아래 18줄 패치만 직접 적용한다.
+
+```bash
+pip install "lerobot @ git+https://github.com/huggingface/lerobot.git@v0.5.0"
+# (방법1) 통째 overlay:
+SP=$(python -c "import lerobot,os;print(os.path.dirname(os.path.dirname(lerobot.__file__)))")
+rsync -a backup/lerobot_lerobotpi0v2_modified/lerobot/ "$SP/lerobot/"
+```
+
+패치 본체는 `lerobot/scripts/lerobot_train.py` 의 `else: loss, output_dict = policy.forward(batch)`
+직후에 삽입된 per-task loss 로깅뿐이다 (원본은 `lerobot_train.py.bak`):
+
+```python
+            loss, output_dict = policy.forward(batch)
+            # Per-task loss tracking (best effort, batch-mean fallback)
+            try:
+                if "task_index" in batch and output_dict is not None:
+                    ti = batch["task_index"].view(-1).cpu().tolist()
+                    loss_val = loss.detach().item()
+                    for t in set(int(x) for x in ti):
+                        output_dict[f"task{t}_loss"] = loss_val
+            except Exception:
+                pass
+```
+
+### D. 데이터셋 복원 / 재빌드
+
+```bash
+# (기본) 백업된 lerobot 변환본을 그대로 사용:
+rsync -a backup_source:~/lerobot_data/  ~/lerobot_data/     # viva_v5 / combined_aug4x_middle / approach_new_100_local
+
+# (재빌드) viva_v5 를 원본 hdf5 에서 다시 만들 때:
+#   viva_merged_with_carry.hdf5 → ~/data/lekiwi_hdf5/ 배치 후
+python vllm/dataset_tools/build_v5.py     # + remap_v5_tasks.py / verify_v5.py 로 검증
+```
+
+### E. only_vla vs viva 파인튜닝 커맨드 (차이)
+
+| | **viva** (현재 배포) | **only_vla** (end-to-end 베이스라인) |
+|--|--|--|
+| 실행 | `bash vllm/train_v5.sh` (git) | `backup/h100_endtoend/scripts/train_h100.sh` |
+| 데이터셋 | `lekiwi_viva_v5` (978 ep) | `combined_aug4x_middle` (96 ep) |
+| 하드웨어 | A100 40G | H100 80G |
+| batch / steps / lr | 8 / 300K(배포=250K) / 5e-5 | 16 / 80K / 7e-5 |
+| chunk_size / dtype | 50 / bf16 | 50 / bf16 |
+| rename_map | front→base_0_rgb, wrist→left_wrist_0_rgb | 동일 |
+| base 모델 | `~/h100_deploy/base_model` (pi05_base) | `./base_model` (pi05_base) |
+
+두 스크립트 모두 `lerobot-train` 래퍼이며 `policy.path=<pi05_base>` (download_models.sh 로 재취득) 필요.
+viva 는 git `train_v5.sh` 가 배포 ckpt(250K)를 정확히 재현한다 (ckpt 내 `train_config.json` 과 일치).
+
+### F. 최종 감사 결론 (2026-07-01)
+
+- **VLA ckpt 2종 무결성 검증**: 두 `model.safetensors` 모두 header 정상·813 tensors·data_end=filesize
+  (truncation 없음). `pretrained_model/`·`training_state/` 전 파일 존재.
+- **배포 BC/RL ckpt** (`dp_bc_epoch150`·`dp_bc_skill3_36d/epoch300`·`resip64%`)는 서버=로컬 **md5 동일**.
+- **서버 전용→로컬 신규 백업** (이번 감사): `calibration/{calibration_latest,arm_limits_real2sim,tuned_dynamics}.json`,
+  `backup/h100_endtoend/scripts/`, `backup/server_demos/`(irreplaceable teleop 4종), `backup/resip_server_archive/`(실험 ckpt 18종), `backup/server_git_stashes/`(WIP 11종).
+- **재취득 가능(백업 불필요)**: HF 모델(Qwen3-VL-8B·pi05_base = `download_models.sh`), conda env(lockfile),
+  RL/BC 재학습, 로그/outputs. **폐기(superseded)**: `~/h100_*_deploy`·`pi0fast_base`·home-root `setup_*.sh`.
+- **범위 밖(별도 백업 필요 시 사용자 판단)**: 서버 `~/vlm_poc/`(MSDS/TDS 문서추출용 VLM LoRA — 로봇 파이프라인과 무관 별개 프로젝트).

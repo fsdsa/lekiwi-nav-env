@@ -23,3 +23,18 @@ checkpoints/
 .vscode/
 .idea/
 .DS_Store
+
+# Large model binaries (never track; rsync/download separately)
+*.safetensors
+
+# --- Local backup store (server-handoff) ---------------------------------
+# backup/ holds large rsync'd assets that must stay OUT of git:
+#   h100_endtoend/064000 (23G only_vla ckpt), vla_finetune_source/*.hdf5 (73G),
+#   lerobot_lerobotpi0v2_modified/ (vendored lerobot), resip_server_archive/,
+#   server_demos/, server_git_stashes/, navigate/ server/ appoachandlift/ (*.pt).
+# ONLY the tiny only_vla reproduction scripts are tracked.
+backup/*
+!backup/h100_endtoend/
+backup/h100_endtoend/*
+!backup/h100_endtoend/scripts/
+backup/h100_endtoend/scripts/*.log
