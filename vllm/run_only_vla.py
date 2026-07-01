@@ -17,9 +17,8 @@ Pi0.5 체크포인트 (예: H100 64K)를 평가하기 위한 것이다. 해당 �
     매 step: env.step(action), safety depth check만
 
 Usage:
-    # 서버 기동 (H100 64K 체크포인트로):
-    bash launch_servers.sh vla --checkpoint /home/jovyan/h100_endtoend_backup/\
-outputs/h100_endtoend/checkpoints/064000/pretrained_model
+    # 서버 기동 (only_vla end-to-end 064K 체크포인트 — 로컬 백업 경로):
+    bash launch_servers.sh vla --checkpoint backup/h100_endtoend/064000/pretrained_model
 
     # 실행:
     python run_only_vla.py --headless
