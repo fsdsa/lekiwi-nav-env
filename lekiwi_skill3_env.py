@@ -51,7 +51,11 @@ class Skill3EnvCfg(Skill2EnvCfg):
     place_gripper_threshold: float = 0.85  # gripper pos > 이 값이면 open 판정 (handoff grip~0.67이므로 낮으면 오판)
 
     # Destination object — Skill2EnvCfg의 기본값 override
-    dest_object_usd: str = "/home/yubin11/isaac-objects/mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd"
+    # 경로는 ISAAC_OBJECTS_DIR 환경변수로 재정의 가능 (기본 ~/isaac-objects). CLI --dest_object_usd가 최우선.
+    dest_object_usd: str = os.path.join(
+        os.environ.get("ISAAC_OBJECTS_DIR", os.path.expanduser("~/isaac-objects")),
+        "mujoco_scanned_objects/models/ACE_Coffee_Mug_Kristen_16_oz_cup/model_clean.usd",
+    )
     dest_object_fixed: bool = True       # kinematic — RL 학습 시 밀림 방지
     # Place 판정 (Skill-3 전용)
     place_radius: float = 0.20           # "옆에" 판정 반경 (XY 20cm 이내)

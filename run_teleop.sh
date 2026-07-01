@@ -1,5 +1,6 @@
 #!/bin/bash
-OBJ=/home/yubin/isaac-objects/mujoco_scanned_objects/models/Down_To_Earth_Ceramic_Orchid_Pot_Asst_Blue/model_clean.usd
+# OBJ 경로는 환경변수로 재정의 가능. ISAAC_OBJECTS_DIR 기본 = $HOME/isaac-objects
+OBJ="${OBJ:-${ISAAC_OBJECTS_DIR:-$HOME/isaac-objects}/mujoco_scanned_objects/models/Down_To_Earth_Ceramic_Orchid_Pot_Asst_Blue/model_clean.usd}"
 GRIP=/World/envs/env_.*/Robot/LeKiwi/Moving_Jaw_08d_v1
 
 python record_teleop.py \

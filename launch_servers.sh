@@ -21,7 +21,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONDA_DIR="${HOME}/miniconda3"
+CONDA_DIR="${CONDA_DIR:-${HOME}/miniconda3}"
+# lerobotpi0v2(VLA) env가 별도 conda install에 있으면 재정의. 운영 서버 기본=~/yes,
+# setup 스크립트로 새로 깐 서버는 LEROBOT_CONDA_DIR=$HOME/miniconda3 로 설정.
+LEROBOT_CONDA_DIR="${LEROBOT_CONDA_DIR:-${HOME}/yes}"
 LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
@@ -100,7 +103,7 @@ start_vla() {
     fi
 
     # lerobotpi0v2 env (lerobot 0.5.0)
-    source /home/jovyan/yes/etc/profile.d/conda.sh
+    source "${LEROBOT_CONDA_DIR}/etc/profile.d/conda.sh"
     conda activate lerobotpi0v2
 
     nohup python "${SCRIPT_DIR}/vllm/vla_inference_server.py" \

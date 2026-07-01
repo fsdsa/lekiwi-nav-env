@@ -16,7 +16,8 @@
 # 클라이언트 테스트 (로컬):
 #   python vlm_client.py --server http://218.148.55.186:8000
 
-export PATH="/home/jovyan/miniconda3/envs/vllm/bin:$PATH"
+# vllm conda env bin 경로 — VLLM_ENV_BIN 으로 재정의 가능 (기본 $HOME/miniconda3/envs/vllm/bin)
+export PATH="${VLLM_ENV_BIN:-$HOME/miniconda3/envs/vllm/bin}:$PATH"
 
 exec python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-VL-8B-Instruct \

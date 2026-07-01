@@ -30,11 +30,14 @@ set -e
 
 cd "$(dirname "$0")"
 
-OUTPUT_DIR="outputs/train/pi05_lekiwi_$(date +%Y%m%d_%H%M%S)"
-LOG_FILE="/home/jovyan/pi05_train_$(date +%Y%m%d_%H%M%S).log"
-LEROBOT_BIN="/home/jovyan/yes/envs/lerobotpi0v2/bin/lerobot-train"
-PYTHON_BIN="/home/jovyan/yes/envs/lerobotpi0v2/bin/python"
-PI05_BASE="/home/jovyan/IsaacLab/scripts/lekiwi_nav_env/pi05_base"
+# 경로는 전부 환경변수로 재정의 가능. 기본값은 운영 서버(~) 레이아웃과 동일.
+# (레거시 v2 스크립트 — 현재 파인튜닝은 train_v5.sh 사용)
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/pi05_lekiwi_$(date +%Y%m%d_%H%M%S)}"
+LOG_FILE="${LOG_FILE:-$HOME/pi05_train_$(date +%Y%m%d_%H%M%S).log}"
+LEROBOT_BIN="${LEROBOT_BIN:-$HOME/yes/envs/lerobotpi0v2/bin/lerobot-train}"
+PYTHON_BIN="${PYTHON_BIN:-$HOME/yes/envs/lerobotpi0v2/bin/python}"
+PI05_BASE="${PI05_BASE:-$HOME/IsaacLab/scripts/lekiwi_nav_env/pi05_base}"
+DATASET_ROOT="${DATASET_ROOT:-$HOME/lerobot_data/lekiwi_viva_v2}"
 
 echo "=========================================="
 echo "  Pi0.5 fine-tuning for lekiwi"
@@ -49,15 +52,15 @@ if [ ! -d "$PI05_BASE" ]; then
     exit 1
 fi
 
-if [ ! -d "/home/jovyan/lerobot_data/lekiwi_viva_v2" ]; then
-    echo "ERROR: dataset not found"
+if [ ! -d "$DATASET_ROOT" ]; then
+    echo "ERROR: dataset not found at $DATASET_ROOT"
     exit 1
 fi
 
 # Verify q01/q99 exists in stats (required for QUANTILES)
 $PYTHON_BIN -c "
 import json
-with open('/home/jovyan/lerobot_data/lekiwi_viva_v2/meta/stats.json') as f:
+with open('$DATASET_ROOT/meta/stats.json') as f:
     s = json.load(f)
 assert 'q01' in s['action'], 'q01 missing from action stats'
 assert 'q99' in s['action'], 'q99 missing from action stats'
@@ -73,7 +76,7 @@ import json
 import pandas as pd
 import numpy as np
 
-with open('/home/jovyan/lerobot_data/lekiwi_viva_v2/meta/tasks.jsonl') as f:
+with open('$DATASET_ROOT/meta/tasks.jsonl') as f:
     task_lookup = {json.loads(l)['task_index']: json.loads(l)['task'] for l in f}
 
 # Expected: env wz convention is action+ = right (CW), action- = left (CCW)
@@ -83,7 +86,7 @@ expected = {
     'carry turn left':     ('-', 16),
     'carry turn right':    ('+', 17),
 }
-data = pd.read_parquet('/home/jovyan/lerobot_data/lekiwi_viva_v2/data/chunk-000/file-000.parquet')
+data = pd.read_parquet('$DATASET_ROOT/data/chunk-000/file-000.parquet')
 
 errors = []
 for name, (sign, ti) in expected.items():
@@ -130,7 +133,7 @@ RENAME_MAP='{"observation.images.front":"observation.images.base_0_rgb","observa
 #   - steps=150000 (was 200000) → 100K decay + 50K floor fine-tune
 nohup $LEROBOT_BIN \
     --dataset.repo_id=local/lekiwi_fetch_v6 \
-    --dataset.root=/home/jovyan/lerobot_data/lekiwi_viva_v2 \
+    --dataset.root=$DATASET_ROOT \
     --policy.path=$PI05_BASE \
     --policy.repo_id=local/pi05_lekiwi \
     --policy.compile_model=false \

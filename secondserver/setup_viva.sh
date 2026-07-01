@@ -39,7 +39,9 @@ huggingface-cli whoami >/dev/null 2>&1 || huggingface-cli login
 huggingface-cli download Qwen/Qwen3-VL-8B-Instruct
 
 # VLA base (Pi0.5, lerobot/pi05_base, ~14GB) — 파인튜닝 시작점
-huggingface-cli download lerobot/pi05_base --local-dir /home/jovyan/h100_deploy/base_model
+# 위치는 PI05_BASE_DIR 로 재정의 가능 (train_v5.sh 의 PI05_BASE 기본값과 동일 = $HOME/h100_deploy/base_model)
+PI05_BASE_DIR="${PI05_BASE_DIR:-$HOME/h100_deploy/base_model}"
+huggingface-cli download lerobot/pi05_base --local-dir "$PI05_BASE_DIR"
 
 # 검증 (설치된 버전 출력)
 conda run -n vllm python -c "import vllm; print('  vllm        : vllm', vllm.__version__)" 2>/dev/null || echo "  vllm 확인 실패"

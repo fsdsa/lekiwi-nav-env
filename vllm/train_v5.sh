@@ -23,13 +23,18 @@ set -e
 
 cd "$(dirname "$0")"
 
-OUTPUT_DIR="outputs/train/pi05_viva_v5_$(date +%Y%m%d_%H%M%S)"
-LOG_FILE="/home/jovyan/pi05_v5_train_$(date +%Y%m%d_%H%M%S).log"
-LEROBOT_BIN="/home/jovyan/yes/envs/lerobotpi0v2/bin/lerobot-train"
-PYTHON_BIN="/home/jovyan/yes/envs/lerobotpi0v2/bin/python"
+# 경로는 전부 환경변수로 재정의 가능. 기본값은 운영 서버(~) 레이아웃과 동일.
+#   LEROBOT_BIN / PYTHON_BIN : lerobotpi0v2 env bin (setup 스크립트로 깐 서버는
+#                              $HOME/miniconda3/envs/lerobotpi0v2/bin 로 지정)
+#   PI05_BASE                : Pi0.5 base 모델 (download_models.sh 로 받은 위치)
+#   DATASET_ROOT             : build_v5.py 산출 lekiwi_viva_v5 데이터셋
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/train/pi05_viva_v5_$(date +%Y%m%d_%H%M%S)}"
+LOG_FILE="${LOG_FILE:-$HOME/pi05_v5_train_$(date +%Y%m%d_%H%M%S).log}"
+LEROBOT_BIN="${LEROBOT_BIN:-$HOME/yes/envs/lerobotpi0v2/bin/lerobot-train}"
+PYTHON_BIN="${PYTHON_BIN:-$HOME/yes/envs/lerobotpi0v2/bin/python}"
 # Pi0.5 base (H100 deploy에서 다운로드된 14GB, type=pi05, chunk_size=50)
-PI05_BASE="/home/jovyan/h100_deploy/base_model"
-DATASET_ROOT="/home/jovyan/lerobot_data/lekiwi_viva_v5"
+PI05_BASE="${PI05_BASE:-$HOME/h100_deploy/base_model}"
+DATASET_ROOT="${DATASET_ROOT:-$HOME/lerobot_data/lekiwi_viva_v5}"
 
 echo "=========================================="
 echo "  Pi0.5 fine-tuning on lekiwi_viva_v5"

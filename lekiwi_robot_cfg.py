@@ -71,7 +71,7 @@ ARM_LIMITS_BAKED_RAD = {
 # ── 로봇 설정 ──────────────────────────────────────────────────────────
 LEKIWI_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
-        usd_path=os.environ.get("LEKIWI_USD_PATH", "/home/yubin11/Downloads/lekiwi_robot.usd"),
+        usd_path=os.environ.get("LEKIWI_USD_PATH", os.path.expanduser("~/Downloads/lekiwi_robot.usd")),
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             rigid_body_enabled=True,

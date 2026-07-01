@@ -2,7 +2,7 @@
 # Navigate RL Training Script
 # Run with: nohup bash run_navigate_train.sh > train_navigate.log 2>&1 &
 
-cd /home/yubin11/IsaacLab/scripts/lekiwi_nav_env
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Activate conda environment
 eval "$(conda shell.bash hook)"
